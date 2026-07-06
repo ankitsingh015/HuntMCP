@@ -1,0 +1,19 @@
+# Vector database (rebuilt locally from raw .md files)
+data/chroma/
+
+# Local memory database (each user has their own)
+data/memory.db
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs
+logs/*.log
+
+# Environment
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
