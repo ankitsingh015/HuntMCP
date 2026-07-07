@@ -1,0 +1,26 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "deepseek/deepseek-v4-flash-free",
+  "permission": {
+    "edit": "ask",
+    "bash": {
+      "*": "ask",
+      "grep *": "allow",
+      "cat *": "allow",
+      "ls *": "allow",
+      "echo *": "allow",
+      "which *": "allow"
+    }
+  },
+  "mcp": {
+    "writeup-mcp": {
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/writeup-mcp/server.py"]
+    },
+    "memory-mcp": {
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/memory-mcp/server.py"]
+    }
+  },
+  "autoupdate": "notify"
+}
