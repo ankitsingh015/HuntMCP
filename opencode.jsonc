@@ -14,10 +14,14 @@
   },
   "mcp": {
     "writeup-mcp": {
+      "type": "local",
+      "enabled": true,
       "command": "/home/ankit/HuntMCP/.venv/bin/python",
       "args": ["mcp-servers/writeup-mcp/server.py"]
     },
     "memory-mcp": {
+      "type": "local",
+      "enabled": true,
       "command": "/home/ankit/HuntMCP/.venv/bin/python",
       "args": ["mcp-servers/memory-mcp/server.py"]
     }
