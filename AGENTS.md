@@ -25,9 +25,10 @@ Sprint 1 (Foundation) — Days 1-6 complete. Sprint 1 done.
 | `mcp-servers/dalfox-mcp/` | ✅ XSS scanning |
 | `mcp-servers/ffuf-mcp/` | ✅ directory/content fuzzing |
 | `scripts/` | ✅ setup-db.sh, ingest-writeup.sh, cron-fetch.sh |
-| `knowledge/payloads/` | empty — add payload text files |
-| `knowledge/wordlists/` | empty — add wordlist text files |
-| `data/writeups/` | ✅ 2 seed writeups (XSS, IDOR) |
+| `knowledge/payloads/` | ✅ 11 payload files (XSS, SQLi, SSTI, LFI, SSRF, GraphQL, JWT, Prototype Pollution, HTTP Smuggling, Race Condition, Cloud Enum) |
+| `knowledge/wordlists/` | ✅ 4 wordlists (API endpoints, subdomains, directories, params) |
+| `knowledge/owasp-wstg-skill.md` | ✅ Full WSTG v4.2 methodology mapped to MCP tools |
+| `data/writeups/` | ✅ 9 seed writeups (all major vuln classes) |
 | `opencode.jsonc` | ✅ 10 MCP servers registered with permissions |
 
 ## Do before writing code

