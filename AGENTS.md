@@ -13,14 +13,22 @@ Sprint 1 (Foundation) — Days 1-6 complete. Sprint 1 done.
 | Path | Status |
 |------|--------|
 | `.opencode/agents/` | ✅ 5 agents: HuntBrain, Recon, Scan, Exploit, Report |
-| `.opencode/commands/` | empty — create custom command `.md` files |
+| `.opencode/commands/` | ✅ `/ingest` and `/learn` commands |
 | `mcp-servers/writeup-mcp/` | ✅ ChromaDB RAG server with 4 tools |
 | `mcp-servers/memory-mcp/` | ✅ SQLite memory server with 5 tools |
-| `scripts/` | empty — create setup/ingestion/cron scripts |
+| `mcp-servers/subfinder-mcp/` | ✅ subdomain enumeration |
+| `mcp-servers/httpx-mcp/` | ✅ HTTP probing + tech detection |
+| `mcp-servers/katana-mcp/` | ✅ endpoint crawling |
+| `mcp-servers/nmap-mcp/` | ✅ port scanning |
+| `mcp-servers/nuclei-mcp/` | ✅ vulnerability scanning |
+| `mcp-servers/sqlmap-mcp/` | ✅ SQL injection testing |
+| `mcp-servers/dalfox-mcp/` | ✅ XSS scanning |
+| `mcp-servers/ffuf-mcp/` | ✅ directory/content fuzzing |
+| `scripts/` | ✅ setup-db.sh, ingest-writeup.sh, cron-fetch.sh |
 | `knowledge/payloads/` | empty — add payload text files |
 | `knowledge/wordlists/` | empty — add wordlist text files |
 | `data/writeups/` | ✅ 2 seed writeups (XSS, IDOR) |
-| `opencode.jsonc` | ✅ Created with writeup-mcp MCP + permissions |
+| `opencode.jsonc` | ✅ 10 MCP servers registered with permissions |
 
 ## Do before writing code
 

@@ -48,6 +48,30 @@
       "enabled": true,
       "command": "/home/ankit/HuntMCP/.venv/bin/python",
       "args": ["mcp-servers/nmap-mcp/server.py"]
+    },
+    "nuclei-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/nuclei-mcp/server.py"]
+    },
+    "sqlmap-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/sqlmap-mcp/server.py"]
+    },
+    "dalfox-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/dalfox-mcp/server.py"]
+    },
+    "ffuf-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/ffuf-mcp/server.py"]
     }
   },
   "autoupdate": "notify"

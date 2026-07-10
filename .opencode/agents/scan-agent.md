@@ -7,15 +7,15 @@ Detect vulnerabilities across 30+ classes. Uses nuclei templates + sqlmap + dalf
 - edit: deny
 - bash: allow (for tool execution)
 - webfetch: deny
-- mcp: nuclei, sqlmap, dalfox, burp only
+- mcp: nuclei-mcp, sqlmap-mcp, dalfox-mcp, ffuf-mcp only
 
 ## Workflow
 1. Receive live hosts + endpoints from Recon Agent
 2. Query writeup-mcp → "what payloads work for this tech stack?"
 3. nuclei → run targeted templates (severity-based filtering)
-4. sqlmap → test SQL injection on parameterized URLs
-5. dalfox → test XSS on reflecting parameters
-6. Burp Scanner → deep active scan on interesting targets
+ 4. sqlmap → test SQL injection on parameterized URLs
+ 5. dalfox → test XSS on reflecting parameters
+ 6. ffuf → fuzz discovered parameters and paths
 7. Return findings with confidence scores to HuntBrain:
    - Vulnerability class
    - Affected endpoint + parameter
