@@ -36,6 +36,9 @@ Sprint 1 (Foundation) — Days 1-6 complete. Sprint 1 done.
 | `.opencode/agents/chain-planner.md` | ✅ Dynamic chain planner subagent |
 | `.opencode/commands/chain.md` | ✅ `/chain` command for attack chain analysis |
 | `opencode.jsonc` | ✅ 12 MCP servers registered with permissions |
+| `Dockerfile` | ✅ Multi-stage with Go tools + Python deps |
+| `.dockerignore` | ✅ Optimized build context |
+| `docker-compose.yml` | ✅ Writeup MCP + Memory MCP + Dev service |
 
 ## Do before writing code
 
@@ -66,6 +69,10 @@ go install github.com/hahwul/dalfox/v2@latest
 
 # Initialize database
 ./scripts/setup-db.sh
+
+# Docker development
+docker compose build        # Build the HuntMCP image
+docker compose run --rm dev # Interactive dev shell with all tools
 
 # Verify with a quick audit
 opencode run "HuntMCP audit testphp.vulnweb.com --quick"

@@ -1,0 +1,38 @@
+# Version control
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Data (rebuilt locally)
+data/chroma/
+data/memory.db
+data/watch.db
+data/.cron-seen-urls.txt
+
+# Logs
+logs/
+
+# Environment
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Node (from .opencode/node_modules)
+.opencode/node_modules/
+
+# Docs
+README.md
+ARCHITECTURE.md
+AGENTS.md

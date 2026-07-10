@@ -1,0 +1,81 @@
+version: "3.9"
+
+services:
+  # ============================================================
+  # Writeup RAG Service (ChromaDB + Embedding)
+  # Exposed as an MCP endpoint for remote OpenCode clients
+  # ============================================================
+  writeup-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9100:9100"
+    volumes:
+      - chroma-data:/opt/huntmcp/data/chroma
+      - ./data/writeups:/opt/huntmcp/data/writeups:ro
+      - ./mcp-servers/writeup-mcp:/opt/huntmcp/mcp-servers/writeup-mcp:ro
+    environment:
+      - CHROMA_DIR=/opt/huntmcp/data/chroma
+      - MCP_TRANSPORT=http
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=9100
+    command: >
+      python3 -c "
+      import sys
+      sys.path.insert(0, '/opt/huntmcp/mcp-servers/writeup-mcp')
+      from server import app
+      app.run(transport='http', host='0.0.0.0', port=9100)
+      "
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================
+  # Memory Service (SQLite)
+  # ============================================================
+  memory-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9101:9101"
+    volumes:
+      - memory-data:/opt/huntmcp/data
+    environment:
+      - MCP_TRANSPORT=http
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=9101
+    command: >
+      python3 -c "
+      import sys
+      sys.path.insert(0, '/opt/huntmcp/mcp-servers/memory-mcp')
+      from server import app
+      app.run(transport='http', host='0.0.0.0', port=9101)
+      "
+    restart: unless-stopped
+
+  # ============================================================
+  # Development: All-in-one container (runs locally via opencode)
+  # Use this for a consistent dev environment
+  # ============================================================
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/opt/huntmcp
+      - chroma-data:/opt/huntmcp/data/chroma
+      - memory-data:/opt/huntmcp/data
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+
+volumes:
+  chroma-data:
+  memory-data:
