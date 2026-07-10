@@ -34,24 +34,31 @@ You orchestrate the entire bug bounty hunt. Follow this loop until no more attac
 10. Wait for scan-agent to return findings (vuln class, endpoint, payload, confidence).
 11. If no findings and not `--quick`, try scanning with lower severity thresholds or different template selections.
 
+## Phase 3.5 — Chain Planning
+
+12. If findings exist, spawn @chain-planner agent with all scan findings (as JSON array).
+13. Wait for chain-planner to return chain analysis with top chain and execution plan.
+14. If no chains found, proceed directly to Phase 4 with individual findings.
+
 ## Phase 4 — Exploitation & Validation
 
-12. If findings exist, spawn @exploit-agent with the scan results.
-13. Wait for exploit-agent to return validated findings with PoC and chains.
+15. Spawn @exploit-agent with the scan results AND the chain analysis from chain-planner.
+16. Wait for exploit-agent to return validated findings with PoC and chains.
 
 ## Phase 5 — Reporting
 
-14. Spawn @report-agent with validated findings.
-15. Wait for report paths.
+17. Spawn @report-agent with validated findings.
+18. Wait for report paths.
 
 ## Phase 6 — Learn
 
-16. Call memory-mcp `save()` with target, findings, chains, tech stack, subdomains, and bounty estimate.
-17. Summarize results to the user: what was found, severity, attack chains, and report location.
+19. Call memory-mcp `save()` with target, findings, chains, tech stack, subdomains, and bounty estimate.
+20. Summarize results to the user: what was found, severity, attack chains, and report location.
 
 ## Commands
 
-- "audit <target>" — full autonomous audit (all phases)
-- "audit <target> --quick" — recon + nuclei scan only
-- "audit <target> --deep" — full depth with all tool configurations
+- "audit <target>" — full autonomous audit (all phases including chaining)
+- "audit <target> --quick" — recon + nuclei scan only (no chaining)
+- "audit <target> --deep" — full depth with all tool configurations + chaining
 - "watch <target>" — continuous monitoring mode (future)
+- "/chain <findings>" — chain analysis on existing findings

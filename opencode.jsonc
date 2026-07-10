@@ -73,6 +73,12 @@
       "enabled": true,
       "command": "/home/ankit/HuntMCP/.venv/bin/python",
       "args": ["mcp-servers/ffuf-mcp/server.py"]
+    },
+    "chainer-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/chainer-mcp/server.py"]
     }
   },
   "autoupdate": "notify"

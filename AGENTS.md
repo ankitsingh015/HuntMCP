@@ -29,7 +29,10 @@ Sprint 1 (Foundation) — Days 1-6 complete. Sprint 1 done.
 | `knowledge/wordlists/` | ✅ 4 wordlists (API endpoints, subdomains, directories, params) |
 | `knowledge/owasp-wstg-skill.md` | ✅ Full WSTG v4.2 methodology mapped to MCP tools |
 | `data/writeups/` | ✅ 9 seed writeups (all major vuln classes) |
-| `opencode.jsonc` | ✅ 10 MCP servers registered with permissions |
+| `mcp-servers/chainer-mcp/` | ✅ DAG-based chain planner with 15 chain templates |
+| `.opencode/agents/chain-planner.md` | ✅ Dynamic chain planner subagent |
+| `.opencode/commands/chain.md` | ✅ `/chain` command for attack chain analysis |
+| `opencode.jsonc` | ✅ 11 MCP servers registered with permissions |
 
 ## Do before writing code
 
