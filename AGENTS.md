@@ -39,6 +39,7 @@ Sprint 1 (Foundation) — Days 1-6 complete. Sprint 1 done.
 | `Dockerfile` | ✅ Multi-stage with Go tools + Python deps |
 | `.dockerignore` | ✅ Optimized build context |
 | `docker-compose.yml` | ✅ Writeup MCP + Memory MCP + Dev service |
+| `.github/workflows/ci.yml` | ✅ CI pipeline: lint, validate, Docker build, summary |
 
 ## Do before writing code
 
