@@ -30,9 +30,12 @@ Sprint 1 (Foundation) — Days 1-6 complete. Sprint 1 done.
 | `knowledge/owasp-wstg-skill.md` | ✅ Full WSTG v4.2 methodology mapped to MCP tools |
 | `data/writeups/` | ✅ 9 seed writeups (all major vuln classes) |
 | `mcp-servers/chainer-mcp/` | ✅ DAG-based chain planner with 15 chain templates |
+| `mcp-servers/watch-mcp/` | ✅ Continuous recon monitoring with state diffing |
+| `.opencode/commands/watch.md` | ✅ `/watch` command for continuous monitoring |
+| `scripts/setup-watch.sh` | ✅ Cron setup for periodic watch checks |
 | `.opencode/agents/chain-planner.md` | ✅ Dynamic chain planner subagent |
 | `.opencode/commands/chain.md` | ✅ `/chain` command for attack chain analysis |
-| `opencode.jsonc` | ✅ 11 MCP servers registered with permissions |
+| `opencode.jsonc` | ✅ 12 MCP servers registered with permissions |
 
 ## Do before writing code
 
