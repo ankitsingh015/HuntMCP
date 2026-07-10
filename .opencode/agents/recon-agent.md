@@ -7,7 +7,7 @@ Discover attack surface: subdomains → live hosts → endpoints → tech stack 
 - edit: deny
 - bash: allow (for tool execution)
 - webfetch: deny
-- mcp: subfinder, httpx, katana, nmap only
+- mcp: subfinder-mcp, httpx-mcp, katana-mcp, nmap-mcp only
 
 ## Workflow
 1. Receive target from HuntBrain

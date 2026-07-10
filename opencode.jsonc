@@ -24,6 +24,30 @@
       "enabled": true,
       "command": "/home/ankit/HuntMCP/.venv/bin/python",
       "args": ["mcp-servers/memory-mcp/server.py"]
+    },
+    "subfinder-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/subfinder-mcp/server.py"]
+    },
+    "httpx-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/httpx-mcp/server.py"]
+    },
+    "katana-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/katana-mcp/server.py"]
+    },
+    "nmap-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/nmap-mcp/server.py"]
     }
   },
   "autoupdate": "notify"
