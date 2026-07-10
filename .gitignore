@@ -1,8 +1,9 @@
 # Vector database (rebuilt locally from raw .md files)
 data/chroma/
 
-# Local memory database (each user has their own)
+# Local databases (each user has their own)
 data/memory.db
+data/watch.db
 
 # Python cache
 __pycache__/

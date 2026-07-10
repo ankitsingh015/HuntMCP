@@ -7,6 +7,9 @@ import time
 from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from tool_resolver import resolve_tool, run_tool
+
 app = FastMCP("watch-mcp")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -226,7 +229,7 @@ def load_last_snapshot(target: str):
 def run_subfinder(target: str) -> list:
     try:
         result = subprocess.run(
-            ["subfinder", "-d", target, "-silent"],
+            [resolve_tool("subfinder"), "-d", target, "-silent"],
             capture_output=True, text=True, timeout=120,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -241,8 +244,7 @@ def run_httpx(domains: list) -> list:
         return []
     try:
         input_text = "\n".join(domains)
-        result = subprocess.run(
-            ["httpx", "-silent", "-sc", "-td", "-title"],
+        result = run_tool("httpx", ["-silent", "-sc", "-td", "-title"],
             input=input_text, capture_output=True, text=True, timeout=120,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -264,8 +266,7 @@ def run_httpx(domains: list) -> list:
 
 def run_katana(target: str) -> list:
     try:
-        result = subprocess.run(
-            ["katana", "-u", f"https://{target}", "-silent", "-d", "2"],
+        result = run_tool("katana", ["-u", f"https://{target}", "-silent", "-d", "2"],
             capture_output=True, text=True, timeout=120,
         )
         if result.returncode == 0 and result.stdout.strip():

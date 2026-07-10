@@ -4,6 +4,9 @@ import sys
 import tempfile
 from mcp.server.fastmcp import FastMCP
 
+sys.path.insert(0, __file__.rsplit("/", 2)[0])
+from tool_resolver import resolve_tool
+
 app = FastMCP("httpx-mcp")
 
 
@@ -18,8 +21,9 @@ def probe_hosts(domains: str, ports: str = "80,443", threads: int = 50, timeout:
                 f.write(d + "\n")
         input_path = f.name
 
+    httpx_bin = resolve_tool("httpx")
     cmd = [
-        "httpx", "-l", input_path,
+        httpx_bin, "-l", input_path,
         "-ports", ports,
         "-threads", str(threads),
         "-silent",
