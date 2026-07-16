@@ -2,8 +2,71 @@ version: "3.9"
 
 services:
   # ============================================================
-  # Writeup RAG Service (ChromaDB + Embedding)
-  # Exposed as an MCP endpoint for remote OpenCode clients
+  # PostgreSQL + pgvector
+  # ============================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: huntmcp
+      POSTGRES_USER: huntmcp
+      POSTGRES_PASSWORD: huntmcp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./backend/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U huntmcp"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================================
+  # Go API Backend
+  # ============================================================
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://huntmcp:huntmcp@postgres:5432/huntmcp?sslmode=disable
+      JWT_SECRET: "${JWT_SECRET:-huntmcp-dev-secret-change-in-production}"
+      PORT: "8080"
+      EMBEDDER_URL: http://embedder:9102
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================================
+  # Python Embedder Microservice
+  # ============================================================
+  embedder:
+    build:
+      context: ./backend/embedder
+      dockerfile: Dockerfile.embedder
+    ports:
+      - "9102:9102"
+    environment:
+      EMBEDDER_PORT: "9102"
+      EMBEDDING_MODEL: "all-MiniLM-L6-v2"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9102/health')"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+
+  # ============================================================
+  # Writeup RAG Service (ChromaDB)
   # ============================================================
   writeup-mcp:
     build:
@@ -17,9 +80,7 @@ services:
       - ./mcp-servers/writeup-mcp:/opt/huntmcp/mcp-servers/writeup-mcp:ro
     environment:
       - CHROMA_DIR=/opt/huntmcp/data/chroma
-      - MCP_TRANSPORT=http
-      - MCP_HOST=0.0.0.0
-      - MCP_PORT=9100
+      - EMBEDDER_URL=http://embedder:9102
     command: >
       python3 -c "
       import sys
@@ -27,12 +88,9 @@ services:
       from server import app
       app.run(transport='http', host='0.0.0.0', port=9100)
       "
+    depends_on:
+      - embedder
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
   # ============================================================
   # Memory Service (SQLite)
@@ -59,8 +117,7 @@ services:
     restart: unless-stopped
 
   # ============================================================
-  # Development: All-in-one container (runs locally via opencode)
-  # Use this for a consistent dev environment
+  # Development: All-in-one container
   # ============================================================
   dev:
     build:
@@ -72,10 +129,15 @@ services:
       - memory-data:/opt/huntmcp/data
     environment:
       - PYTHONDONTWRITEBYTECODE=1
+      - DATABASE_URL=postgres://huntmcp:huntmcp@postgres:5432/huntmcp?sslmode=disable
     stdin_open: true
     tty: true
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: /bin/bash
 
 volumes:
+  postgres-data:
   chroma-data:
   memory-data:

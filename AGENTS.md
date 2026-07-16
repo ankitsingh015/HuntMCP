@@ -8,12 +8,12 @@ One Level 1 orchestrator (HuntBrain) delegates to Level 2 specialists (Recon, Sc
 
 ## Current state (July 2026)
 
-Sprint 1 (Foundation) — Days 1-6 complete. Sprint 1 done.
+Phase 1 (Local System) — Sprints 1-5 complete. Phase 2 (Go Backend) — Build complete.
 
 | Path | Status |
 |------|--------|
 | `.opencode/agents/` | ✅ 5 agents: HuntBrain, Recon, Scan, Exploit, Report |
-| `.opencode/commands/` | ✅ `/ingest` and `/learn` commands |
+| `.opencode/commands/` | ✅ `/ingest`, `/learn`, `/chain`, `/watch` commands |
 | `mcp-servers/writeup-mcp/` | ✅ ChromaDB RAG server with 4 tools |
 | `mcp-servers/memory-mcp/` | ✅ SQLite memory server with 5 tools |
 | `mcp-servers/subfinder-mcp/` | ✅ subdomain enumeration |
@@ -24,22 +24,26 @@ Sprint 1 (Foundation) — Days 1-6 complete. Sprint 1 done.
 | `mcp-servers/sqlmap-mcp/` | ✅ SQL injection testing |
 | `mcp-servers/dalfox-mcp/` | ✅ XSS scanning |
 | `mcp-servers/ffuf-mcp/` | ✅ directory/content fuzzing |
-| `scripts/` | ✅ setup-db.sh, ingest-writeup.sh, cron-fetch.sh |
+| `mcp-servers/chainer-mcp/` | ✅ DAG-based chain planner with 15 chain templates |
+| `mcp-servers/watch-mcp/` | ✅ Continuous recon monitoring with state diffing |
+| `mcp-servers/tool_resolver.py` | ✅ Go/system binary resolver (fixes PATH conflicts) |
+| `scripts/` | ✅ setup-db.sh, ingest-writeup.sh, cron-fetch.sh, setup-watch.sh |
 | `knowledge/payloads/` | ✅ 11 payload files (XSS, SQLi, SSTI, LFI, SSRF, GraphQL, JWT, Prototype Pollution, HTTP Smuggling, Race Condition, Cloud Enum) |
 | `knowledge/wordlists/` | ✅ 4 wordlists (API endpoints, subdomains, directories, params) |
 | `knowledge/owasp-wstg-skill.md` | ✅ Full WSTG v4.2 methodology mapped to MCP tools |
 | `data/writeups/` | ✅ 9 seed writeups (all major vuln classes) |
-| `mcp-servers/chainer-mcp/` | ✅ DAG-based chain planner with 15 chain templates |
-| `mcp-servers/watch-mcp/` | ✅ Continuous recon monitoring with state diffing |
-| `.opencode/commands/watch.md` | ✅ `/watch` command for continuous monitoring |
-| `scripts/setup-watch.sh` | ✅ Cron setup for periodic watch checks |
-| `.opencode/agents/chain-planner.md` | ✅ Dynamic chain planner subagent |
-| `.opencode/commands/chain.md` | ✅ `/chain` command for attack chain analysis |
-| `opencode.jsonc` | ✅ 12 MCP servers registered with permissions |
-| `Dockerfile` | ✅ Multi-stage with Go tools + Python deps |
-| `.dockerignore` | ✅ Optimized build context |
-| `docker-compose.yml` | ✅ Writeup MCP + Memory MCP + Dev service |
-| `.github/workflows/ci.yml` | ✅ CI pipeline: lint, validate, Docker build, summary |
+| **Phase 2 — Go Backend** | |
+| `backend/cmd/server/main.go` | ✅ Gin HTTP server with 15+ endpoints |
+| `backend/internal/model/` | ✅ Data models (writeup, user, hunt) |
+| `backend/internal/repository/` | ✅ PostgreSQL + pgvector repository layer |
+| `backend/internal/handler/` | ✅ REST handlers + MCP protocol endpoint |
+| `backend/internal/service/` | ✅ JWT auth service (register/login/validate) |
+| `backend/internal/middleware/` | ✅ Auth, admin, CORS, rate limiting middleware |
+| `backend/migrations/` | ✅ Full database schema with pgvector indexes |
+| `backend/embedder/` | ✅ Python sentence-transformers microservice |
+| `backend/Dockerfile` | ✅ Multi-stage Go build (2.5MB binary) |
+| `backend/Makefile` | ✅ build, run, test, dev, embedder commands |
+| `docker-compose.yml` | ✅ 6 services: postgres, api, embedder, writeup, memory, dev |
 
 ## Do before writing code
 
