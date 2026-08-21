@@ -175,9 +175,9 @@ Two independent axes, and both must stay swappable — neither the runtime nor t
 
 | Harness | What it is | When to use it |
 |---------|-----------|-----------------|
-| **Claude Code native** (planned) | `.claude/agents/*.md` + slash commands + skills, mirroring today's `.opencode/agents/` structure — the same dual-install pattern Claude-BugHunter uses across Claude Code/OpenCode/Codex CLI/Hermes | Interactive use, when the operator wants to watch/steer an engagement live, billed through the operator's own Claude Code / Claude API access |
-| **OpenCode** (existing) | Current `.opencode/agents/` + `opencode.jsonc` | Unchanged — still fully supported |
-| **Direct multi-provider API runner** (planned) | Lightweight headless script for scheduled/CI/`watch` mode use with any model | Continuous monitoring, unattended runs, or when the operator wants a non-Claude model driving |
+| **Claude Code native** (✅ built) | `.claude/agents/*.md` + `.claude/commands/audit.md` + `.mcp.json`, mirroring `.opencode/agents/` — the same dual-install pattern Claude-BugHunter uses across Claude Code/OpenCode/Codex CLI/Hermes | Interactive use, when the operator wants to watch/steer an engagement live, billed through the operator's own Claude Code / Claude API access. Model is always Claude here — picked per-agent via each file's `model:` field, not via the provider gateway below. |
+| **OpenCode** (✅ existing, now gateway-wired) | Current `.opencode/agents/` + `opencode.jsonc`. `scripts/select-model.sh` runs the provider gateway and patches `opencode.jsonc`'s `"model"` field before launch — this is the harness the multi-provider chain below actually controls today. | Any run where you want a non-Claude model, or automatic fallback across whichever key you have set |
+| **Direct multi-provider API runner** (planned) | Lightweight headless script for scheduled/CI/`watch` mode use with any model | Continuous monitoring, unattended runs, or when the operator wants a non-Claude model driving without OpenCode at all |
 
 All three harnesses read and write the **same** `knowledge/`, `mcp-servers/`, and `chat-logs/` — the harness is just the front door, never the source of truth.
 
@@ -192,7 +192,9 @@ Ordered fallback chain, one env var per provider — first one with a key set wi
 5. `OPENROUTER_API_KEY` — catch-all gateway to 100+ more providers/models through one key
 6. `OLLAMA_HOST` — local, no key required; also the slot for a purpose-built open-weight security model (e.g. WhiteRabbitNeo) for agents that need to avoid hosted-model refusal friction on legitimate, already-scope-confirmed PoC generation
 
-Recommended per-agent assignment: cheap/fast model for Recon-agent (high call volume, low reasoning need), strongest available model for Exploit-agent/chain-planner/Report-agent (low volume, high stakes). Two implementation paths, ranked by effort: (a) smallest — adapt `claude-bug-bounty`'s `brain.py` fallback script directly, purpose-built for exactly this; (b) more general — put LiteLLM in front as a proxy if the 100+ provider coverage and cost/latency/failover routing modes are worth the extra moving part.
+**Built**: `mcp-servers/model_gateway.py` (`select_provider()`), tested against all six chain entries plus the explicit-override and per-role-override paths. `scripts/select-model.sh` wires it into OpenCode by patching `opencode.jsonc`'s `"model"` field in place (`--apply`, targeted regex replace — never a full JSON round-trip, so `//` comments survive). Run it before `opencode run`; a plain `python3 mcp-servers/model_gateway.py [role]` with no `--apply` is always a dry-run preview, never writes anything.
+
+Per-agent overrides (`HUNTMCP_MODEL_EXPLOIT=whiterabbitneo`, etc.) work in `select_provider()` today, but OpenCode itself only has one *global* model — there's no per-agent model in `opencode.jsonc`. Per-role selection only becomes meaningful once the direct multi-provider API runner exists (each agent's own call would carry its own role). Recommended per-agent assignment once that lands: cheap/fast model for Recon-agent (high call volume, low reasoning need), strongest available model for Exploit-agent/chain-planner/Report-agent (low volume, high stakes).
 
 **The authorization gate never lives in the model.** Regardless of which harness or provider answers a given call, the Scope & Authorization check (target confirmed in-scope, engagement details on file) happens in HuntMCP's own agent logic before any Tier-2 (execution-capable) action — matching the Tier 1/Tier 2 split from `pentest-ai-agents`. A model refusing or not refusing a request is never the control; the scope-guard is.
 
@@ -202,7 +204,7 @@ What HuntMCP borrows from each project researched, and current status:
 
 | Project | What we take from it | Status |
 |---------|----------------------|--------|
-| [`shuvonsec/claude-bug-bounty`](https://github.com/shuvonsec/claude-bug-bounty) | `brain.py` multi-provider fallback pattern; JSONL hunt-memory format; "7-Question Gate" validator | Design reference — not yet ported |
+| [`shuvonsec/claude-bug-bounty`](https://github.com/shuvonsec/claude-bug-bounty) | `brain.py` multi-provider fallback pattern (✅ ported as `mcp-servers/model_gateway.py`); JSONL hunt-memory format (informed `lessons-mcp`'s design, though ours is markdown not JSONL); "7-Question Gate" validator (informed exploit-agent's proof-capsule validation step) | Model gateway ported; the rest are design references |
 | [`elementalsouls/Claude-BugHunter`](https://github.com/elementalsouls/Claude-BugHunter) | Patterns embedded directly in per-vuln-class skill files instead of a lookup DB; cross-harness dual-install model | Design reference — informs how `knowledge/master-pentest-prompt.md` should eventually split per vuln class |
 | [`0xSteph/pentest-ai-agents`](https://github.com/0xSteph/pentest-ai-agents) | Tier 1 (advisory) / Tier 2 (execution, scope-validated) agent split; `_scope-guard.md` hard-refusal list; defense-paired-with-offense; swarm orchestrator | Design reference — see Scope & Authorization section above |
 | [XBOW](https://xbow.com/) | Explorer/validator split; persistent attack-surface manager; thousands of narrow short-lived tasks (not literal agent processes) | Informs the Methodology Engine's planned parallel-fan-out rework |
