@@ -1087,14 +1087,26 @@ CONTRIBUTOR                    GITHUB                      BACKEND
 | Docker Compose deployment | ✅ Done |
 | **Local MCP servers actually calling the Go backend (dual local/cloud mode)** | ❌ Not done — see "Local MCP servers vs. Go backend — current gap" above |
 
-### Phase 2.5: Methodology Depth — Not Started (recommended next)
+### Phase 2.5: Methodology Depth — ✅ Complete
 
-| What | Deliverable |
-|------|-------------|
-| Add `knowledge/master-pentest-prompt.md` | Full phase-by-phase technique library, `[PHASE N]`-indexed |
-| Expand `.opencode/agents/*.md` to reference/apply it | Agents carry real technique detail, not just phase names |
-| Stand up `chat-logs/lessons-learned.md` + write-back flow | Self-improving registry, matched by tech-stack keyword per target |
-| Add explicit scope-confirmation step to HuntBrain Phase 0 | Enforces the Scope & Authorization guardrail above in the actual agent, not just docs |
+| What | Status |
+|------|--------|
+| Add `knowledge/master-pentest-prompt.md` | ✅ Done — redacted, `[PHASE N]`-indexed, HuntMCP-integration header mapping phases to agent files |
+| Expand `.opencode/agents/*.md` to reference/apply it | ⚠️ Partial — agents reference it and grep the relevant phases; technique detail is not yet embedded per-vuln-class inline (the Claude-BugHunter pattern from the integration map) |
+| Stand up `chat-logs/lessons-learned.md` + write-back flow | ✅ Done — `mcp-servers/lessons-mcp/` (`append_lesson`, `read_lessons`, `check_size`), called automatically by exploit-agent after every validation, not left to memory |
+| Add explicit scope-confirmation step to HuntBrain Phase 0 | ✅ Done — `mcp-servers/scope_guard.py` + `scripts/check-scope.sh`, real tested mechanism, not prose |
+
+### Phase 2.6: Harness & Safety Hardening — ✅ Complete
+
+Not originally planned as its own phase, but this is what actually got built once 2.5 exposed the gap between "agents that name phases" and "agents that can safely execute them":
+
+| What | Status |
+|------|--------|
+| Claude Code native harness (`.claude/agents/*.md`, `.claude/commands/audit.md`, `.mcp.json`) | ✅ Done — verified against the real Claude Code subagent/MCP schema, tool-restricted per role |
+| Reactive (not proactive) rate-limiting | ✅ Done — `classify_block()` + single retry in `tool_resolver.run_tool()`, wired into all 9 subprocess-calling MCP servers |
+| Model provider gateway, no lock-in | ✅ Done — `mcp-servers/model_gateway.py`, wired into OpenCode via `scripts/select-model.sh` |
+| JWT secret fail-fast instead of silent placeholder | ✅ Done — `backend/internal/service/auth_service.go` |
+| Fixed pre-existing bugs found while wiring the above | ✅ Done — OpenCode exploit-agent's `bash: deny` contradicting its own instructions; huntbrain's `edit: deny` blocking `engagement.yaml`; `run_tool()`'s `capture_output` kwarg collision with watch-mcp's existing calls |
 
 ### Phase 3: Full Platform (Not started)
 
