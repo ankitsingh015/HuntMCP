@@ -1,0 +1,14 @@
+# Copy this to engagement.yaml (gitignored — real engagement details never
+# belong in version control) before running any Tier-2 (execution-capable)
+# agent. HuntBrain should write this once, at Phase 0, after you hand over
+# the real program/scope details — not re-derive it on every call.
+target: example.com
+in_scope:
+  - example.com
+  - "*.example.com"
+out_of_scope:
+  - internal.example.com
+  - staging-legacy.example.com
+program_url: https://hackerone.com/example-program
+authorized_on: "2026-08-22"
+notes: "1 req/s per host default; no DoS; no social engineering"

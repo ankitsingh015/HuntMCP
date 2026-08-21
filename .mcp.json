@@ -1,0 +1,52 @@
+{
+  "mcpServers": {
+    "writeup-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/writeup-mcp/server.py"]
+    },
+    "memory-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/memory-mcp/server.py"]
+    },
+    "subfinder-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/subfinder-mcp/server.py"]
+    },
+    "httpx-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/httpx-mcp/server.py"]
+    },
+    "katana-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/katana-mcp/server.py"]
+    },
+    "nmap-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/nmap-mcp/server.py"]
+    },
+    "nuclei-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/nuclei-mcp/server.py"]
+    },
+    "sqlmap-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/sqlmap-mcp/server.py"]
+    },
+    "dalfox-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/dalfox-mcp/server.py"]
+    },
+    "ffuf-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/ffuf-mcp/server.py"]
+    },
+    "chainer-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/chainer-mcp/server.py"]
+    },
+    "watch-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/watch-mcp/server.py"]
+    }
+  }
+}
