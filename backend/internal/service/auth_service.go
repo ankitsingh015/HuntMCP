@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -23,12 +24,22 @@ func NewAuthService(db *repository.DB) *AuthService {
 	return &AuthService{db: db}
 }
 
+// devJWTSecret is only ever used for local/solo dev when JWT_SECRET is unset
+// AND HUNTMCP_ALLOW_DEV_SECRET=1 is explicitly set. Any other unset case
+// fails fast instead of silently signing tokens with a public string.
+const devJWTSecret = "huntmcp-dev-secret-change-in-production"
+
 func (s *AuthService) getJWTSecret() []byte {
 	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		secret = "huntmcp-dev-secret-change-in-production"
+	if secret != "" {
+		return []byte(secret)
 	}
-	return []byte(secret)
+	if os.Getenv("HUNTMCP_ALLOW_DEV_SECRET") == "1" {
+		log.Println("WARNING: JWT_SECRET unset, using dev secret because HUNTMCP_ALLOW_DEV_SECRET=1 — do not use this for anything beyond local solo testing")
+		return []byte(devJWTSecret)
+	}
+	log.Fatal("JWT_SECRET is not set. Set it to a real secret, or set HUNTMCP_ALLOW_DEV_SECRET=1 for local solo dev only.")
+	return nil
 }
 
 func (s *AuthService) Register(req model.UserCreateRequest) (model.AuthResponse, error) {
