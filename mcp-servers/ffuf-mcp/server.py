@@ -1,7 +1,12 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from tool_resolver import run_tool  # noqa: E402
+
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("ffuf-mcp")
@@ -16,8 +21,8 @@ def fuzz_directory(url: str, wordlist: str = "", extensions: str = "", timeout: 
     if not wordlist.startswith("/"):
         wordlist = f"{WORDLIST_DIR}/{wordlist}"
 
-    cmd = [
-        "ffuf", "-u", f"{url}/FUZZ",
+    args = [
+        "-u", f"{url}/FUZZ",
         "-w", f"{wordlist}:FUZZ",
         "-fc", "404",
         "-of", "json",
@@ -25,10 +30,10 @@ def fuzz_directory(url: str, wordlist: str = "", extensions: str = "", timeout: 
         "-t", "50",
     ]
     if extensions:
-        cmd.extend(["-e", extensions])
+        args.extend(["-e", extensions])
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = run_tool("ffuf", args, timeout=timeout)
     except FileNotFoundError:
         return "Error: ffuf not found. Install with: go install github.com/ffuf/ffuf/v2@latest"
     except subprocess.TimeoutExpired:
@@ -67,8 +72,8 @@ def fuzz_with_data(url: str, wordlist: str = "", method: str = "POST", data_temp
     if not wordlist.startswith("/"):
         wordlist = f"{WORDLIST_DIR}/{wordlist}"
 
-    cmd = [
-        "ffuf", "-u", url,
+    args = [
+        "-u", url,
         "-w", f"{wordlist}:FUZZ",
         "-X", method,
         "-d", data_template,
@@ -78,7 +83,7 @@ def fuzz_with_data(url: str, wordlist: str = "", method: str = "POST", data_temp
         "-t", "30",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        result = run_tool("ffuf", args, timeout=180)
     except FileNotFoundError:
         return "Error: ffuf not found."
     except subprocess.TimeoutExpired:

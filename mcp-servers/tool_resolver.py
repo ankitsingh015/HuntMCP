@@ -94,12 +94,14 @@ def run_tool(
     the result to check which case happened.
     """
     binary = resolve_tool(name)
-    result = subprocess.run([binary, *args], capture_output=True, text=True, **kwargs)
+    kwargs.setdefault("capture_output", True)
+    kwargs.setdefault("text", True)
+    result = subprocess.run([binary, *args], **kwargs)
 
     if retry_on_rate_limit:
         combined = (result.stdout or "") + (result.stderr or "")
         if classify_block(combined) == "rate_limit":
             time.sleep(5)
-            result = subprocess.run([binary, *args], capture_output=True, text=True, **kwargs)
+            result = subprocess.run([binary, *args], **kwargs)
 
     return result

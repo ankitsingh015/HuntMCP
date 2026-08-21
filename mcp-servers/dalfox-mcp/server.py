@@ -1,6 +1,11 @@
 import json
+import os
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from tool_resolver import run_tool  # noqa: E402
+
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("dalfox-mcp")
@@ -8,13 +13,13 @@ app = FastMCP("dalfox-mcp")
 
 @app.tool()
 def scan_url(url: str, timeout: int = 180) -> str:
-    cmd = [
-        "dalfox", "url", url,
+    args = [
+        "url", url,
         "--silence",
         "--format", "json",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = run_tool("dalfox", args, timeout=timeout)
     except FileNotFoundError:
         return "Error: dalfox not found. Install with: go install github.com/hahwul/dalfox/v2@latest"
     except subprocess.TimeoutExpired:
@@ -56,14 +61,14 @@ def scan_url(url: str, timeout: int = 180) -> str:
 
 @app.tool()
 def scan_parameter(url: str, param: str, timeout: int = 180) -> str:
-    cmd = [
-        "dalfox", "url", url,
+    args = [
+        "url", url,
         "--param", param,
         "--silence",
         "--format", "json",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = run_tool("dalfox", args, timeout=timeout)
     except FileNotFoundError:
         return "Error: dalfox not found."
     except subprocess.TimeoutExpired:

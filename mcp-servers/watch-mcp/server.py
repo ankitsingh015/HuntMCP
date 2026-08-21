@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from tool_resolver import resolve_tool, run_tool
+from tool_resolver import run_tool
 
 app = FastMCP("watch-mcp")
 
@@ -228,10 +228,7 @@ def load_last_snapshot(target: str):
 
 def run_subfinder(target: str) -> list:
     try:
-        result = subprocess.run(
-            [resolve_tool("subfinder"), "-d", target, "-silent"],
-            capture_output=True, text=True, timeout=120,
-        )
+        result = run_tool("subfinder", ["-d", target, "-silent"], timeout=120)
         if result.returncode == 0 and result.stdout.strip():
             return sorted(set(result.stdout.strip().splitlines()))
     except (FileNotFoundError, subprocess.TimeoutExpired, Exception):

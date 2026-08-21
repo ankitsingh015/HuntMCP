@@ -1,5 +1,10 @@
+import os
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from tool_resolver import run_tool  # noqa: E402
+
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("katana-mcp")
@@ -7,17 +12,17 @@ app = FastMCP("katana-mcp")
 
 @app.tool()
 def crawl(url: str, depth: int = 2, delay: int = 0, timeout: int = 120) -> str:
-    cmd = [
-        "katana", "-u", url,
+    args = [
+        "-u", url,
         "-d", str(depth),
         "-silent",
         "-o", "-",
     ]
     if delay > 0:
-        cmd.extend(["-delay", str(delay)])
+        args.extend(["-delay", str(delay)])
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = run_tool("katana", args, timeout=timeout)
     except FileNotFoundError:
         return "Error: katana not found. Install with: go install github.com/projectdiscovery/katana/cmd/katana@latest"
     except subprocess.TimeoutExpired:
@@ -40,17 +45,17 @@ def crawl(url: str, depth: int = 2, delay: int = 0, timeout: int = 120) -> str:
 
 @app.tool()
 def crawl_with_filter(url: str, depth: int = 2, extensions: str = "") -> str:
-    cmd = [
-        "katana", "-u", url,
+    args = [
+        "-u", url,
         "-d", str(depth),
         "-silent",
         "-o", "-",
     ]
     if extensions:
-        cmd.extend(["-ef", extensions])
+        args.extend(["-ef", extensions])
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = run_tool("katana", args, timeout=120)
     except FileNotFoundError:
         return "Error: katana not found."
     except subprocess.TimeoutExpired:

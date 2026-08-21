@@ -1,6 +1,11 @@
 import json
+import os
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from tool_resolver import run_tool  # noqa: E402
+
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("nuclei-mcp")
@@ -8,13 +13,13 @@ app = FastMCP("nuclei-mcp")
 
 @app.tool()
 def scan_target(target: str, severity: str = "medium,high,critical", timeout: int = 300) -> str:
-    cmd = [
-        "nuclei", "-u", target,
+    args = [
+        "-u", target,
         "-severity", severity,
         "-silent", "-json",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = run_tool("nuclei", args, timeout=timeout)
     except FileNotFoundError:
         return "Error: nuclei not found. Install with: go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
     except subprocess.TimeoutExpired:
@@ -58,13 +63,13 @@ def scan_target(target: str, severity: str = "medium,high,critical", timeout: in
 
 @app.tool()
 def scan_with_templates(target: str, templates: str, timeout: int = 300) -> str:
-    cmd = [
-        "nuclei", "-u", target,
+    args = [
+        "-u", target,
         "-t", templates,
         "-silent", "-json",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = run_tool("nuclei", args, timeout=timeout)
     except FileNotFoundError:
         return "Error: nuclei not found."
     except subprocess.TimeoutExpired:

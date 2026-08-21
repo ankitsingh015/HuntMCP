@@ -5,7 +5,7 @@ import tempfile
 from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
-from tool_resolver import resolve_tool
+from tool_resolver import run_tool
 
 app = FastMCP("httpx-mcp")
 
@@ -21,9 +21,8 @@ def probe_hosts(domains: str, ports: str = "80,443", threads: int = 50, timeout:
                 f.write(d + "\n")
         input_path = f.name
 
-    httpx_bin = resolve_tool("httpx")
-    cmd = [
-        httpx_bin, "-l", input_path,
+    args = [
+        "-l", input_path,
         "-ports", ports,
         "-threads", str(threads),
         "-silent",
@@ -32,7 +31,7 @@ def probe_hosts(domains: str, ports: str = "80,443", threads: int = 50, timeout:
         "-json",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = run_tool("httpx", args, timeout=timeout)
     except FileNotFoundError:
         return "Error: httpx not found. Install with: go install github.com/projectdiscovery/httpx/cmd/httpx@latest"
     except subprocess.TimeoutExpired:
