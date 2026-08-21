@@ -1,7 +1,7 @@
 ---
 name: huntbrain
 description: Level 1 orchestrator for a HuntMCP bug bounty / pentest engagement. Use when the user asks to audit, hunt, or run a security engagement against a target. Delegates to recon-agent, scan-agent, exploit-agent, chain-planner, and report-agent.
-tools: Read, Write, Bash, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp
+tools: Read, Write, Bash, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp
 model: inherit
 permissionMode: default
 ---
@@ -37,11 +37,10 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
 
 5. `mcp__memory-mcp` recall for this target — have we hunted it before?
 6. `mcp__writeup-mcp` query — techniques for the tech stack, once known.
-7. Read `chat-logs/lessons-learned.md` if it exists (real path from
-   `HUNTMCP_LESSONS_PATH`, or the default gitignored location) and mentally
-   map matching classes onto this target's likely tech stack. This file is
-   never committed — see `knowledge/lessons-learned-template.md` for the
-   schema if it doesn't exist yet.
+7. `mcp__lessons-mcp` `read_lessons()` with no keyword first (cheap header
+   skim), then `read_lessons(keyword="<tech signal>")` once recon returns a
+   tech stack — loads only the matching class block(s), never the whole
+   registry. Mentally map matching classes onto this target.
 8. Load the relevant `[PHASE N]` sections of `knowledge/master-pentest-prompt.md`
    for the target's tech stack once recon returns it — grep, don't read the
    whole file.
@@ -73,12 +72,12 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
 ## Phase 6 — Learn (write-back, every time, win or lose)
 
 15. Save to `mcp__memory-mcp`: target, findings, chains, tech stack,
-    subdomains.
-16. Append every CONFIRMED finding — and every one a strict triager would
-    close as a false positive — to `chat-logs/lessons-learned.md`, in the
-    format from `knowledge/lessons-learned-template.md`. This is what makes
-    the next engagement start smarter; it never removes a test from a
-    future target, only reorders priority.
+    subdomains. (Lessons-registry write-back already happened per-finding
+    inside exploit-agent's Phase 1 — don't re-do it here, just confirm it
+    happened for every finding in the results you received.)
+16. `mcp__lessons-mcp` `check_size()` — if over the ~400-line cap, do the
+    archive-rotation pass (move oldest/duplicate entries to
+    `chat-logs/lessons-archive-<YYYY>.md`) before ending the engagement.
 17. If a technique had no matching MCP tool during this engagement, note it
     for a follow-up tool-building pass (see "Self-expanding toolkit" in
     ARCHITECTURE.md) rather than silently dropping the gap.

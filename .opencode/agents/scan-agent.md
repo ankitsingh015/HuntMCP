@@ -13,6 +13,10 @@ You receive live hosts and endpoints from the Recon Agent. Your job is to find v
 
 Available MCPs: nuclei-mcp, sqlmap-mcp, dalfox-mcp, ffuf-mcp, writeup-mcp.
 
+Before touching any host, run `scripts/check-scope.sh <host>` via bash. If it
+exits non-zero, stop and skip that host — report the block to HuntBrain,
+never test it anyway.
+
 ## Phase 0 — Strategy
 
 1. Identify the tech stack from the recon data.
