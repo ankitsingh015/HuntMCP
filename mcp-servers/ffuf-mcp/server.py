@@ -11,15 +11,32 @@ from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("ffuf-mcp")
 
-WORDLIST_DIR = "/usr/share/wordlists"
+PROJECT_WORDLIST_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "knowledge", "wordlists")
+SYSTEM_WORDLIST_DIR = "/usr/share/wordlists"
+
+
+def _resolve_wordlist(wordlist: str) -> str:
+    """Prefer HuntMCP's own curated wordlists (knowledge/wordlists/) over
+    the system default -- those are project-tracked, reviewed content;
+    /usr/share/wordlists is whatever happened to get installed on this
+    machine, if anything did. Absolute paths and explicit system-relative
+    names (e.g. "seclists/...") still work unchanged."""
+    if wordlist.startswith("/"):
+        return wordlist
+    if not wordlist:
+        default = os.path.join(PROJECT_WORDLIST_DIR, "directories.txt")
+        if os.path.isfile(default):
+            return default
+        return os.path.join(SYSTEM_WORDLIST_DIR, "dirb", "common.txt")
+    project_path = os.path.join(PROJECT_WORDLIST_DIR, wordlist)
+    if os.path.isfile(project_path):
+        return project_path
+    return os.path.join(SYSTEM_WORDLIST_DIR, wordlist)
 
 
 @app.tool()
 def fuzz_directory(url: str, wordlist: str = "", extensions: str = "", timeout: int = 180) -> str:
-    if not wordlist:
-        wordlist = f"{WORDLIST_DIR}/dirb/common.txt"
-    if not wordlist.startswith("/"):
-        wordlist = f"{WORDLIST_DIR}/{wordlist}"
+    wordlist = _resolve_wordlist(wordlist)
 
     args = [
         "-u", f"{url}/FUZZ",
@@ -67,10 +84,7 @@ def fuzz_directory(url: str, wordlist: str = "", extensions: str = "", timeout: 
 
 @app.tool()
 def fuzz_with_data(url: str, wordlist: str = "", method: str = "POST", data_template: str = "user=FUZZ&pass=test") -> str:
-    if not wordlist:
-        wordlist = f"{WORDLIST_DIR}/dirb/common.txt"
-    if not wordlist.startswith("/"):
-        wordlist = f"{WORDLIST_DIR}/{wordlist}"
+    wordlist = _resolve_wordlist(wordlist)
 
     args = [
         "-u", url,

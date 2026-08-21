@@ -43,8 +43,35 @@ anyway.
 
 ## Phase 4 — Fuzzing
 
-7. `mcp__ffuf-mcp` for hidden content on interesting paths; fuzz login/API
-   forms with a data template where relevant.
+7. `mcp__ffuf-mcp` for hidden content on interesting paths — it defaults to
+   `knowledge/wordlists/directories.txt` now, pass `wordlist="api-endpoints.txt"`
+   explicitly for API-shaped targets; fuzz login/API forms with a data
+   template where relevant.
+
+## Payload Library — when the automated tools miss something
+
+nuclei/sqlmap/dalfox cover the common cases. When a response looks promising
+but the automated pass came back clean, or you need to manually bypass a
+WAF, pull curated payloads instead of inventing ad hoc ones — project-tracked,
+reviewed, sourced from PortSwigger/PayloadsAllTheThings/real H1-BC writeups:
+
+| Vuln class | File |
+|---|---|
+| XSS | `knowledge/payloads/xss.txt` |
+| SQLi | `knowledge/payloads/sqli.txt` |
+| SSTI | `knowledge/payloads/ssti.txt` |
+| LFI/path traversal | `knowledge/payloads/lfi.txt` |
+| SSRF | `knowledge/payloads/ssrf.txt` |
+| JWT attacks | `knowledge/payloads/jwt.txt` |
+| GraphQL | `knowledge/payloads/graphql.txt` |
+| Prototype pollution | `knowledge/payloads/prototype-pollution.txt` |
+| Race conditions | `knowledge/payloads/race-condition.txt` |
+| Request smuggling | `knowledge/payloads/smuggler.txt` |
+| Cloud/S3/metadata enum | `knowledge/payloads/cloud-enum.txt` |
+
+Read only the section that matches the context (each file is organized into
+`# SECTION N:` blocks) rather than the whole file — same context-budget
+principle as `knowledge/master-pentest-prompt.md`.
 
 ## Return to HuntBrain
 

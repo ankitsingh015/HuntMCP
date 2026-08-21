@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Go toolchain + security tools
 # =============================================================================
-FROM golang:1.23-bookworm AS go-tools
+FROM golang:1.25-bookworm AS go-tools
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
@@ -9,6 +9,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV GOBIN=/usr/local/bin
 ENV GO111MODULE=on
+# These 6 tools each bump their go.mod's minimum Go version on their own
+# schedule (ProjectDiscovery tools especially move fast). Pinning this
+# image to one Go version means the build breaks every time any single
+# tool needs a newer one than we guessed. GOTOOLCHAIN=auto lets `go
+# install` fetch whatever toolchain a given module actually requires,
+# per-module, instead of us chasing version numbers here.
+ENV GOTOOLCHAIN=auto
 
 RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest && \
     go install github.com/projectdiscovery/httpx/cmd/httpx@latest && \
