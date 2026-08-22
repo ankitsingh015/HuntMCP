@@ -13,6 +13,11 @@ You receive a target domain from HuntBrain. Your job is to discover the full att
 
 Available MCPs: subfinder-mcp, httpx-mcp, katana-mcp, nmap-mcp.
 
+Before touching any host, run `scripts/check-scope.sh <host>` via bash. If it
+exits non-zero, stop on that host and report the block to HuntBrain — never
+work around it. This is a cheap local check (no LLM call), safe to run per
+new host discovered.
+
 ## Phase 1 — Subdomain Enumeration
 
 1. Call subfinder-mcp `run_subdomain(domain)` to find subdomains.

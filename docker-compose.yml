@@ -33,7 +33,10 @@ services:
       - "8080:8080"
     environment:
       DATABASE_URL: postgres://huntmcp:huntmcp@postgres:5432/huntmcp?sslmode=disable
-      JWT_SECRET: "${JWT_SECRET:-huntmcp-dev-secret-change-in-production}"
+      # Set JWT_SECRET in your shell/.env for any use beyond local solo dev.
+      # Without it, the API now refuses to boot unless HUNTMCP_ALLOW_DEV_SECRET=1.
+      JWT_SECRET: "${JWT_SECRET:-}"
+      HUNTMCP_ALLOW_DEV_SECRET: "${HUNTMCP_ALLOW_DEV_SECRET:-1}"
       PORT: "8080"
       EMBEDDER_URL: http://embedder:9102
     depends_on:

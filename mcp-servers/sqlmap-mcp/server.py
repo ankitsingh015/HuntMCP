@@ -4,6 +4,10 @@ import re
 import subprocess
 import sys
 import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from tool_resolver import run_tool  # noqa: E402
+
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("sqlmap-mcp")
@@ -19,8 +23,8 @@ def _ensure_output_dir():
 def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1, risk: int = 1, timeout: int = 300) -> str:
     _ensure_output_dir()
     with tempfile.TemporaryDirectory(dir=OUTPUT_DIR) as tmpdir:
-        cmd = [
-            "sqlmap", "-u", url,
+        args = [
+            "-u", url,
             "--batch",
             "--output-dir", tmpdir,
             "--level", str(level),
@@ -28,11 +32,11 @@ def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1
             "--threads", "5",
         ]
         if method.upper() == "POST" and data:
-            cmd.extend(["--data", data])
-        cmd.extend(["--forms"])
+            args.extend(["--data", data])
+        args.extend(["--forms"])
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            result = run_tool("sqlmap", args, timeout=timeout)
         except FileNotFoundError:
             return "Error: sqlmap not found. Install with: pip install sqlmap"
         except subprocess.TimeoutExpired:
@@ -65,8 +69,8 @@ def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1
 def test_with_data(url: str, data: str, method: str = "POST", level: int = 2, timeout: int = 300) -> str:
     _ensure_output_dir()
     with tempfile.TemporaryDirectory(dir=OUTPUT_DIR) as tmpdir:
-        cmd = [
-            "sqlmap", "-u", url,
+        args = [
+            "-u", url,
             "--data", data,
             "--batch",
             "--output-dir", tmpdir,
@@ -74,7 +78,7 @@ def test_with_data(url: str, data: str, method: str = "POST", level: int = 2, ti
             "--threads", "5",
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            result = run_tool("sqlmap", args, timeout=timeout)
         except FileNotFoundError:
             return "Error: sqlmap not found."
         except subprocess.TimeoutExpired:

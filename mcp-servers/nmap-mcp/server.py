@@ -1,8 +1,13 @@
 import json
+import os
 import re
 import subprocess
 import sys
 import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from tool_resolver import run_tool  # noqa: E402
+
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("nmap-mcp")
@@ -41,9 +46,9 @@ def _parse_nmap_grepable(raw: str) -> list[dict]:
 
 @app.tool()
 def scan_ports(target: str, top_ports: int = 1000, timeout: int = 300) -> str:
-    cmd = ["nmap", "-T4", "--top-ports", str(top_ports), "-oG", "-", target]
+    args = ["-T4", "--top-ports", str(top_ports), "-oG", "-", target]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = run_tool("nmap", args, timeout=timeout)
     except FileNotFoundError:
         return "Error: nmap not found. Install with: apt install nmap"
     except subprocess.TimeoutExpired:
@@ -69,9 +74,9 @@ def scan_ports(target: str, top_ports: int = 1000, timeout: int = 300) -> str:
 
 @app.tool()
 def scan_deep(target: str, ports: str = "1-10000", timeout: int = 600) -> str:
-    cmd = ["nmap", "-T4", "-p", ports, "-sV", "-oG", "-", target]
+    args = ["-T4", "-p", ports, "-sV", "-oG", "-", target]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = run_tool("nmap", args, timeout=timeout)
     except FileNotFoundError:
         return "Error: nmap not found."
     except subprocess.TimeoutExpired:

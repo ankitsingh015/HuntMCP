@@ -13,6 +13,10 @@ You receive live hosts and endpoints from the Recon Agent. Your job is to find v
 
 Available MCPs: nuclei-mcp, sqlmap-mcp, dalfox-mcp, ffuf-mcp, writeup-mcp.
 
+Before touching any host, run `scripts/check-scope.sh <host>` via bash. If it
+exits non-zero, stop and skip that host — report the block to HuntBrain,
+never test it anyway.
+
 ## Phase 0 — Strategy
 
 1. Identify the tech stack from the recon data.
@@ -36,8 +40,35 @@ Available MCPs: nuclei-mcp, sqlmap-mcp, dalfox-mcp, ffuf-mcp, writeup-mcp.
 
 ## Phase 4 — Fuzzing
 
-10. For interesting paths, call ffuf-mcp `fuzz_directory(url)` to discover hidden content.
+10. For interesting paths, call ffuf-mcp `fuzz_directory(url)` to discover hidden content — it now defaults to `knowledge/wordlists/directories.txt`, so you don't need to specify one for the common case. Pass `wordlist="api-endpoints.txt"` explicitly when the target looks API-shaped.
 11. If login forms or APIs are found, call ffuf-mcp `fuzz_with_data(url, ..., "POST", data_template)`.
+
+## Payload Library — when the automated tools miss something
+
+nuclei/sqlmap/dalfox cover the common cases. When a response looks promising
+(reflected input, a template-engine error, a suspicious redirect) but the
+automated pass came back clean, or you need to manually bypass a WAF, pull
+curated payloads instead of inventing ad hoc ones — these are project-tracked,
+reviewed, sourced from PortSwigger/PayloadsAllTheThings/real H1-BC writeups:
+
+| Vuln class | File |
+|---|---|
+| XSS | `knowledge/payloads/xss.txt` |
+| SQLi | `knowledge/payloads/sqli.txt` |
+| SSTI | `knowledge/payloads/ssti.txt` |
+| LFI/path traversal | `knowledge/payloads/lfi.txt` |
+| SSRF | `knowledge/payloads/ssrf.txt` |
+| JWT attacks | `knowledge/payloads/jwt.txt` |
+| GraphQL | `knowledge/payloads/graphql.txt` |
+| Prototype pollution | `knowledge/payloads/prototype-pollution.txt` |
+| Race conditions | `knowledge/payloads/race-condition.txt` |
+| Request smuggling | `knowledge/payloads/smuggler.txt` |
+| Cloud/S3/metadata enum | `knowledge/payloads/cloud-enum.txt` |
+
+Read the relevant file with a `grep`/head-style pass for the section that
+matches the context (e.g. `xss.txt`'s "SECTION 1: CONTEXT-SPECIFIC" vs its
+WAF-bypass section) rather than loading the whole file — same context-budget
+principle as `knowledge/master-pentest-prompt.md`.
 
 ## Return to HuntBrain
 

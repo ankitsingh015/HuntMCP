@@ -26,6 +26,12 @@
       "command": "/home/ankit/HuntMCP/.venv/bin/python",
       "args": ["mcp-servers/memory-mcp/server.py"]
     },
+    "lessons-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "args": ["mcp-servers/lessons-mcp/server.py"]
+    },
     "subfinder-mcp": {
       "type": "local",
       "enabled": true,

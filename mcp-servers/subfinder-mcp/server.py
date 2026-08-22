@@ -1,7 +1,11 @@
 import json
-import shlex
+import os
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from tool_resolver import run_tool  # noqa: E402
+
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("subfinder-mcp")
@@ -9,16 +13,12 @@ app = FastMCP("subfinder-mcp")
 
 @app.tool()
 def run_subfinder(domain: str, sources: str = "", threads: int = 10, timeout: int = 120) -> str:
-    cmd = ["subfinder", "-d", domain, "-silent", "-t", str(threads)]
+    args = ["-d", domain, "-silent", "-t", str(threads)]
     if sources:
-        cmd.extend(["-sources", sources])
-    cmd_str = shlex.join(cmd)
+        args.extend(["-sources", sources])
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=timeout,
-        )
+        result = run_tool("subfinder", args, timeout=timeout)
     except FileNotFoundError:
         return f"Error: subfinder not found. Install with: go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
     except subprocess.TimeoutExpired:
@@ -41,9 +41,8 @@ def run_subfinder(domain: str, sources: str = "", threads: int = 10, timeout: in
 
 @app.tool()
 def list_sources() -> str:
-    cmd = ["subfinder", "-list"]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        result = run_tool("subfinder", ["-list"], timeout=15)
     except FileNotFoundError:
         return "Error: subfinder not found."
     except Exception as e:

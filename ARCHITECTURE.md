@@ -11,6 +11,48 @@ HuntMCP is not a script that chains tools in a fixed order. It is a **multi-leve
 5. Validates findings via Burp Repeater before reporting
 6. Learns continuously — manual ingestion + automated cron feeds keep the RAG database fresh
 
+## Current Implementation Status
+
+This doc describes the target design. As of 2026-08, actual build status (kept in sync with [AGENTS.md](AGENTS.md)):
+
+| Layer | Status | Notes |
+|-------|--------|-------|
+| Phase 1 — Local system (agents, MCP servers, knowledge base) | ✅ Built | 5 agents, 12 MCP servers, payloads/wordlists seeded |
+| Phase 2 — Go backend (API, auth, pgvector) | ✅ Built | See `backend/` — Gin + PostgreSQL/pgvector, JWT auth, `/mcp` endpoint |
+| Phase 3 — Web platform (Next.js dashboard, community PRs, CI/CD auto-train) | ❌ Not started | Design only, see below |
+| Agent instruction depth (`.opencode/agents/*.md`) | ⚠️ Skeletal | Each agent is 45-65 lines with phase *names*, not the full technique library — see "Methodology Engine" below |
+| Self-improvement / lessons registry (`chat-logs/lessons-learned.md`) | ❌ Not started | Planned — see "Methodology Engine" |
+
+The gap to close next is agent depth, not new infrastructure: the Go backend and MCP plumbing are ahead of what the agents actually know how to do with them.
+
+## Scope & Authorization (read before running anything)
+
+HuntMCP executes real, active exploitation attempts (SQLi, SSRF, RCE payloads, auth bypass, etc.) against a live target. This is offensive and can be illegal or damaging if pointed at the wrong host.
+
+- **Never run an audit against a target without explicit written authorization** (a bug bounty program's published scope, a signed pentest agreement, or a target you personally own).
+- Findings, payloads, and exploitation evidence are sensitive; treat `data/`, `logs/`, and any `chat-logs/` content as private (already gitignored where it contains target-specific data).
+
+### How the scope gate actually works (validate once, not every call)
+
+Re-confirming scope before every single tool call would burn tokens for no safety benefit — the check only needs to happen once, at the start, then get enforced cheaply for the rest of the run:
+
+1. **Once, at Phase 0**: the user hands HuntBrain the full program/engagement details up front (in-scope domains, out-of-scope exclusions, any rate-limit constraints from the program). HuntBrain does one real analysis pass and writes it to a session-scoped `engagement.yaml` (target list, out-of-scope list, authorization reference).
+2. **For the rest of the engagement**: every Tier-2 (execution-capable) tool call does a **cheap, deterministic domain-match check** against the already-parsed in-scope list from step 1 — a plain string/suffix match, not an LLM call, effectively free. This is what actually blocks an out-of-scope request; no re-analysis, no repeated reasoning.
+3. If the current target/host isn't in the cached list, the call is refused locally, before any MCP tool runs — cheap enough to run on literally every call without meaningfully affecting cost.
+
+This keeps the hard guarantee (nothing out-of-scope ever executes) while keeping the ongoing cost at effectively zero.
+
+### Rate limiting is reactive, not proactive
+
+A blanket per-request delay slows down recon/scan for a problem that usually isn't happening — so `run_tool()` in `mcp-servers/tool_resolver.py` adds **no delay by default**. It only reacts when the target actually signals a block, and it reacts differently depending on what kind of block it is:
+
+- **Rate limit** (429, "rate limit"/"too many requests" in output): back off 5s and retry exactly once (Phase 21.5's decision tree). A second block after that means something else is wrong — stop retrying blindly.
+- **WAF/bot-detection block** (403+block-page text, Cloudflare/Akamai/Imperva signatures): a sleep doesn't fix this. `classify_block()` flags it as `"waf"` so the calling agent escalates to real bypass technique instead — the header/path/method tiers already in `knowledge/master-pentest-prompt.md` Phase 0.6, and, for JS-challenge WAFs that those can't beat, a browser-driven tool (Playwright headless, real JS execution, real TLS/HTTP fingerprint) — planned as a `playwright-mcp` server rather than solved by waiting.
+
+### Self-expanding toolkit
+
+After every engagement, learning isn't just a note in `chat-logs/lessons-learned.md` — when an agent hits a technique with no matching MCP tool, it's expected to actually build one: a new MCP server wrapper (FastMCP pattern, using `resolve_tool()`/`run_tool()`, structured output), not just flag the gap for a human to fix later. This is Phase 32.5/37 ("invent new tests... propose as a new phase addition") taken literally — the toolkit itself grows engagement over engagement, not just the notes about it.
+
 ## Multi-Level Architecture
 
 ```
@@ -106,6 +148,74 @@ This scales to **unlimited agents** because they're files, not running processes
 | N0RMXL Framework | 10-phase methodology, checkpoint resume |
 | bugbounty-hunter (mrch4n725) | Validation pipeline, multi-format reporting |
 | BountyGrimoire | Multi-agent approach for authenticated testing |
+
+## Methodology Engine (how agents know what to do)
+
+The phase tables below are a **summary**, not the source of truth. The authoritative, exhaustive technique library lives in a separate file so it can grow without bloating this architecture doc or blowing any agent's context window:
+
+- **[`knowledge/master-pentest-prompt.md`](knowledge/master-pentest-prompt.md)** (✅ added) — the full phase-by-phase methodology (recon → injection → auth → access control → XSS → business logic → infra → reporting), `[PHASE <N>]`-indexed so any agent can `grep` and load only what's relevant to the current target. Its header maps phases directly to `.opencode/agents/*.md` files — this is what those agent files should reference and expand from; they currently only name phases, they don't carry the technique detail inline.
+- **`chat-logs/lessons-learned.md`** (gitignored, workstation-private — **never git-tracked, by design**) — a standing registry of confirmed bugs from past engagements, written back after every finding: vuln class, target, method, exact payload, impact chain. Read at the start of every engagement and matched against the current target's fingerprinted tech stack. Real engagement data (target names, client findings) must never enter this repo, even privately — see [`knowledge/lessons-learned-template.md`](knowledge/lessons-learned-template.md) for the schema with sanitized examples, and point `HUNTMCP_LESSONS_PATH` at your real file if you already maintain one outside the repo. Capped in size; old entries roll into `chat-logs/lessons-archive-<year>.md` rather than being deleted.
+- **`knowledge/owasp-wstg-skill.md`** (existing) — the structural WSTG v4.2 mapping, unchanged.
+
+This makes the **Knowledge Layer three systems, not two**:
+
+| System | Backend | Answers | Scope |
+|--------|---------|---------|-------|
+| Writeup RAG | ChromaDB (local) / pgvector (Go backend) | "What technique worked on similar *public* writeups?" | Cross-target, public |
+| Memory DB | SQLite (local) / PostgreSQL (Go backend) | "What did *we* find on *this* target before?" | Per-target |
+| Lessons Registry | Flat markdown, `rg`-matched by keyword | "What confirmed technique matches *this target's tech stack*, from *our own* past engagements?" | Cross-target, workstation-private |
+
+**No-skip guarantee**: none of these systems ever authorize skipping a test class on a fresh target — they only reorder priority (test the historically-highest-yield classes first) and seed better initial payloads. Every phase still runs in full on every new target.
+
+## Model & Harness Layer (no lock-in, by design)
+
+Two independent axes, and both must stay swappable — neither the runtime nor the model should ever be hardcoded:
+
+### Harness (how agents actually run)
+
+| Harness | What it is | When to use it |
+|---------|-----------|-----------------|
+| **Claude Code native** (✅ built) | `.claude/agents/*.md` + `.claude/commands/audit.md` + `.mcp.json`, mirroring `.opencode/agents/` — the same dual-install pattern Claude-BugHunter uses across Claude Code/OpenCode/Codex CLI/Hermes | Interactive use, when the operator wants to watch/steer an engagement live, billed through the operator's own Claude Code / Claude API access. Model is always Claude here — picked per-agent via each file's `model:` field, not via the provider gateway below. |
+| **OpenCode** (✅ existing, now gateway-wired) | Current `.opencode/agents/` + `opencode.jsonc`. `scripts/select-model.sh` runs the provider gateway and patches `opencode.jsonc`'s `"model"` field before launch — this is the harness the multi-provider chain below actually controls today. | Any run where you want a non-Claude model, or automatic fallback across whichever key you have set |
+| **Direct multi-provider API runner** (planned) | Lightweight headless script for scheduled/CI/`watch` mode use with any model | Continuous monitoring, unattended runs, or when the operator wants a non-Claude model driving without OpenCode at all |
+
+All three harnesses read and write the **same** `knowledge/`, `mcp-servers/`, and `chat-logs/` — the harness is just the front door, never the source of truth.
+
+### Model provider (which LLM actually answers)
+
+Ordered fallback chain, one env var per provider — first one with a key set wins unless a per-agent override says otherwise (modeled directly on `claude-bug-bounty`'s `brain.py` pattern):
+
+1. `ANTHROPIC_API_KEY` — preferred for reasoning-heavy agents (Exploit, Report, chain-planner); apply to Anthropic's **Cyber Verification Program** first so authorized offensive work doesn't hit refusal friction
+2. `OPENAI_API_KEY`
+3. `DEEPSEEK_API_KEY`
+4. `GROQ_API_KEY`
+5. `OPENROUTER_API_KEY` — catch-all gateway to 100+ more providers/models through one key
+6. `OLLAMA_HOST` — local, no key required; also the slot for a purpose-built open-weight security model (e.g. WhiteRabbitNeo) for agents that need to avoid hosted-model refusal friction on legitimate, already-scope-confirmed PoC generation
+
+**Built**: `mcp-servers/model_gateway.py` (`select_provider()`), tested against all six chain entries plus the explicit-override and per-role-override paths. `scripts/select-model.sh` wires it into OpenCode by patching `opencode.jsonc`'s `"model"` field in place (`--apply`, targeted regex replace — never a full JSON round-trip, so `//` comments survive). Run it before `opencode run`; a plain `python3 mcp-servers/model_gateway.py [role]` with no `--apply` is always a dry-run preview, never writes anything.
+
+Per-agent overrides (`HUNTMCP_MODEL_EXPLOIT=whiterabbitneo`, etc.) work in `select_provider()` today, but OpenCode itself only has one *global* model — there's no per-agent model in `opencode.jsonc`. Per-role selection only becomes meaningful once the direct multi-provider API runner exists (each agent's own call would carry its own role). Recommended per-agent assignment once that lands: cheap/fast model for Recon-agent (high call volume, low reasoning need), strongest available model for Exploit-agent/chain-planner/Report-agent (low volume, high stakes).
+
+**The authorization gate never lives in the model.** Regardless of which harness or provider answers a given call, the Scope & Authorization check (target confirmed in-scope, engagement details on file) happens in HuntMCP's own agent logic before any Tier-2 (execution-capable) action — matching the Tier 1/Tier 2 split from `pentest-ai-agents`. A model refusing or not refusing a request is never the control; the scope-guard is.
+
+### World-project integration map
+
+What HuntMCP borrows from each project researched, and current status:
+
+| Project | What we take from it | Status |
+|---------|----------------------|--------|
+| [`shuvonsec/claude-bug-bounty`](https://github.com/shuvonsec/claude-bug-bounty) | `brain.py` multi-provider fallback pattern (✅ ported as `mcp-servers/model_gateway.py`); JSONL hunt-memory format (informed `lessons-mcp`'s design, though ours is markdown not JSONL); "7-Question Gate" validator (informed exploit-agent's proof-capsule validation step) | Model gateway ported; the rest are design references |
+| [`elementalsouls/Claude-BugHunter`](https://github.com/elementalsouls/Claude-BugHunter) | Patterns embedded directly in per-vuln-class skill files instead of a lookup DB; cross-harness dual-install model | Design reference — informs how `knowledge/master-pentest-prompt.md` should eventually split per vuln class |
+| [`0xSteph/pentest-ai-agents`](https://github.com/0xSteph/pentest-ai-agents) | Tier 1 (advisory) / Tier 2 (execution, scope-validated) agent split; `_scope-guard.md` hard-refusal list; defense-paired-with-offense; swarm orchestrator | Design reference — see Scope & Authorization section above |
+| [XBOW](https://xbow.com/) | Explorer/validator split; persistent attack-surface manager; thousands of narrow short-lived tasks (not literal agent processes) | Informs the Methodology Engine's planned parallel-fan-out rework |
+| [Strix](https://github.com/usestrix/strix) | "Graph of agents" sharing discoveries live; per-agent sandbox isolation | Informs planned Docker/Firecracker sandboxing for exploit execution |
+| [PortSwigger `mcp-server`](https://github.com/PortSwigger/mcp-server) | Official Burp MCP integration — already the design behind the `127.0.0.1:9876` reference in AGENTS.md | Kept as an optional enhancement tier, not a hard requirement |
+| `mcp-security-hub`, `mcp-for-security`, `awesome-offensive-mcp` | Ready-made MCP servers (Nmap, Ghidra, Nuclei, SQLMap, Hashcat, Masscan) to adopt instead of hand-building more wrappers | Not yet pulled in |
+| ReconFTW | 80+-tool orchestrated recon pipeline, wrap as one MCP server | Not yet pulled in — recon-agent still only has 4 tools |
+| garak, PyRIT | Purpose-built LLM red-teaming tools for Phase 14.5/14.6 (AI/LLM surface testing) | Not yet pulled in |
+| WhiteRabbitNeo | Open-weight security-tuned model, runnable via Ollama, no hosted-model refusal friction | Slot reserved in the fallback chain above |
+| Anthropic Cyber Verification Program | The legitimate, official path to authorized-use API access | Apply directly — anthropic.com, not a code change |
+| Project Glasswing | Proof-of-ceiling reference only (10,000+ vulns found by Claude at Anthropic's own scale) | Not directly integrated — context/validation that the category works |
 
 ## Complete Methodology — All Phases
 
@@ -731,214 +841,41 @@ PHASE 1: LOCAL (Months 1-2)     →    PHASE 2: GO BACKEND (Months 3-4)    →  
 
 ---
 
-## Phase 2: Go Backend Architecture (Months 3-4)
+## Go Backend (Implemented)
 
-When the local system works and you want to scale to a team or the community, migrate the knowledge layer to a Go backend.
+The Go backend described below is **built**, not planned — see `backend/` and [CLAUDE.md](CLAUDE.md) for the exact file layout. This section only records the design rationale; for current routes/structure read the code.
 
-### Why Go for the Backend
-
-| Aspect | FastAPI (Python) | Go (Gin/Echo/Fiber) |
+| Aspect | FastAPI (Python) | Go (Gin) — chosen |
 |--------|-----------------|---------------------|
-| Performance | ~3k req/s | ~50k req/s (10x faster) |
+| Performance | ~3k req/s | ~50k req/s |
 | Concurrency | Async/await | Goroutines (native) |
 | Binary size | ~100MB + runtime | ~15MB single binary |
 | Deployment | Needs Python runtime | One binary, no dependencies |
-| Memory | ~200MB idle | ~10MB idle |
-| Team scaling | Good | Excellent for microservices |
 
-### Go Backend Architecture
+Real endpoints (see `backend/cmd/server/main.go`): `/health`, `/api/v1/auth/{register,login}`, `/api/v1/writeups*`, `/api/v1/query` (RAG), `/api/v1/hunts*`, `/api/v1/stats`, `/api/v1/admin/*`, and `POST /mcp` (MCP protocol bridge). Auth is JWT via `internal/middleware`. There is **no Redis** in the current stack (`docker-compose.yml` runs `postgres`, `api`, `embedder`, plus the `writeup`/`memory` MCP services) — caching was scoped out, not silently dropped; add it back deliberately if query latency becomes a problem.
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                     GO BACKEND API                             │
-│  ┌────────────────────────────────────────────────────────┐   │
-│  │  Go Server (Gin/Echo/Fiber)                             │   │
-│  │                                                         │   │
-│  │  Endpoints:                                             │   │
-│  │  ├── POST /api/v1/writeups       (add writeup)          │   │
-│  │  ├── POST /api/v1/writeups/batch (bulk import)          │   │
-│  │  ├── GET  /api/v1/writeups       (list/search)          │   │
-│  │  ├── POST /api/v1/query          (RAG search)           │   │
-│  │  ├── POST /api/v1/hunts          (save hunt results)    │   │
-│  │  ├── GET  /api/v1/hunts/:target  (recall past hunts)    │   │
-│  │  ├── POST /api/v1/reindex        (trigger rebuild)      │   │
-│  │  ├── GET  /api/v1/stats          (dashboard data)       │   │
-│  │  ├── POST /api/v1/auth/*         (user management)      │   │
-│  │  └── GET  /mcp                   (MCP protocol endpoint)│   │
-│  └────────────────────────────────────────────────────────┘   │
-│                           │                                    │
-│         ┌─────────────────┼─────────────────┐                  │
-│         ▼                 ▼                  ▼                  │
-│  ┌────────────┐   ┌──────────────┐   ┌──────────────┐         │
-│  │ PostgreSQL  │   │  Redis Cache │   │  File Storage│         │
-│  │ + pgvector  │   │  (optional)  │   │  (writeup.md)│         │
-│  │             │   │              │   │              │         │
-│  │ - writeups  │   │  - hot query │   │  - raw .md   │         │
-│  │ - users     │   │    cache      │   │  - reports   │         │
-│  │ - hunts     │   │  - sessions  │   │  - exports   │         │
-│  │ - vectors   │   │              │   │              │         │
-│  └────────────┘   └──────────────┘   └──────────────┘         │
-└──────────────────────────────────────────────────────────────┘
-         │                          │
-         │                          │
-         ▼                          ▼
-┌──────────────────┐   ┌──────────────────────────────┐
-│  Python Embedder  │   │  MCP Clients (local machines)│
-│  (microservice)    │   │                              │
-│                   │   │  Each user's HuntMCP connects │
-│  POST /embed      │   │  via:                         │
-│  → returns vector │   │  - writeup-mcp (cloud mode)   │
-│                   │   │  - memory-mcp (cloud mode)    │
-│  Only needed for  │   │  - OR local mode (offline)    │
-│  ingestion/rebuild│   │                              │
-└──────────────────┘   └──────────────────────────────┘
-```
-
-### Why Python Embedder Exists (and Why It's Tiny)
-
-The embedding step converts text to vectors. Python's `sentence-transformers` is the gold standard:
-
-```python
-# embedder/server.py — ~30 lines
-from sentence_transformers import SentenceTransformer
-from fastapi import FastAPI
-
-model = SentenceTransformer('all-MiniLM-L6-v2')
-app = FastAPI()
-
-@app.post("/embed")
-async def embed(text: str):
-    return {"vector": model.encode(text).tolist()}
-```
-
-**This runs only during writeup ingestion** (CI/CD or admin action), NOT in the live API path. The Go API handles all production traffic. The Python microservice is:
-- Stateless (scales to zero when not ingesting)
-- Called only on PR merge or manual reindex
-- Replaceable with Ollama or OpenAI API if desired
-
-### Go Backend Project Structure
-
-```
-backend/
-├── cmd/
-│   └── server/
-│       └── main.go                      Entry point
-├── internal/
-│   ├── handler/
-│   │   ├── writeups.go                  CRUD handlers
-│   │   ├── query.go                     RAG search handler
-│   │   ├── hunts.go                     Memory handlers
-│   │   ├── auth.go                      Auth handlers
-│   │   ├── stats.go                     Dashboard stats
-│   │   └── mcp.go                       MCP protocol handler
-│   ├── model/
-│   │   ├── writeup.go                   Writeup struct
-│   │   ├── user.go                      User struct
-│   │   └── hunt.go                      Hunt result struct
-│   ├── repository/
-│   │   ├── postgres.go                  PostgreSQL + pgvector
-│   │   ├── writeup_repo.go             Writeup queries
-│   │   └── hunt_repo.go                Hunt memory queries
-│   ├── service/
-│   │   ├── writeup_service.go          Business logic
-│   │   ├── rag_service.go              RAG search logic
-│   │   └── auth_service.go             Auth logic
-│   └── middleware/
-│       ├── auth.go                      JWT middleware
-│       └── rate_limit.go                Rate limiting
-├── embedder/                            Python microservice
-│   ├── server.py                        Embedding endpoint
-│   └── requirements.txt                 sentence-transformers, fastapi
-├── migrations/
-│   ├── 001_create_writeups.sql
-│   ├── 002_add_pgvector.sql
-│   └── 003_create_hunts.sql
-├── Dockerfile
-├── docker-compose.yml                   Go API + Postgres + Redis + Embedder
-├── go.mod
-├── go.sum
-└── Makefile
-```
-
-### Installing pgvector on PostgreSQL
+The embedder (`backend/embedder/server.py`) is a ~30-line `sentence-transformers` microservice used only at ingestion/reindex time — the Go API serves all production read/query traffic.
 
 ```sql
--- Enable the pgvector extension
+-- pgvector schema (see backend/migrations/ for the real, current version)
 CREATE EXTENSION vector;
-
--- Store writeups with vectors
 CREATE TABLE writeups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
-    url TEXT,
     vuln_class TEXT NOT NULL,
-    target_tech TEXT[],
-    bounty INTEGER,
-    author TEXT,
-    content TEXT NOT NULL,
-    embedding VECTOR(384),  -- 384-dim vector from all-MiniLM-L6-v2
+    embedding VECTOR(384),
     metadata JSONB,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    source_type TEXT DEFAULT 'manual'  -- 'manual', 'cron', 'pr'
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
--- Store hunt memory
-CREATE TABLE hunts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    target TEXT NOT NULL,
-    tech_stack TEXT[],
-    findings JSONB,
-    chains JSONB,
-    report_url TEXT,
-    hunted_at TIMESTAMPTZ DEFAULT NOW(),
-    user_id UUID REFERENCES users(id)
-);
-
--- Vector similarity search index
 CREATE INDEX idx_writeups_embedding ON writeups
-    USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
-
--- Similarity search query (Go will run this)
--- SELECT content, title, vuln_class, 1 - (embedding <=> $1) AS similarity
--- FROM writeups
--- WHERE 1 - (embedding <=> $1) > 0.7
--- ORDER BY similarity DESC
--- LIMIT 5;
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 ```
 
-### How Local MCP Connects to Go Backend
+### Local MCP servers vs. Go backend — current gap
 
-```python
-# writeup-mcp/server.py — Dual mode (local-first, cloud-optional)
+**Not yet wired up:** the Python MCP servers (`mcp-servers/writeup-mcp`, `mcp-servers/memory-mcp`) currently talk only to local ChromaDB/SQLite — there is no `HUNTMCP_BACKEND_URL`-style dual mode calling the Go API yet. Until that's built, the Go backend and the local OpenCode agent system are two independent, unconnected implementations of the same knowledge layer. Wiring the local MCP servers to optionally call the Go `/api/v1/query` and `/api/v1/hunts` endpoints (falling back to local storage when `HUNTMCP_BACKEND_URL` is unset) is the concrete next step to make Phase 2 actually useful to the Phase 1 agents, rather than a parallel backend nobody calls.
 
-import os
-import requests
-from chromadb import PersistentClient
-
-BACKEND_URL = os.getenv("HUNTMCP_BACKEND_URL")  # Optional
-CHROMA_DIR = os.getenv("CHROMA_DIR", "./data/chroma")
-
-class WriteupMCPServer:
-    def __init__(self):
-        self.local_db = PersistentClient(path=CHROMA_DIR)
-        self.cloud_mode = bool(BACKEND_URL)
-
-    def query(self, query_text: str, top_k: int = 5):
-        if self.cloud_mode:
-            # Query Go backend with pgvector
-            resp = requests.post(
-                f"{BACKEND_URL}/api/v1/query",
-                json={"query": query_text, "top_k": top_k}
-            )
-            return resp.json()
-        else:
-            # Query local ChromaDB
-            results = self.local_db.query(query_texts=[query_text], n_results=top_k)
-            return results
-```
-
-### When to Migrate from Local to Go Backend
+### When to route through the Go backend instead of local storage
 
 | Signal | Trigger |
 |--------|---------|
@@ -946,7 +883,6 @@ class WriteupMCPServer:
 | **ChromaDB > 2GB** | Local vector DB becomes slow → pgvector is faster |
 | **Community contributions** | PRs with writeups → CI/CD auto-train pipeline |
 | **Need web access** | Dashboard, API, mobile access |
-| **CI/CD integration** | GitHub Action security gate |
 
 ---
 
@@ -1128,60 +1064,51 @@ CONTRIBUTOR                    GITHUB                      BACKEND
 | **Backups** | ❌ None | ✅ DB dumps | ✅ Automated |
 | **Monitoring** | ❌ None | ❌ Basic | ✅ Metrics + alerts |
 
-## Build Plan (Complete)
+## Build Plan
 
-### Phase 1: Local System (Months 1-2)
+### Phase 1: Local System — ✅ Complete
 
-#### Sprint 1: Foundation (Week 1)
+| Sprint | What | Status |
+|--------|------|--------|
+| 1 | Directory structure + all 5 agent files (HuntBrain, Recon, Scan, Exploit, Report) | ✅ Done — agents are skeletal (see Methodology Engine); depth is the remaining work |
+| 2 | Knowledge layer: `writeup-mcp` (ChromaDB) + `memory-mcp` (SQLite) + ingestion scripts | ✅ Done |
+| 3-4 | 8 tool MCP wrappers (subfinder, httpx, katana, nmap, nuclei, sqlmap, dalfox, ffuf) | ✅ Done |
+| 5 | Chaining engine (`chainer-mcp`) + Watch mode (`watch-mcp`) | ✅ Done |
+| — | Docker + GitHub Actions CI | ✅ Done |
 
-| Day | What | Deliverable |
-|-----|------|-------------|
-| 1-2 | Create directory structure | All folders exist |
-| 3-4 | Create all 5 agent files | HuntBrain + Recon + Scan + Exploit + Report |
-| 5-6 | Create writeup-mcp server.py | RAG MCP with ChromaDB |
-| 7 | Create memory-mcp server.py | Memory MCP with SQLite |
+### Phase 2: Go Backend — ✅ Complete
 
-#### Sprint 2: Knowledge Layer (Week 2)
+| What | Status |
+|------|--------|
+| Go API server (Gin) — writeups/hunts/auth CRUD | ✅ Done — `backend/internal/handler` |
+| PostgreSQL + pgvector integration | ✅ Done — `backend/internal/repository`, `backend/migrations` |
+| Python embedder microservice | ✅ Done — `backend/embedder` |
+| MCP protocol endpoint in Go | ✅ Done — `POST /mcp` |
+| Docker Compose deployment | ✅ Done |
+| **Local MCP servers actually calling the Go backend (dual local/cloud mode)** | ❌ Not done — see "Local MCP servers vs. Go backend — current gap" above |
 
-| Day | What | Deliverable |
-|-----|------|-------------|
-| 1-2 | Write ingestion scripts | `ingest-writeup.sh` + `cron-fetch.sh` |
-| 3-4 | Write cron configuration | Daily H1/GitHub/blog feeds |
-| 5-6 | Seed database with ~50 writeups | Populated ChromaDB |
-| 7 | Create `/ingest` + `/learn` commands | User can query and add writeups |
+### Phase 2.5: Methodology Depth — ✅ Complete
 
-#### Sprint 3: Tool MCPs (Week 3-4)
+| What | Status |
+|------|--------|
+| Add `knowledge/master-pentest-prompt.md` | ✅ Done — redacted, `[PHASE N]`-indexed, HuntMCP-integration header mapping phases to agent files |
+| Expand `.opencode/agents/*.md` to reference/apply it | ⚠️ Partial — agents reference it and grep the relevant phases; technique detail is not yet embedded per-vuln-class inline (the Claude-BugHunter pattern from the integration map) |
+| Stand up `chat-logs/lessons-learned.md` + write-back flow | ✅ Done — `mcp-servers/lessons-mcp/` (`append_lesson`, `read_lessons`, `check_size`), called automatically by exploit-agent after every validation, not left to memory |
+| Add explicit scope-confirmation step to HuntBrain Phase 0 | ✅ Done — `mcp-servers/scope_guard.py` + `scripts/check-scope.sh`, real tested mechanism, not prose |
 
-| Week | What | Deliverable |
-|------|------|-------------|
-| 3 | Build 4 MCP wrappers | subfinder + httpx + katana + nmap |
-| 4 | Build 4 MCP wrappers | nuclei + sqlmap + dalfox + ffuf |
+### Phase 2.6: Harness & Safety Hardening — ✅ Complete
 
-#### Sprint 4: Agent Logic (Week 5-6)
+Not originally planned as its own phase, but this is what actually got built once 2.5 exposed the gap between "agents that name phases" and "agents that can safely execute them":
 
-| Week | Focus | Deliverable |
-|------|-------|-------------|
-| 5 | Phase 0-1-2 in agents | Recon agent runs full passive + active enum |
-| 6 | Phase 3-4-5 in agents | Scan + Exploit + Report agents work end-to-end |
+| What | Status |
+|------|--------|
+| Claude Code native harness (`.claude/agents/*.md`, `.claude/commands/audit.md`, `.mcp.json`) | ✅ Done — verified against the real Claude Code subagent/MCP schema, tool-restricted per role |
+| Reactive (not proactive) rate-limiting | ✅ Done — `classify_block()` + single retry in `tool_resolver.run_tool()`, wired into all 9 subprocess-calling MCP servers |
+| Model provider gateway, no lock-in | ✅ Done — `mcp-servers/model_gateway.py`, wired into OpenCode via `scripts/select-model.sh` |
+| JWT secret fail-fast instead of silent placeholder | ✅ Done — `backend/internal/service/auth_service.go` |
+| Fixed pre-existing bugs found while wiring the above | ✅ Done — OpenCode exploit-agent's `bash: deny` contradicting its own instructions; huntbrain's `edit: deny` blocking `engagement.yaml`; `run_tool()`'s `capture_output` kwarg collision with watch-mcp's existing calls |
 
-#### Sprint 5: Intelligence (Week 7-8)
-
-| Week | Focus | Deliverable |
-|------|-------|-------------|
-| 7 | Chaining engine + Watch mode | AI chains findings, continuous monitoring |
-| 8 | Final polish + testing | Docker, GitHub Action, full smoke test |
-
-### Phase 2: Go Backend (Months 3-4)
-
-| Sprint | What | Deliverable |
-|--------|------|-------------|
-| 6 | Go API server (Gin/Echo/Fiber) — core CRUD endpoints | Writeups + hunts + auth |
-| 7 | PostgreSQL + pgvector integration | Database schema working |
-| 8 | Python embedder microservice | Embedding endpoint for CI/CD |
-| 9 | MCP endpoint in Go | Local HuntMCP connects in cloud mode |
-| 10 | Migration scripts + deployment (Docker/Railway) | Production-ready backend |
-
-### Phase 3: Full Platform (Months 5-6)
+### Phase 3: Full Platform (Not started)
 
 | Sprint | What | Deliverable |
 |--------|------|-------------|

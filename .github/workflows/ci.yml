@@ -31,7 +31,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       - name: Install dependencies
         run: pip install --no-cache-dir ruff
@@ -205,6 +204,7 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: huntmcp:ci
@@ -212,7 +212,7 @@ jobs:
       - name: Verify image
         run: |
           docker run --rm huntmcp:ci python3 -c "
-          import importlib, os, sys
+          import importlib.util, os, sys
           sys.path.insert(0, '/opt/huntmcp/mcp-servers')
           # Verify all modules import
           servers = [d for d in os.listdir('mcp-servers')

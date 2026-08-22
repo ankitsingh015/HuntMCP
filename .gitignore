@@ -18,6 +18,14 @@ logs/*.log
 # Cron tracking (auto-created by cron-fetch.sh)
 data/.cron-seen-urls.txt
 
+# Lessons Registry — real engagement data (target names, findings, client
+# info) NEVER belongs in this repo, even privately. Only the sanitized
+# template in knowledge/ is git-tracked. See knowledge/lessons-learned-template.md.
+chat-logs/
+RESUME-POINT.md
+engagement.yaml
+data/reports/
+
 # Virtual environment
 .venv/
 
