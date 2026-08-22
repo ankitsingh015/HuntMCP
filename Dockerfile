@@ -3,10 +3,6 @@
 # =============================================================================
 FROM golang:1.25-bookworm AS go-tools
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    nmap \
-    && rm -rf /var/lib/apt/lists/*
-
 ENV GOBIN=/usr/local/bin
 ENV GO111MODULE=on
 # These 6 tools each bump their go.mod's minimum Go version on their own
@@ -35,21 +31,25 @@ LABEL org.opencontainers.image.title="HuntMCP"
 LABEL org.opencontainers.image.description="Multi-level AI agent orchestration for bug bounty hunting"
 LABEL org.opencontainers.image.source="https://github.com/ankitsingh015/HuntMCP"
 
-# Install system deps
+# Install system deps. nmap is installed here (not copied from the
+# go-tools stage) so apt resolves its actual runtime shared-library
+# dependencies (libpcre.so.3 etc.) for THIS base image -- copying just the
+# binary cross-stage left it unable to load those libraries at all.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
+    nmap \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Go tools from stage 1
+# Copy Go tools from stage 1 (static-ish Go binaries -- no shared-library
+# dependency problem the way nmap had)
 COPY --from=go-tools /usr/local/bin/subfinder /usr/local/bin/
 COPY --from=go-tools /usr/local/bin/httpx /usr/local/bin/
 COPY --from=go-tools /usr/local/bin/katana /usr/local/bin/
 COPY --from=go-tools /usr/local/bin/nuclei /usr/local/bin/
 COPY --from=go-tools /usr/local/bin/ffuf /usr/local/bin/
 COPY --from=go-tools /usr/local/bin/dalfox /usr/local/bin/
-COPY --from=go-tools /usr/bin/nmap /usr/local/bin/nmap
 
 # Install Python dependencies
 COPY mcp-servers/writeup-mcp/requirements.txt /tmp/requirements-writeup.txt
