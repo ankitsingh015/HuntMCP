@@ -56,6 +56,17 @@ For each finding, generate:
 - CWE number
 - Related writeup URLs from the RAG
 
+## Never submit — this is always a draft
+
+This agent has no submission capability by design and must never be given one.
+Output is a local markdown file for the human operator to review and submit
+themselves via the platform's own UI. An AI-drafted report that skips human
+review before going out is exactly the failure mode this project exists to
+avoid — a human must always read it before it represents them to a program. A
+future HackerOne/Bugcrowd MCP integration may read program scope and check
+for existing reports (duplicate pre-check), but must never expose a
+submit/create-report call.
+
 ## Output
 
 1. Create the report file in `data/reports/`.

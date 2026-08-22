@@ -1130,7 +1130,7 @@ solo operator) rather than raw feature count.
 | What | Idea | Notes |
 |------|------|-------|
 | Scope enforcement via Claude Code hooks | Add a `PreToolUse` hook (`.claude/settings.json` / `hooks/hooks.json`-style) that calls `scope_guard.is_in_scope()` and blocks the tool call outright for any Bash/MCP call touching a host outside `engagement.yaml` | Strictly stronger than the current design: today, scope compliance depends on each agent's system-prompt instruction to run `check-scope.sh` first — an LLM could in principle skip it. A hook makes it structurally unskippable instead of instructed |
-| HackerOne MCP server | Port the idea of `mcp/hackerone-mcp/server.py` — pull a program's scope directly into `engagement.yaml` instead of hand-transcribing it, and (if H1's API exposes it) check for existing/duplicate reports on a finding before it's written up | Directly targets the user's stated problem: reducing HackerOne duplicates |
+| HackerOne MCP server | Port the idea of `mcp/hackerone-mcp/server.py` — pull a program's scope directly into `engagement.yaml` instead of hand-transcribing it, and (if H1's API exposes it) check for existing/duplicate reports on a finding before it's written up. **Read-only by design — scope-sync and duplicate-check only, never a submit/create-report call.** report-agent's output stays a local draft for the human operator to review and submit themselves; see report-agent.md's "Never submit" rule | Directly targets the user's stated problem: reducing HackerOne duplicates, without ever letting an unreviewed AI-drafted report reach a program |
 | OOB interaction listener | Wrap `interactsh-client` (or similar) as a new `oob-mcp` server: generate a per-injection callback URL, hand it to exploit-agent for blind SSRF/XXE/SQLi/RCE payloads, correlate inbound DNS/HTTP/SMTP hits back to the finding | Was the #1 highest-leverage gap in claude-bug-bounty's own audit. Currently HuntMCP's only OOB path is optional Burp Collaborator — this removes that dependency |
 | WAF bypass tooling | Wire `whatwaf`/`unwaf`/`byp4xx` (or equivalent) as the actual escalation path when `tool_resolver.classify_block()` returns `"waf"` | Closes a gap flagged and left open during Phase 2.6: reactive rate-limiting detects a WAF block and surfaces it, but nothing automated actually attempts a bypass yet |
 
@@ -1151,6 +1151,33 @@ solo operator) rather than raw feature count.
 | SAST source audit | `semgrep`-based source scanning for JS pulled during recon | Adds source-level static analysis alongside HuntMCP's current pure black-box/DAST approach — a philosophy shift worth confirming before building |
 | Web3/smart-contract auditing | Slither/Aderyn/Echidna/Mythril wrapper + a `web3-auditor` specialist | Whole new domain, not a small addition — only worth it if in-scope for actual target programs |
 | Mobile (Android/iOS) testing | APK decompile, Frida/objection scripting, MobSF | Also a new domain; HuntMCP is currently web-only |
+
+### Phase 2.9: Strix-derived Backlog (Not started)
+
+Researched from [`usestrix/strix`](https://github.com/usestrix/strix) (57k★, actively
+maintained — pushed the same day this was researched, 2026-08-22) via its actual source, not
+just the README: `strix/core/hooks.py`, `strix/tools/agents_graph/tools.py`,
+`strix/llm/compaction.py`/`context_budget.py`, `strix/tools/proxy/caido_api.py`. Strix's
+orchestration model is architecturally different from HuntMCP's (any agent can spawn any
+other agent into a shared live graph, vs. HuntBrain's fixed Level 1 → Level 2 hierarchy) —
+most items below are deliberately scoped to take the *specific mechanism* worth having
+without adopting that broader philosophy shift, consistent with [[feedback-speed-vs-accuracy]]
+and the earlier single-vs-multi-orchestrator discussion (coordination/locking cost of a full
+agent graph isn't worth it at HuntMCP's current scale).
+
+| What | Idea | Notes |
+|------|------|-------|
+| Budget circuit-breaker | Track cumulative LLM $ cost per engagement; graduated warning bands (e.g. 70%/85%/95% of a configured `HUNTMCP_MAX_BUDGET_USD`) surfaced to HuntBrain, hard-stop at 100% | HuntMCP has *no* cost guardrail today — a stuck loop or an unexpectedly large attack surface could burn unlimited API spend with nothing noticing. Small, self-contained, no dependency on adopting the agent-graph model. High leverage relative to effort |
+| Duplicate-work check before spawning a specialist | A lightweight `list_active_work()`-style read (which specialists are already running/completed on which host) that HuntBrain checks before spawning another, mirroring Strix's `view_agent_graph` tool | Take *only* the dedup-check idea, not Strix's full dynamic any-agent-spawns-any-agent graph — gets the "don't redo work" benefit without taking on shared-coordinator locking complexity for a fixed 5-specialist roster that doesn't need it |
+| Context budget / compaction strategy | An explicit policy for what happens as a single agent's conversation approaches its context window on a long engagement (summarize older tool results, drop stale recon data once it's been merged into HuntBrain's state) | Not yet a problem HuntMCP has hit, but a long multi-host engagement could hit it; Strix treats this as a first-class concern, HuntMCP has no strategy at all currently |
+| Caido proxy support alongside Burp | A `caido-mcp` mirroring the existing optional Burp integration tier | Caido is a real open-source Burp alternative; lowers the barrier for anyone who doesn't have a Burp Pro license. Low priority — Burp is already optional, this just adds a second optional option |
+
+**Explicitly not recommending from Strix:** its Go-based custom TUI (`strix/interface/tui/`) —
+a large engineering investment disproportionate to a solo-operator tool, when OpenCode's and
+Claude Code's own interfaces already work; and its opt-in telemetry (`strix/telemetry/`,
+posthog/scarf) — even opt-in, a tool that processes real target/engagement data warrants extra
+caution before wiring in any outbound analytics, and it isn't solving a problem HuntMCP
+actually has.
 
 ### Phase 3: Full Platform (Not started)
 

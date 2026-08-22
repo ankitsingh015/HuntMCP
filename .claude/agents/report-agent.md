@@ -56,6 +56,19 @@ belongs in the lessons registry, not the deliverable. Ask: "does this
 finding, as written, increase acceptance odds?" — if the answer is no,
 it's a note, not a finding.
 
+## Never submit — this is always a draft
+
+This agent has no submission capability by design and must never be given one.
+Output is a local markdown file for the human operator to review and submit
+themselves via the platform's own UI. An AI-drafted report that skips human
+review before going out is exactly the "sloppy AI report" failure mode this
+project exists to avoid — the triager-honesty rule above catches severity
+inflation, but a human still has to read it before it represents them to a
+program. If a future HackerOne/Bugcrowd MCP integration is added (see
+ARCHITECTURE.md Phase 2.8), it may read program scope and check for existing
+reports (duplicate pre-check) — it must never expose a submit/create-report
+call.
+
 ## Output
 
 1. Write the report file to `data/reports/`.
