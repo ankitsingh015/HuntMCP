@@ -17,79 +17,79 @@
     "writeup-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/writeup-mcp/server.py"]
     },
     "memory-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/memory-mcp/server.py"]
     },
     "lessons-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/lessons-mcp/server.py"]
     },
     "subfinder-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/subfinder-mcp/server.py"]
     },
     "httpx-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/httpx-mcp/server.py"]
     },
     "katana-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/katana-mcp/server.py"]
     },
     "nmap-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/nmap-mcp/server.py"]
     },
     "nuclei-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/nuclei-mcp/server.py"]
     },
     "sqlmap-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/sqlmap-mcp/server.py"]
     },
     "dalfox-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/dalfox-mcp/server.py"]
     },
     "ffuf-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/ffuf-mcp/server.py"]
     },
     "chainer-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/chainer-mcp/server.py"]
     },
     "watch-mcp": {
       "type": "local",
       "enabled": true,
-      "command": "/home/ankit/HuntMCP/.venv/bin/python",
+      "command": "./.venv/bin/python",
       "args": ["mcp-servers/watch-mcp/server.py"]
     }
   },

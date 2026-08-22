@@ -1107,6 +1107,14 @@ Not originally planned as its own phase, but this is what actually got built onc
 | Model provider gateway, no lock-in | ✅ Done — `mcp-servers/model_gateway.py`, wired into OpenCode via `scripts/select-model.sh` |
 | JWT secret fail-fast instead of silent placeholder | ✅ Done — `backend/internal/service/auth_service.go` |
 | Fixed pre-existing bugs found while wiring the above | ✅ Done — OpenCode exploit-agent's `bash: deny` contradicting its own instructions; huntbrain's `edit: deny` blocking `engagement.yaml`; `run_tool()`'s `capture_output` kwarg collision with watch-mcp's existing calls |
+| `watch-mcp` scope-gate | ✅ Done — recon/scan/exploit rely on the *agent* running `check-scope.sh` before calling their MCP tools, but `watch-mcp` can be triggered unattended by cron (`scripts/setup-watch.sh`) with no agent in the loop to do that. Added `scope_guard` checks directly inside `start_watch()`/`check_target()`, and rewrote the generated cron wrapper to call the real `check_target()` (which now enforces scope) instead of a divergent inline reimplementation that had neither scope-checking nor `tool_resolver`'s rate-limit handling |
+
+### Phase 2.7: Knowledge & Model Backlog — ✅ Complete
+
+| What | Status |
+|------|--------|
+| Local fine-tuned model as a provider | ✅ Done — `HUNTMCP_LOCAL_MODEL` env var overrides the `ollama` chain entry's model name (defaults to `whiterabbitneo`), so any locally-hosted fine-tune (e.g. a QLoRA'd model) is selectable with zero code changes: `HUNTMCP_MODEL=ollama HUNTMCP_LOCAL_MODEL=my-finetune` |
+| CVE search index | ✅ Done — `mcp-servers/writeup-mcp/cve_fetch.py` pulls CVEs from the NVD REST API for a keyword and writes them as writeup-shaped `.md` files (reuses the existing chunk/embed/ChromaDB pipeline rather than a parallel store); exposed as writeup-mcp's `fetch_cves(keyword, limit)` tool and `scripts/fetch-cves.sh`. Idempotent (already-fetched CVEs are skipped) and gitignored (`data/writeups/cve-*.md`) so auto-fetched dumps don't dilute the curated, git-tracked writeup set. scan-agent calls it in Phase 0 when a specific product/version is fingerprinted |
 
 ### Phase 3: Full Platform (Not started)
 

@@ -1,10 +1,11 @@
 import os
 import sys
-from mcp.server.fastmcp import FastMCP
 
+from chroma_client import collection_stats, query, upsert_chunks
 from chunker import chunk_writeup
+from cve_fetch import fetch_cves as _fetch_cves
 from embedder import embed
-from chroma_client import query, upsert_chunks, collection_stats
+from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("writeup-mcp")
 
@@ -12,6 +13,19 @@ WRITEUP_DIR = os.getenv(
     "WRITEUP_DIR",
     os.path.join(os.path.dirname(__file__), "../../data/writeups"),
 )
+
+
+def _embed_file(fpath: str) -> int:
+    """Chunk + embed one writeup file into ChromaDB. Returns chunk count."""
+    chunks = chunk_writeup(fpath)
+    if not chunks:
+        return 0
+    texts = [c["text"] for c in chunks]
+    ids = [c["id"] for c in chunks]
+    metadatas = [c["metadata"] for c in chunks]
+    embeddings = embed(texts)
+    upsert_chunks(ids, embeddings, texts, metadatas)
+    return len(chunks)
 
 
 @app.tool()
@@ -42,15 +56,10 @@ def ingest_writeup(filepath: str) -> str:
     resolved = filepath if os.path.isabs(filepath) else os.path.join(WRITEUP_DIR, filepath)
     if not os.path.exists(resolved):
         return f"File not found: {resolved}"
-    chunks = chunk_writeup(resolved)
-    if not chunks:
+    n = _embed_file(resolved)
+    if not n:
         return "No content found in writeup."
-    texts = [c["text"] for c in chunks]
-    ids = [c["id"] for c in chunks]
-    metadatas = [c["metadata"] for c in chunks]
-    embeddings = embed(texts)
-    upsert_chunks(ids, embeddings, texts, metadatas)
-    return f"Ingested {len(chunks)} chunks from {os.path.basename(resolved)}"
+    return f"Ingested {n} chunks from {os.path.basename(resolved)}"
 
 
 @app.tool()
@@ -62,18 +71,34 @@ def reindex_all() -> str:
         return "No .md files found in data/writeups/"
     total_chunks = 0
     for fname in md_files:
-        fpath = os.path.join(WRITEUP_DIR, fname)
-        chunks = chunk_writeup(fpath)
-        if not chunks:
-            continue
-        texts = [c["text"] for c in chunks]
-        ids = [c["id"] for c in chunks]
-        metadatas = [c["metadata"] for c in chunks]
-        embeddings = embed(texts)
-        upsert_chunks(ids, embeddings, texts, metadatas)
-        total_chunks += len(chunks)
+        total_chunks += _embed_file(os.path.join(WRITEUP_DIR, fname))
     stats = collection_stats()
     return f"Reindexed {len(md_files)} files ({total_chunks} chunks). DB now has {stats['count']} chunks."
+
+
+@app.tool()
+def fetch_cves(keyword: str, limit: int = 20) -> str:
+    """Fetch CVEs from NVD for a product/vendor keyword (e.g. 'wordpress',
+    'apache struts') and add them to the writeup RAG, embedding them
+    immediately so they're searchable via query_rag right away. Safe to
+    call repeatedly with the same keyword -- already-fetched CVEs are
+    skipped, not re-downloaded."""
+    try:
+        written = _fetch_cves(keyword, limit=limit, writeup_dir=WRITEUP_DIR)
+    except Exception as e:
+        return f"CVE fetch failed: {e}"
+
+    if not written:
+        return f"No new CVEs found for '{keyword}' (or all already ingested)."
+
+    total_chunks = 0
+    for fname in written:
+        total_chunks += _embed_file(os.path.join(WRITEUP_DIR, fname))
+
+    return (
+        f"Fetched and embedded {len(written)} new CVE(s) for '{keyword}' "
+        f"({total_chunks} chunks)."
+    )
 
 
 @app.tool()

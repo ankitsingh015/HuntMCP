@@ -1,13 +1,25 @@
-![Version](https://img.shields.io/badge/HuntMCP-v1.0.0-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+<div align="center">
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:6366f1,100:8b5cf6&height=180&section=header&text=HuntMCP&fontSize=64&fontColor=ffffff&animation=fadeIn&fontAlignY=38&desc=Multi-level%20AI%20Agent%20Orchestration%20for%20Authorized%20Bug%20Bounty%20Hunting&descAlignY=58&descSize=16" width="100%" alt="HuntMCP banner"/>
+
+[![CI](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![Harness](https://img.shields.io/badge/harness-OpenCode%20%2B%20Claude%20Code-purple)
 ![MCP Count](https://img.shields.io/badge/MCP-13%20servers-orange)
 ![Model Providers](https://img.shields.io/badge/models-no%20lock--in-yellow)
+![Last Commit](https://img.shields.io/github/last-commit/ankitsingh015/HuntMCP?color=blue)
+![Top Language](https://img.shields.io/github/languages/top/ankitsingh015/HuntMCP)
 
-# 🐾 HuntMCP
+<img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&size=18&pause=1200&color=8B5CF6&center=true&vCenter=true&width=750&lines=Recon+%E2%86%92+Scan+%E2%86%92+Exploit+%E2%86%92+Validate+%E2%86%92+Report;Runs+on+OpenCode+or+native+Claude+Code;Any+model+provider+%E2%80%94+no+lock-in;Scope-gated.+Self-improving.+For+authorized+testing+only." alt="Typing SVG"/>
 
-*Multi-level AI agent orchestration for authorized bug bounty hunting and pentesting.*
-Built on MCP. Runs on OpenCode *or* native Claude Code. Any model provider — no lock-in.
+</div>
+
+A single orchestrator (HuntBrain) delegates to specialist agents — Recon, Scan, Exploit,
+Chain-Planner, Report, plus unlimited dynamic specialists spawned on demand — that drive
+real security tools through MCP, validate their own findings before calling anything
+"confirmed," and write back what they learn after every engagement. Runs on
+[OpenCode](https://opencode.ai) or native [Claude Code](https://claude.com/claude-code).
+Any model provider, no lock-in.
 
 ---
 
@@ -15,6 +27,7 @@ Built on MCP. Runs on OpenCode *or* native Claude Code. Any model provider — n
 > scope file — see [Scope & Authorization](#scope--authorization) before pointing this at anything.
 
 ## Table of Contents
+- [Why HuntMCP](#why-huntmcp)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
@@ -28,6 +41,22 @@ Built on MCP. Runs on OpenCode *or* native Claude Code. Any model provider — n
 
 ---
 
+## Why HuntMCP
+
+Most agentic pentest tooling picks one of two extremes: a fixed scan-and-report pipeline
+with no real judgment, or a single do-everything LLM loop with no guardrails. HuntMCP is
+built on three decisions that fall in between:
+
+- **A validator, not a self-grader.** Scan agent output is always a *candidate* — nothing
+  is "confirmed" until exploit-agent independently reproduces it. No hallucinated finding
+  reaches a report.
+- **Safety that's structurally enforced, not prompted.** Scope is validated once against
+  `engagement.yaml` and then checked deterministically (no LLM call) before every tool
+  invocation — it can't be reasoned away mid-engagement.
+- **It gets better with every engagement.** Confirmed findings *and* closed false
+  positives both write back to a Lessons Registry, so the next hunt on a similar stack
+  starts smarter than the last one did.
+
 ## Features
 
 - **🤖 Multi-Level AI Orchestration** — Level 1 HuntBrain delegates to Level 2 specialists (Recon, Scan, Exploit, Chain-Planner, Report). Not a fixed pipeline — the AI decides what to run next based on what recon actually finds.
@@ -35,7 +64,7 @@ Built on MCP. Runs on OpenCode *or* native Claude Code. Any model provider — n
 - **🌐 No Model Lock-In** — `model_gateway.py` resolves a provider per agent role from an explicit override or an automatic fallback chain: Anthropic → OpenAI → DeepSeek → Groq → OpenRouter → local Ollama. Bring whichever API key you have.
 - **🔒 Scope-Gated by Design** — Authorization is validated once per engagement against `engagement.yaml`, then every Tier-2 tool call runs a cheap, deterministic (non-LLM) domain check via `scripts/check-scope.sh` before touching a host. No token spent re-verifying scope on every action; no way to silently drift out of scope either.
 - **⚡ Reactive Rate Limiting** — No blanket per-request delay. `tool_resolver.run_tool()` only reacts when it actually detects a block: a genuine rate limit gets one backoff-and-retry, a WAF/bot-detection block is surfaced to the agent to escalate with real bypass tooling instead of just sleeping.
-- **🧠 Three-Part Knowledge Layer** — Writeup RAG (ChromaDB + sentence-transformers, learns from public writeups), Memory DB (SQLite, per-target hunt history), and a self-improving Lessons Registry (`lessons-mcp`, structured technique write-back after every confirmed finding *and* every closed false positive).
+- **🧠 Three-Part Knowledge Layer** — Writeup RAG (ChromaDB + sentence-transformers, learns from public writeups *and* on-demand NVD CVE lookups for a fingerprinted product), Memory DB (SQLite, per-target hunt history), and a self-improving Lessons Registry (`lessons-mcp`, structured technique write-back after every confirmed finding *and* every closed false positive).
 - **🔗 Vulnerability Chaining** — `chainer-mcp` runs a DAG-based planner across 15 chain templates (IDOR+XSS→ATO, SSRF+cloud→credential access, upload+LFI→RCE...) and escalates severity when a chain lands.
 - **📚 Curated Payload Library** — 11 hand-reviewed payload sets (`knowledge/payloads/`) and matching wordlists (`knowledge/wordlists/`) for when nuclei/sqlmap/dalfox's automated pass comes back clean and a human-style bypass is needed.
 - **📝 Auto-Reporting** — Generates H1/Bugcrowd-ready reports: PoC, CVSS v3.1 vector, business impact, remediation.
@@ -92,7 +121,7 @@ full design, WSTG methodology mapping, and phase-by-phase build status.
 ### Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/HuntMCP.git
+git clone https://github.com/ankitsingh015/HuntMCP.git
 cd HuntMCP
 
 # Python deps — install per MCP server you plan to use, e.g.:
@@ -187,6 +216,7 @@ No model fine-tuning. Retrieval-Augmented Generation instead:
 |--------|-----------|--------|
 | Manual | On-demand | `scripts/ingest-writeup.sh --url ...` or `/ingest` command |
 | Cron | Configurable | `scripts/cron-fetch.sh` — HackerOne Hacktivity, GitHub writeup repos, blogs |
+| CVE lookup | On-demand, per fingerprinted product | `scripts/fetch-cves.sh <keyword>` or writeup-mcp's `fetch_cves(keyword)` tool — pulls from NVD, auto-embeds, idempotent (already-fetched CVEs are skipped) |
 
 Each writeup is chunked, embedded via `sentence-transformers`, and stored in ChromaDB. Agents
 query this before testing any vulnerability class, retrieving proven techniques from similar
@@ -215,14 +245,19 @@ entirely on the open-source tool chain.
 
 ## Model Providers
 
-Set an explicit override, or let the fallback chain pick automatically:
+Set an explicit override (a provider name, not a model string — the gateway picks each
+provider's default model), or let the fallback chain pick automatically:
 
 ```bash
 # Global override — every agent role uses this
-export HUNTMCP_MODEL=deepseek/deepseek-chat
+export HUNTMCP_MODEL=deepseek
 
 # Per-role override — only the exploit agent uses this
-export HUNTMCP_MODEL_EXPLOIT=anthropic/claude-opus-5
+export HUNTMCP_MODEL_EXPLOIT=anthropic
+
+# Local/self-hosted model via Ollama — including a fine-tuned one
+export HUNTMCP_MODEL=ollama
+export HUNTMCP_LOCAL_MODEL=my-qlora-finetune   # defaults to whiterabbitneo if unset
 
 # No override set → model_gateway.py walks the chain:
 # Anthropic → OpenAI → DeepSeek → Groq → OpenRouter → local Ollama
@@ -249,6 +284,9 @@ methodology:
 | **Chained** | Any combination the chain-planner's 15 DAG templates recognize | chainer-mcp |
 
 ## Project Structure
+
+<details>
+<summary>Click to expand full directory layout</summary>
 
 ```
 HuntMCP/
@@ -280,9 +318,11 @@ HuntMCP/
 └── ARCHITECTURE.md               Full system design + phase-by-phase build status
 ```
 
+</details>
+
 ## License
 
-MIT — use freely, adapt for your project, no attribution required.
+[MIT](LICENSE) — use freely, adapt for your project, no attribution required.
 
 ---
 

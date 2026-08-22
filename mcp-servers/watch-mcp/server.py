@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from scope_guard import NoEngagementFile, is_in_scope, load_engagement
 from tool_resolver import run_tool
 
 app = FastMCP("watch-mcp")
@@ -61,8 +62,33 @@ def init_db():
     conn.close()
 
 
+def _scope_error(target: str) -> str | None:
+    """Returns a BLOCKED message if target isn't covered by engagement.yaml, else None.
+
+    Unlike recon/scan/exploit (where the calling agent runs check-scope.sh before
+    ever invoking the MCP tool), watch-mcp can be triggered unattended by cron
+    (scripts/setup-watch.sh) with no agent in the loop to enforce that convention.
+    The check has to live in the tool itself.
+    """
+    try:
+        engagement = load_engagement()
+    except (NoEngagementFile, RuntimeError) as e:
+        return f"BLOCKED: {e}"
+    if not is_in_scope(target, engagement):
+        return (
+            f"BLOCKED: {target} is not in the in_scope list for this engagement "
+            f"({engagement.target}). Refusing to watch/check it — update "
+            "engagement.yaml if this target should be covered."
+        )
+    return None
+
+
 @app.tool()
 def start_watch(target: str, interval_hours: int = 6) -> str:
+    err = _scope_error(target)
+    if err:
+        return err
+
     conn = get_db()
     existing = conn.execute(
         "SELECT target FROM watched_targets WHERE target = ?", (target,)
@@ -132,6 +158,10 @@ def list_watched() -> str:
 
 @app.tool()
 def check_target(target: str) -> str:
+    err = _scope_error(target)
+    if err:
+        return err
+
     conn = get_db()
     watched = conn.execute(
         "SELECT target, interval_hours FROM watched_targets WHERE target = ? AND active = 1",

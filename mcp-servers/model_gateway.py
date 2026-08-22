@@ -73,6 +73,11 @@ def _provider_by_name(name: str) -> tuple[str, str, str, str | None] | None:
 
 def _build_config(entry: tuple[str, str, str, str | None], source: str) -> ProviderConfig:
     provider, key_env, default_model, base_url_env = entry
+    if provider == "ollama":
+        # Any locally-hosted model works here, not just the whiterabbitneo
+        # default — e.g. a QLoRA fine-tune served through Ollama. No code
+        # change needed to point at one, just this env var.
+        default_model = os.getenv("HUNTMCP_LOCAL_MODEL", default_model)
     return ProviderConfig(
         name=provider,
         default_model=default_model,
