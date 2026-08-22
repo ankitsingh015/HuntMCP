@@ -1,14 +1,16 @@
 <div align="center">
 
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:6366f1,100:8b5cf6&height=180&section=header&text=HuntMCP&fontSize=64&fontColor=ffffff&animation=fadeIn&fontAlignY=38&desc=Multi-level%20AI%20Agent%20Orchestration%20for%20Authorized%20Bug%20Bounty%20Hunting&descAlignY=58&descSize=16" width="100%" alt="HuntMCP banner"/>
+
 [![CI](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![Harness](https://img.shields.io/badge/harness-OpenCode%20%2B%20Claude%20Code-purple)
 ![MCP Count](https://img.shields.io/badge/MCP-13%20servers-orange)
 ![Model Providers](https://img.shields.io/badge/models-no%20lock--in-yellow)
+![Last Commit](https://img.shields.io/github/last-commit/ankitsingh015/HuntMCP?color=blue)
+![Top Language](https://img.shields.io/github/languages/top/ankitsingh015/HuntMCP)
 
-# 🐾 HuntMCP
-
-**Multi-level AI agent orchestration for authorized bug bounty hunting and pentesting.**
+<img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&size=18&pause=1200&color=8B5CF6&center=true&vCenter=true&width=750&lines=Recon+%E2%86%92+Scan+%E2%86%92+Exploit+%E2%86%92+Validate+%E2%86%92+Report;Runs+on+OpenCode+or+native+Claude+Code;Any+model+provider+%E2%80%94+no+lock-in;Scope-gated.+Self-improving.+For+authorized+testing+only." alt="Typing SVG"/>
 
 </div>
 
@@ -277,6 +279,9 @@ methodology:
 
 ## Project Structure
 
+<details>
+<summary>Click to expand full directory layout</summary>
+
 ```
 HuntMCP/
 ├── mcp-servers/               13 FastMCP servers (one per tool) + shared libs:
@@ -306,6 +311,8 @@ HuntMCP/
 ├── CLAUDE.md / AGENTS.md         Coding-agent guidance for this repo
 └── ARCHITECTURE.md               Full system design + phase-by-phase build status
 ```
+
+</details>
 
 ## License
 
