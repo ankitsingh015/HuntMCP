@@ -13,17 +13,19 @@ HuntMCP is not a script that chains tools in a fixed order. It is a **multi-leve
 
 ## Current Implementation Status
 
-This doc describes the target design. As of 2026-08, actual build status (kept in sync with [AGENTS.md](AGENTS.md)):
+This doc describes the target design. As of 2026-08, actual build status (see the full
+phase-by-phase "Build Plan" further down for detail):
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Phase 1 — Local system (agents, MCP servers, knowledge base) | ✅ Built | 5 agents, 12 MCP servers, payloads/wordlists seeded |
-| Phase 2 — Go backend (API, auth, pgvector) | ✅ Built | See `backend/` — Gin + PostgreSQL/pgvector, JWT auth, `/mcp` endpoint |
-| Phase 3 — Web platform (Next.js dashboard, community PRs, CI/CD auto-train) | ❌ Not started | Design only, see below |
-| Agent instruction depth (`.opencode/agents/*.md`) | ⚠️ Skeletal | Each agent is 45-65 lines with phase *names*, not the full technique library — see "Methodology Engine" below |
-| Self-improvement / lessons registry (`chat-logs/lessons-learned.md`) | ❌ Not started | Planned — see "Methodology Engine" |
+| Phase 1 — Local system (agents, MCP servers, knowledge base) | ✅ Built | 6 agents (incl. chain-planner), 13 MCP servers, dual OpenCode + Claude Code harness, payloads/wordlists seeded |
+| Phase 2 — Go backend (API, auth, pgvector) | ✅ Built | See `backend/` — Gin + PostgreSQL/pgvector, JWT auth, `/mcp` endpoint. Not yet wired to the local agent system — see "World-project integration map" |
+| Phase 2.5-2.7 — Methodology depth, harness/safety hardening, knowledge/model backlog | ✅ Built | Scope gate, reactive rate limiting, model gateway, lessons registry, CVE search index — see Build Plan below |
+| Phase 3 — Web platform (Next.js dashboard, community PRs, CI/CD auto-train) | ❌ Not started | Design only, see Build Plan below |
+| Self-improvement / lessons registry (`lessons-mcp`) | ✅ Built | Real write-back on every confirmed finding and closed false positive, not a documentation placeholder |
 
-The gap to close next is agent depth, not new infrastructure: the Go backend and MCP plumbing are ahead of what the agents actually know how to do with them.
+The gap to close next is Phase 3 (web platform) and the still-unpulled-in world-project
+integrations below — not agent depth or core infrastructure, both of which are done.
 
 ## Scope & Authorization (read before running anything)
 
