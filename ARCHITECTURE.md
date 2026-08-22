@@ -1179,6 +1179,67 @@ posthog/scarf) — even opt-in, a tool that processes real target/engagement dat
 caution before wiring in any outbound analytics, and it isn't solving a problem HuntMCP
 actually has.
 
+### Phase 2.10: Full World-Research Backlog (Not started)
+
+Everything else distilled from the 2026-08-22 100+-repo survey (`RESEARCH-TODO.md`, private/
+gitignored — 227 repos surveyed, 22 deep-dived) that isn't already covered by Phase 2.7/2.8/2.9
+above. Grouped by kind, not priority-ranked — treat this as the full menu, not a sequence.
+
+**Validation & quality — extends the Phase 2.9 confidence-calibration work:**
+
+| What | Idea | Source |
+|------|------|--------|
+| Cross-model second opinion | Before a HIGH-confidence finding is finalized, optionally shell out to a *different* provider than the one that found it (via `model_gateway.py`'s existing multi-provider chain) for independent review — same infra, used for cross-validation instead of failover | `trailofbits/skills` `second-opinion` |
+| `mantis-dedupe` / `mantis-threat-model` style skills | A dedicated dedup-check skill (has this exact finding already been reported this engagement?) and a threat-modeling skill (what's actually at risk here, not just what's technically true) as explicit steps rather than implicit agent judgment | `google/mantis` |
+| Sandbox abstraction reference | `sandboxes/gvisor.py` / `sandboxes/microsandbox.py` in `google/mantis`'s `reference/` — a second concrete implementation to compare against Strix's Docker sandboxing (Phase 2.9) when exploit-agent's sandboxing item gets built | `google/mantis` |
+| LLM-guided traversal for future static-analysis skill | Instead of a fixed AST/regex ruleset, let the LLM decide what code to inspect next by walking the actual call graph — relevant if the Phase 2.8 SAST idea (`semgrep`) ever grows a custom analysis pass | `protectai/vulnhuntr` (project itself is stale/dead, technique is not) |
+
+**Self-scanning HuntMCP's own agent-generated surface:**
+
+| What | Idea | Source |
+|------|------|--------|
+| Scan agent-generated skills/tools before trusting them | Once the "self-expanding toolkit" mechanic exists (an agent authoring new MCP servers/skills when it hits a technique gap — already in the Methodology Engine design), those files are a real, unreviewed attack surface (prompt injection, supply-chain risk) the moment they're agent-authored rather than human-reviewed. A lightweight CI-style check against the OWASP Skill/MCP Top 10 patterns, run on any new/changed `skills/*/SKILL.md` or `mcp-servers/*`, closes this before it's a problem instead of after | `NVIDIA/SkillSpector`, `snyk/agent-scan`, `Tencent/AI-Infra-Guard` — three independent projects converging on the same category confirms it's a real, not speculative, gap |
+
+**Benchmarking — a real number instead of "seems to work":**
+
+| What | Idea | Source |
+|------|------|--------|
+| Score exploit-agent against a standardized benchmark | XBOW's `validation-benchmarks` suite is public even though XBOW itself is closed-source; `straylabs-ai/deadend-cli` already demonstrates 81% on it in full black-box mode using only open/self-hosted models. Running HuntMCP's exploit-agent against the same suite gives an apples-to-apples effectiveness number instead of only real-engagement anecdote | `xbow-engineering/validation-benchmarks`, `straylabs-ai/deadend-cli` |
+
+**Concrete tool/source additions to already-known backlog items:**
+
+| What | Idea | Source |
+|------|------|--------|
+| `bloodhound-mcp` for Active Directory | AD attack-path analysis — HuntMCP currently has zero AD coverage; adds specificity to the existing "mcp-security-hub not yet pulled in" item | `FuzzingLabs/mcp-security-hub` |
+| `ghidra-mcp` / `radare2-mcp` for binary analysis | Zero current coverage for any binary-format target; same catalog as above | `FuzzingLabs/mcp-security-hub` |
+| EPSS + CISA KEV as CVE prioritization signals | Cheap, high-signal inputs (exploit-probability score + known-actively-exploited flag) missing from the Phase 2.7 CVE search index's NVD-only source | `mukul975/cve-mcp-server` (21-source catalog — a checklist, not a dependency to adopt wholesale) |
+| Config-profile pattern for `--quick`/`--deep` modes | `reconftw_full.cfg` / `reconftw_quick.cfg` / `reconftw_stealth.cfg` — worth comparing against HuntMCP's own quick-mode tool selection for gaps once ReconFTW (already a known "not yet pulled in" item) is actually wrapped | `six2dez/reconftw` |
+
+**Skills to add (formalizing the earlier candidate-skills list):**
+
+| What | Idea | Source |
+|------|------|--------|
+| Playbooks cite real disclosed H1 reports as precedent | Each vuln-class skill file references actual disclosed HackerOne reports for that weakness class, not just generic technique description — concrete precedent reads as more credible in a submitted report too | `MyuriKanao/src-hunter-skill` (2,887 disclosed reports pre-organized by weakness class) |
+| Skill-with-checked-in-eval-file | Any HuntMCP skill beyond a static reference doc gets a small `evals/evals.json` alongside it — cheap regression check when the skill file is edited later | `wgpsec/AboutSecurity` |
+| `writing-great-skills` meta-skill | A skill about how to write HuntMCP's own future skills consistently (frontmatter conventions, when-to-use/when-not-to-use sections) — write this *before* the skills-restructuring work (Phase 2.8) starts, not after | `GreyDGL/PentestGPT` |
+| `AGENT-BRIEF.md` + `OUT-OF-SCOPE.md` pairing per engagement | Explicit out-of-scope documentation alongside the in-scope `engagement.yaml`, not just an implicit "not in the list" — makes accidental scope creep easier to catch on review | `GreyDGL/PentestGPT` `.agents/skills/triage/` |
+| GraphQL, JWT/OAuth/SAML, request smuggling, prototype pollution, SSTI, CI/CD & dependency-confusion, Kubernetes/container escape, Active Directory, race conditions, WebSocket, mobile SSL pinning | Clear vuln-class coverage gaps vs. current `master-pentest-prompt.md` — see the ~95-topic catalog | `yaklang/hack-skills` |
+
+**Architecture references (cite, don't necessarily adopt):**
+
+| What | Idea | Source |
+|------|------|--------|
+| `plan → loop → memory → trace → audit` module split | Cleaner decomposition than HuntBrain's current single-file orchestration, worth comparing against if HuntBrain is ever refactored | `GreyDGL/PentestGPT` |
+| `worker_pool.py` | A concrete reference implementation to read before designing HuntMCP's own parallel-fan-out rework (already a known backlog item, previously design-only) | `GH05TCREW/pentestagent` |
+| `Flow → Task → SubTask → Action → {Artifact, Memory}` data model | Cleaner formalization of the Flow/Task/Action decomposition HuntBrain already does informally — worth a look only if the Memory DB schema is revisited. **Explicitly not adopting the rest of this project** (React UI, Neo4j, Grafana/VictoriaMetrics/Jaeger/Loki stack) — team-scale SaaS infra, wrong shape for a solo operator | `vxcontrol/pentagi` (user-confirmed: data model only, reject the multi-team stack) |
+| Agent-pattern naming vocabulary | `agents_as_tools`, `deterministic`, `forcing_tool_use`, `input_guardrails`/`output_guardrails`, `llm_as_a_judge`, `handoffs` — useful shared terminology, not a dependency (project is archived/discontinued, folded into a paid successor) | `aliasrobotics/cai` |
+| `.planning/` spec-driven process | `PROJECT.md`/`REQUIREMENTS.md`/`ROADMAP.md`/`STATE.md` plus per-phase `PLAN.md`/`SUMMARY.md` — a lighter-weight planning convention worth considering for smaller features instead of a full `ARCHITECTURE.md` rewrite each time | `six2dez/burp-ai-agent` |
+| Telemetry-off-by-default privacy bar | If HuntMCP ever adds any usage telemetry (e.g. for the lessons registry, or a future hosted backend), this is the bar to match: off by default, explicit opt-in, respects `DO_NOT_TRACK`, "raw prompts/targets/credentials/tool output never transmitted" even when on | `PurpleAILAB/Decepticon`'s `TELEMETRY.md` |
+| Topic-coverage checklist | 817 skill topics mapped to MITRE ATT&CK/NIST CSF/ATLAS/D3FEND — use to spot HuntMCP methodology gaps by skimming topic names, not as a content source (bulk/unverified, size makes hand-review of each one impractical) | `mukul975/Anthropic-Cybersecurity-Skills` (star count itself is anomalous — see `RESEARCH-TODO.md`'s caveat — judged on content only) |
+
+**Confirmed, no action needed:** `garak`/`PyRIT` remain the right picks for Phase 14.5/14.6 (AI/LLM
+surface testing) when that gets built — this survey found no credible newer competitor to either.
+
 ### Phase 3: Full Platform (Not started)
 
 | Sprint | What | Deliverable |
