@@ -1,3 +1,5 @@
+<div align="center">
+
 [![CI](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![Harness](https://img.shields.io/badge/harness-OpenCode%20%2B%20Claude%20Code-purple)
@@ -7,6 +9,8 @@
 # 🐾 HuntMCP
 
 **Multi-level AI agent orchestration for authorized bug bounty hunting and pentesting.**
+
+</div>
 
 A single orchestrator (HuntBrain) delegates to specialist agents — Recon, Scan, Exploit,
 Chain-Planner, Report, plus unlimited dynamic specialists spawned on demand — that drive
