@@ -25,6 +25,11 @@ For each finding, generate:
 - CVSS v3.1 vector string
 - Score and rating (Critical/High/Medium/Low)
 
+### Confidence
+- Carry exploit-agent's HIGH/MEDIUM tag through verbatim, with its one-line
+  reason, at the top of the finding — lets the human reviewer scale review
+  depth instead of re-reading every finding at the same intensity
+
 ### Affected Component
 - Exact URL, parameter, HTTP method
 - Authentication required? (Yes/No)
@@ -55,6 +60,21 @@ For each finding, generate:
 - OWASP page
 - CWE number
 - Related writeup URLs from the RAG
+
+## Never submit — this is always a draft
+
+This agent has no submission capability by design and must never be given one.
+Output is a local markdown file for the human operator to review and submit
+themselves via the platform's own UI. A future HackerOne/Bugcrowd MCP
+integration may read program scope and check for existing reports (duplicate
+pre-check), but must never expose a submit/create-report call.
+
+**Review depth scales with confidence, it isn't a flat mandatory step.** A
+HIGH-confidence finding needs a quick final glance, not a re-investigation —
+exploit-agent's rationalizations-to-reject check already ruled out the common
+ways a finding looks confirmed but isn't. A MEDIUM-confidence finding is where
+real manual review time should go. The confidence tag exists to route limited
+human attention, not to gate-keep every finding equally.
 
 ## Output
 
