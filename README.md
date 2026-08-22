@@ -1,13 +1,19 @@
-![Version](https://img.shields.io/badge/HuntMCP-v1.0.0-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+[![CI](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![Harness](https://img.shields.io/badge/harness-OpenCode%20%2B%20Claude%20Code-purple)
 ![MCP Count](https://img.shields.io/badge/MCP-13%20servers-orange)
 ![Model Providers](https://img.shields.io/badge/models-no%20lock--in-yellow)
 
 # 🐾 HuntMCP
 
-*Multi-level AI agent orchestration for authorized bug bounty hunting and pentesting.*
-Built on MCP. Runs on OpenCode *or* native Claude Code. Any model provider — no lock-in.
+**Multi-level AI agent orchestration for authorized bug bounty hunting and pentesting.**
+
+A single orchestrator (HuntBrain) delegates to specialist agents — Recon, Scan, Exploit,
+Chain-Planner, Report, plus unlimited dynamic specialists spawned on demand — that drive
+real security tools through MCP, validate their own findings before calling anything
+"confirmed," and write back what they learn after every engagement. Runs on
+[OpenCode](https://opencode.ai) or native [Claude Code](https://claude.com/claude-code).
+Any model provider, no lock-in.
 
 ---
 
@@ -15,6 +21,7 @@ Built on MCP. Runs on OpenCode *or* native Claude Code. Any model provider — n
 > scope file — see [Scope & Authorization](#scope--authorization) before pointing this at anything.
 
 ## Table of Contents
+- [Why HuntMCP](#why-huntmcp)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
@@ -27,6 +34,22 @@ Built on MCP. Runs on OpenCode *or* native Claude Code. Any model provider — n
 - [License](#license)
 
 ---
+
+## Why HuntMCP
+
+Most agentic pentest tooling picks one of two extremes: a fixed scan-and-report pipeline
+with no real judgment, or a single do-everything LLM loop with no guardrails. HuntMCP is
+built on three decisions that fall in between:
+
+- **A validator, not a self-grader.** Scan agent output is always a *candidate* — nothing
+  is "confirmed" until exploit-agent independently reproduces it. No hallucinated finding
+  reaches a report.
+- **Safety that's structurally enforced, not prompted.** Scope is validated once against
+  `engagement.yaml` and then checked deterministically (no LLM call) before every tool
+  invocation — it can't be reasoned away mid-engagement.
+- **It gets better with every engagement.** Confirmed findings *and* closed false
+  positives both write back to a Lessons Registry, so the next hunt on a similar stack
+  starts smarter than the last one did.
 
 ## Features
 
@@ -92,7 +115,7 @@ full design, WSTG methodology mapping, and phase-by-phase build status.
 ### Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/HuntMCP.git
+git clone https://github.com/ankitsingh015/HuntMCP.git
 cd HuntMCP
 
 # Python deps — install per MCP server you plan to use, e.g.:
@@ -282,7 +305,7 @@ HuntMCP/
 
 ## License
 
-MIT — use freely, adapt for your project, no attribution required.
+[MIT](LICENSE) — use freely, adapt for your project, no attribution required.
 
 ---
 
