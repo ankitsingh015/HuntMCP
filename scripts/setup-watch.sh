@@ -15,17 +15,17 @@ if [ ! -f "$PYTHON" ]; then
     PYTHON="python3"
 fi
 
-WATCH_MCP_SERVER="${PROJECT_DIR}/mcp-servers/watch-mcp/server.py"
-
 echo "Setting up HuntMCP watch cron (interval: ${INTERVAL}h)..."
 echo "  Project: $PROJECT_DIR"
 echo "  Python: $PYTHON"
 echo "  Cron file: $CRON_FILE"
 
 # Create the cron entry
-# The watch check works by calling watch-mcp's check_target for each watched target.
-# Since MCP servers can't be called directly from cron, we use a wrapper that
-# connects to the watch database directly.
+# The watch check works by calling watch-mcp's own check_target() for each
+# watched target directly (not a reimplementation) — that's what wires in
+# the engagement.yaml scope check and tool_resolver's reactive rate-limit
+# handling automatically, and keeps the cron path from drifting out of sync
+# with the real MCP tool logic.
 cat > /tmp/huntmcp-watch-cron.sh << 'WRAPPER'
 #!/bin/bash
 # huntmcp-watch-cron.sh — Check all active watched targets
@@ -35,50 +35,31 @@ set -euo pipefail
 PROJECT_DIR="{{PROJECT_DIR}}"
 DB="${PROJECT_DIR}/data/watch.db"
 PYTHON="{{PYTHON}}"
+LOG="${PROJECT_DIR}/logs/watch-cron.log"
+mkdir -p "$(dirname "$LOG")"
 
 if [ ! -f "$DB" ]; then
     exit 0
 fi
 
-# Get all active targets
-TARGETS=$($PYTHON -c "
-import sqlite3, sys
-conn = sqlite3.connect('$DB')
-rows = conn.execute('SELECT target FROM watched_targets WHERE active = 1').fetchall()
+echo "[$(date)] Watch cron: checking targets..." >> "$LOG"
+
+cd "$PROJECT_DIR"
+"$PYTHON" -c "
+import sqlite3
+import sys
+sys.path.insert(0, 'mcp-servers/watch-mcp')
+import server
+
+server.init_db()
+conn = sqlite3.connect(server.DB_PATH)
+targets = [r[0] for r in conn.execute('SELECT target FROM watched_targets WHERE active = 1')]
 conn.close()
-for r in rows:
-    print(r[0])
-" 2>/dev/null)
 
-if [ -z "$TARGETS" ]; then
-    exit 0
-fi
-
-echo "[$(date)] Watch cron: checking targets..."
-LOG="${PROJECT_DIR}/logs/watch-cron.log"
-mkdir -p "$(dirname "$LOG")"
-
-echo "$TARGETS" | while read -r target; do
-    echo "[$(date)] Checking $target..." >> "$LOG"
-    # We can just log and let opencode handle it, or use subfinder/httpx directly
-    $PYTHON -c "
-import sqlite3, json, subprocess, sys
-conn = sqlite3.connect('$DB')
-# Count new subdomains since last snapshot
-row = conn.execute('SELECT data FROM snapshots WHERE target = ? ORDER BY id DESC LIMIT 1', ('$target',)).fetchone()
-previous = set(json.loads(row['data'])['subdomains']) if row else set()
-
-result = subprocess.run(['subfinder', '-d', '$target', '-silent'], capture_output=True, text=True, timeout=120)
-current = set(result.stdout.strip().splitlines()) if result.stdout.strip() else set()
-new = current - previous
-if new:
-    print(f'$target: {len(new)} new subdomain(s): {', '.join(sorted(new))}')
-    conn.execute('INSERT INTO watch_events (target, event_type, description, severity, details) VALUES (?, ?, ?, ?, ?)',
-        ('$target', 'new_subdomain', f'{len(new)} new subdomain(s) found', 'medium', json.dumps({'subdomains': list(new)})))
-conn.commit()
-conn.close()
-" 2>> "$LOG" || true
-done
+for t in targets:
+    print(f'--- {t} ---')
+    print(server.check_target(t))
+" >> "$LOG" 2>&1
 
 echo "[$(date)] Watch cron: done." >> "$LOG"
 WRAPPER

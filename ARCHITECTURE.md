@@ -1107,6 +1107,14 @@ Not originally planned as its own phase, but this is what actually got built onc
 | Model provider gateway, no lock-in | ✅ Done — `mcp-servers/model_gateway.py`, wired into OpenCode via `scripts/select-model.sh` |
 | JWT secret fail-fast instead of silent placeholder | ✅ Done — `backend/internal/service/auth_service.go` |
 | Fixed pre-existing bugs found while wiring the above | ✅ Done — OpenCode exploit-agent's `bash: deny` contradicting its own instructions; huntbrain's `edit: deny` blocking `engagement.yaml`; `run_tool()`'s `capture_output` kwarg collision with watch-mcp's existing calls |
+| `watch-mcp` scope-gate | ✅ Done — recon/scan/exploit rely on the *agent* running `check-scope.sh` before calling their MCP tools, but `watch-mcp` can be triggered unattended by cron (`scripts/setup-watch.sh`) with no agent in the loop to do that. Added `scope_guard` checks directly inside `start_watch()`/`check_target()`, and rewrote the generated cron wrapper to call the real `check_target()` (which now enforces scope) instead of a divergent inline reimplementation that had neither scope-checking nor `tool_resolver`'s rate-limit handling |
+
+### Phase 2.7: Knowledge & Model Backlog (Not started)
+
+| What | Idea | Notes |
+|------|------|-------|
+| CVE search index | Ingest NVD / CVE Details data into the Writeup RAG (or a dedicated ChromaDB collection) so exploit-agent's escalation step and scan-agent's nuclei template selection can be grounded in known CVEs for a detected tech stack/version, not just public writeups | Public data, no target interaction — safe to build any time |
+| Local fine-tuned model as a provider | Add a QLoRA/fine-tuned local model (e.g. via Ollama) as another `model_gateway.py` provider entry, same shape as the existing `ollama` chain entry | No new architecture needed — the gateway already supports local providers, this is just adding a named model option |
 
 ### Phase 3: Full Platform (Not started)
 
