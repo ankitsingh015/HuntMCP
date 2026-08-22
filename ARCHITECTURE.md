@@ -206,7 +206,7 @@ What HuntMCP borrows from each project researched, and current status:
 
 | Project | What we take from it | Status |
 |---------|----------------------|--------|
-| [`shuvonsec/claude-bug-bounty`](https://github.com/shuvonsec/claude-bug-bounty) | `brain.py` multi-provider fallback pattern (✅ ported as `mcp-servers/model_gateway.py`); JSONL hunt-memory format (informed `lessons-mcp`'s design, though ours is markdown not JSONL); "7-Question Gate" validator (informed exploit-agent's proof-capsule validation step) | Model gateway ported; the rest are design references |
+| [`shuvonsec/claude-bug-bounty`](https://github.com/shuvonsec/claude-bug-bounty) | `brain.py` multi-provider fallback pattern (✅ ported as `mcp-servers/model_gateway.py`); JSONL hunt-memory format (informed `lessons-mcp`'s design, though ours is markdown not JSONL); "7-Question Gate" validator (informed exploit-agent's proof-capsule validation step). Re-researched 2026-08-22 (4.3k★, actively maintained, ships its own `docs/CAPABILITY-GAPS.md` self-audit) for concrete next items — see Phase 2.8 below | Model gateway ported; Phase 2.8 tracks the rest as concrete backlog, not just design references |
 | [`elementalsouls/Claude-BugHunter`](https://github.com/elementalsouls/Claude-BugHunter) | Patterns embedded directly in per-vuln-class skill files instead of a lookup DB; cross-harness dual-install model | Design reference — informs how `knowledge/master-pentest-prompt.md` should eventually split per vuln class |
 | [`0xSteph/pentest-ai-agents`](https://github.com/0xSteph/pentest-ai-agents) | Tier 1 (advisory) / Tier 2 (execution, scope-validated) agent split; `_scope-guard.md` hard-refusal list; defense-paired-with-offense; swarm orchestrator | Design reference — see Scope & Authorization section above |
 | [XBOW](https://xbow.com/) | Explorer/validator split; persistent attack-surface manager; thousands of narrow short-lived tasks (not literal agent processes) | Informs the Methodology Engine's planned parallel-fan-out rework |
@@ -1117,6 +1117,40 @@ Not originally planned as its own phase, but this is what actually got built onc
 |------|--------|
 | Local fine-tuned model as a provider | ✅ Done — `HUNTMCP_LOCAL_MODEL` env var overrides the `ollama` chain entry's model name (defaults to `whiterabbitneo`), so any locally-hosted fine-tune (e.g. a QLoRA'd model) is selectable with zero code changes: `HUNTMCP_MODEL=ollama HUNTMCP_LOCAL_MODEL=my-finetune` |
 | CVE search index | ✅ Done — `mcp-servers/writeup-mcp/cve_fetch.py` pulls CVEs from the NVD REST API for a keyword and writes them as writeup-shaped `.md` files (reuses the existing chunk/embed/ChromaDB pipeline rather than a parallel store); exposed as writeup-mcp's `fetch_cves(keyword, limit)` tool and `scripts/fetch-cves.sh`. Idempotent (already-fetched CVEs are skipped) and gitignored (`data/writeups/cve-*.md`) so auto-fetched dumps don't dilute the curated, git-tracked writeup set. scan-agent calls it in Phase 0 when a specific product/version is fingerprinted |
+
+### Phase 2.8: claude-bug-bounty-derived Backlog (Not started)
+
+Researched from [`shuvonsec/claude-bug-bounty`](https://github.com/shuvonsec/claude-bug-bounty)
+(4.3k★, actively maintained) on 2026-08-22, including its own `docs/CAPABILITY-GAPS.md`
+self-audit. Ranked by leverage for *this* project's actual use case (real H1 hunting,
+solo operator) rather than raw feature count.
+
+**High priority — directly closes a flagged gap or the user's stated H1 duplicate problem:**
+
+| What | Idea | Notes |
+|------|------|-------|
+| Scope enforcement via Claude Code hooks | Add a `PreToolUse` hook (`.claude/settings.json` / `hooks/hooks.json`-style) that calls `scope_guard.is_in_scope()` and blocks the tool call outright for any Bash/MCP call touching a host outside `engagement.yaml` | Strictly stronger than the current design: today, scope compliance depends on each agent's system-prompt instruction to run `check-scope.sh` first — an LLM could in principle skip it. A hook makes it structurally unskippable instead of instructed |
+| HackerOne MCP server | Port the idea of `mcp/hackerone-mcp/server.py` — pull a program's scope directly into `engagement.yaml` instead of hand-transcribing it, and (if H1's API exposes it) check for existing/duplicate reports on a finding before it's written up | Directly targets the user's stated problem: reducing HackerOne duplicates |
+| OOB interaction listener | Wrap `interactsh-client` (or similar) as a new `oob-mcp` server: generate a per-injection callback URL, hand it to exploit-agent for blind SSRF/XXE/SQLi/RCE payloads, correlate inbound DNS/HTTP/SMTP hits back to the finding | Was the #1 highest-leverage gap in claude-bug-bounty's own audit. Currently HuntMCP's only OOB path is optional Burp Collaborator — this removes that dependency |
+| WAF bypass tooling | Wire `whatwaf`/`unwaf`/`byp4xx` (or equivalent) as the actual escalation path when `tool_resolver.classify_block()` returns `"waf"` | Closes a gap flagged and left open during Phase 2.6: reactive rate-limiting detects a WAF block and surfaces it, but nothing automated actually attempts a bypass yet |
+
+**Medium priority — real coverage gaps, no dependency conflicts:**
+
+| What | Idea | Notes |
+|------|------|-------|
+| Secrets/credential scanning | A `secrets-mcp` wrapping `gitleaks`/`trufflehog`-style scanning over katana-crawled JS and exposed `.git`/`.env` paths | HuntMCP has zero secrets-scanning capability today |
+| Structured audit log | A per-engagement `data/audit.jsonl` (or SQLite) logging every Tier-2 tool call — target, tool, args, scope-check result, timestamp | No audit trail exists today; matters for reviewing/debugging a real engagement after the fact, and for eventual Cyber Verification Program review |
+| Visual triage / screenshot gallery | `httpx -screenshot` (already available in the underlying httpx binary, not yet exposed by `httpx-mcp`) into a self-contained HTML gallery, doubling as report PoC evidence | Cheap — no new dependency, `httpx-mcp` just needs one more flag exposed |
+| Methodology as Claude Code Skills | Split `knowledge/master-pentest-prompt.md`'s `[PHASE N]` sections into individual `skills/<topic>/SKILL.md` files, matching claude-bug-bounty's `skills/` layout and Claude Code's actual Skill system (available in this environment today) | Cleaner than one big grep-able file; skills load progressively instead of requiring agents to grep line ranges |
+| Automated test suite | A real `tests/` + pytest suite for `mcp-servers/` — this session's testing has all been manual (`py_compile`, stubbed-import scripts, one-off functional runs) | claude-bug-bounty has 60+ test files; HuntMCP has none |
+
+**Lower priority — coverage expansion, larger scope commitment:**
+
+| What | Idea | Notes |
+|------|------|-------|
+| SAST source audit | `semgrep`-based source scanning for JS pulled during recon | Adds source-level static analysis alongside HuntMCP's current pure black-box/DAST approach — a philosophy shift worth confirming before building |
+| Web3/smart-contract auditing | Slither/Aderyn/Echidna/Mythril wrapper + a `web3-auditor` specialist | Whole new domain, not a small addition — only worth it if in-scope for actual target programs |
+| Mobile (Android/iOS) testing | APK decompile, Frida/objection scripting, MobSF | Also a new domain; HuntMCP is currently web-only |
 
 ### Phase 3: Full Platform (Not started)
 
