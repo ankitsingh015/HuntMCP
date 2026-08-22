@@ -244,14 +244,19 @@ entirely on the open-source tool chain.
 
 ## Model Providers
 
-Set an explicit override, or let the fallback chain pick automatically:
+Set an explicit override (a provider name, not a model string — the gateway picks each
+provider's default model), or let the fallback chain pick automatically:
 
 ```bash
 # Global override — every agent role uses this
-export HUNTMCP_MODEL=deepseek/deepseek-chat
+export HUNTMCP_MODEL=deepseek
 
 # Per-role override — only the exploit agent uses this
-export HUNTMCP_MODEL_EXPLOIT=anthropic/claude-opus-5
+export HUNTMCP_MODEL_EXPLOIT=anthropic
+
+# Local/self-hosted model via Ollama — including a fine-tuned one
+export HUNTMCP_MODEL=ollama
+export HUNTMCP_LOCAL_MODEL=my-qlora-finetune   # defaults to whiterabbitneo if unset
 
 # No override set → model_gateway.py walks the chain:
 # Anthropic → OpenAI → DeepSeek → Groq → OpenRouter → local Ollama
