@@ -22,28 +22,33 @@ anyway.
 
 1. Identify tech stack from recon data.
 2. `mcp__writeup-mcp` query for relevant payloads/techniques for that stack.
-3. Grep the relevant `[PHASE N]` sections of `knowledge/master-pentest-prompt.md`
+3. If a specific product/version was fingerprinted (e.g. from httpx's `-title`/tech
+   detection), call `mcp__writeup-mcp` `fetch_cves(keyword)` once for that product —
+   pulls known CVEs from NVD into the RAG so the next query_rag call can surface them.
+   Skip this for generic stacks (e.g. "React", "nginx") where a keyword search would
+   be too broad to be useful.
+4. Grep the relevant `[PHASE N]` sections of `knowledge/master-pentest-prompt.md`
    for this stack (HuntBrain should have already narrowed this down — ask if
    not).
 
 ## Phase 1 — Template scanning
 
-4. `mcp__nuclei-mcp` on each live, in-scope host (medium,high,critical by
+5. `mcp__nuclei-mcp` on each live, in-scope host (medium,high,critical by
    default; add low + exposures/ templates for `--deep`).
 
 ## Phase 2 — SQL injection
 
-5. `mcp__sqlmap-mcp` on every URL with query params (GET) and POST bodies.
+6. `mcp__sqlmap-mcp` on every URL with query params (GET) and POST bodies.
    `--deep` raises level/risk.
 
 ## Phase 3 — XSS
 
-6. `mcp__dalfox-mcp` on every reflecting parameter, then remaining
+7. `mcp__dalfox-mcp` on every reflecting parameter, then remaining
    endpoints.
 
 ## Phase 4 — Fuzzing
 
-7. `mcp__ffuf-mcp` for hidden content on interesting paths — it defaults to
+8. `mcp__ffuf-mcp` for hidden content on interesting paths — it defaults to
    `knowledge/wordlists/directories.txt` now, pass `wordlist="api-endpoints.txt"`
    explicitly for API-shaped targets; fuzz login/API forms with a data
    template where relevant.

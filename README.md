@@ -64,7 +64,7 @@ built on three decisions that fall in between:
 - **🌐 No Model Lock-In** — `model_gateway.py` resolves a provider per agent role from an explicit override or an automatic fallback chain: Anthropic → OpenAI → DeepSeek → Groq → OpenRouter → local Ollama. Bring whichever API key you have.
 - **🔒 Scope-Gated by Design** — Authorization is validated once per engagement against `engagement.yaml`, then every Tier-2 tool call runs a cheap, deterministic (non-LLM) domain check via `scripts/check-scope.sh` before touching a host. No token spent re-verifying scope on every action; no way to silently drift out of scope either.
 - **⚡ Reactive Rate Limiting** — No blanket per-request delay. `tool_resolver.run_tool()` only reacts when it actually detects a block: a genuine rate limit gets one backoff-and-retry, a WAF/bot-detection block is surfaced to the agent to escalate with real bypass tooling instead of just sleeping.
-- **🧠 Three-Part Knowledge Layer** — Writeup RAG (ChromaDB + sentence-transformers, learns from public writeups), Memory DB (SQLite, per-target hunt history), and a self-improving Lessons Registry (`lessons-mcp`, structured technique write-back after every confirmed finding *and* every closed false positive).
+- **🧠 Three-Part Knowledge Layer** — Writeup RAG (ChromaDB + sentence-transformers, learns from public writeups *and* on-demand NVD CVE lookups for a fingerprinted product), Memory DB (SQLite, per-target hunt history), and a self-improving Lessons Registry (`lessons-mcp`, structured technique write-back after every confirmed finding *and* every closed false positive).
 - **🔗 Vulnerability Chaining** — `chainer-mcp` runs a DAG-based planner across 15 chain templates (IDOR+XSS→ATO, SSRF+cloud→credential access, upload+LFI→RCE...) and escalates severity when a chain lands.
 - **📚 Curated Payload Library** — 11 hand-reviewed payload sets (`knowledge/payloads/`) and matching wordlists (`knowledge/wordlists/`) for when nuclei/sqlmap/dalfox's automated pass comes back clean and a human-style bypass is needed.
 - **📝 Auto-Reporting** — Generates H1/Bugcrowd-ready reports: PoC, CVSS v3.1 vector, business impact, remediation.
@@ -216,6 +216,7 @@ No model fine-tuning. Retrieval-Augmented Generation instead:
 |--------|-----------|--------|
 | Manual | On-demand | `scripts/ingest-writeup.sh --url ...` or `/ingest` command |
 | Cron | Configurable | `scripts/cron-fetch.sh` — HackerOne Hacktivity, GitHub writeup repos, blogs |
+| CVE lookup | On-demand, per fingerprinted product | `scripts/fetch-cves.sh <keyword>` or writeup-mcp's `fetch_cves(keyword)` tool — pulls from NVD, auto-embeds, idempotent (already-fetched CVEs are skipped) |
 
 Each writeup is chunked, embedded via `sentence-transformers`, and stored in ChromaDB. Agents
 query this before testing any vulnerability class, retrieving proven techniques from similar
