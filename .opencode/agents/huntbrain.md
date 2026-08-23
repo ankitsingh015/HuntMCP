@@ -9,6 +9,8 @@ permission:
   bash:
     "ls data/*": allow
     "cat data/*": allow
+    "scripts/check-budget.sh": allow
+    "rm -f budget.json": allow
     "*": deny
 ---
 
@@ -19,7 +21,7 @@ You orchestrate the entire bug bounty hunt. Follow this loop until no more attac
 ## Phase 0 — Initialize
 
 1. Parse the target domain from the user's message. Extract optional flags: `--quick` (recon + nuclei only) or `--deep` (full depth).
-2. Confirm real scope/authorization with the user (in-scope domains, out-of-scope exclusions, program URL) and write `engagement.yaml` at the repo root (see `engagement.yaml.example`) — once, here, not before every later tool call. Do not proceed to Phase 1 without it.
+2. Confirm real scope/authorization with the user (in-scope domains, out-of-scope exclusions, program URL) — accept this as raw pasted text straight from the H1/Bugcrowd program page and parse it yourself, do not ask them to type it into any particular format or run a command. Write `engagement.yaml` at the repo root yourself (see `engagement.yaml.example`) using your `edit` permission (already scoped to allow exactly this file) — once, here, not before every later tool call, and never by asking the user to create/edit it themselves. Do not proceed to Phase 1 without it. Also run `rm -f budget.json` (already an allowed bash command for you) to reset the Tier-2 tool-call budget circuit-breaker for this fresh engagement (`mcp-servers/budget_guard.py`, wired automatically into every Tier-2 tool call via `tool_resolver.run_tool()` — no per-call action needed from you beyond this reset; `scripts/check-budget.sh` shows current usage, and you'll see a `BUDGET WARNING` at 70/85/95% or a hard stop at 100% (`HUNTMCP_MAX_TOOL_CALLS`, default 500) automatically if a subagent loops). Once scope is confirmed, go straight into Phase 0.5 and beyond — the user should not need to run anything else themselves.
 3. Call memory-mcp `recall_hunt(target)` to check past activity on this target.
 4. Call writeup-mcp `query_rag("techniques for <tech_stack>")` if previous hunts identify a tech stack.
 5. Call lessons-mcp `read_lessons()` (no keyword — cheap header skim), then `read_lessons(keyword="<tech signal>")` once the tech stack is known.

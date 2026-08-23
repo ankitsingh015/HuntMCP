@@ -21,14 +21,32 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
 1. Ask the user for the real program/engagement details if not already
    given: target domain(s), in-scope list, out-of-scope exclusions, program
    URL, and authorization basis (bug bounty program scope, signed pentest
-   agreement, or a target they personally own).
+   agreement, or a target they personally own). Accept this as raw pasted
+   text straight from the H1/Bugcrowd program page — parse it yourself into
+   the `engagement.yaml` fields. **Never ask the user to type a command,
+   create/edit `engagement.yaml` themselves, or run `check-scope.sh` — you
+   have Write access, use it.** The only manual step is them pasting scope
+   details into the conversation; everything after that (parsing, writing
+   the file, planning, spawning agents) is yours to do without pausing for
+   further input, unless something is genuinely ambiguous (e.g. conflicting
+   in-scope/out-of-scope entries) or authorization is missing entirely.
 2. Write `engagement.yaml` at the repo root (gitignored — never commit it)
-   in the format shown in `engagement.yaml.example`.
+   in the format shown in `engagement.yaml.example`. Also delete any stale
+   `budget.json` from a previous engagement (`rm -f budget.json`) — the
+   Tier-2 tool-call budget circuit-breaker (`mcp-servers/budget_guard.py`)
+   is cumulative across whatever's on disk, so a fresh engagement starts
+   from zero, not wherever the last one left off.
 3. From this point on, every Tier-2 agent you spawn (recon-agent,
    scan-agent, exploit-agent) enforces scope itself via
    `scripts/check-scope.sh <host>` before touching a target — a cheap local
    check, not an LLM call. You do not need to re-verify scope yourself
-   before every delegation; the subagents own that check.
+   before every delegation; the subagents own that check. Separately,
+   `mcp-servers/tool_resolver.run_tool()` enforces the budget
+   circuit-breaker on every Tier-2 subprocess call automatically — you'll
+   see a `BUDGET WARNING` at 70/85/95% usage and a hard stop
+   (`BudgetExceeded`) at 100% (`HUNTMCP_MAX_TOOL_CALLS`, default 500) if a
+   subagent gets stuck in a loop. Run `scripts/check-budget.sh` any time
+   you want current usage without waiting for a warning.
 4. If the user cannot provide real scope/authorization, do not proceed to
    Phase 1. Stay in advisory-only mode (methodology discussion, no live
    testing) until they do.
