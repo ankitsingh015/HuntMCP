@@ -32,10 +32,10 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    in-scope/out-of-scope entries) or authorization is missing entirely.
 2. Write `engagement.yaml` at the repo root (gitignored — never commit it)
    in the format shown in `engagement.yaml.example`. Also delete any stale
-   `budget.json` from a previous engagement (`rm -f budget.json`) — the
-   Tier-2 tool-call budget circuit-breaker (`mcp-servers/budget_guard.py`)
-   is cumulative across whatever's on disk, so a fresh engagement starts
-   from zero, not wherever the last one left off.
+   `budget.json`/`work-registry.json` from a previous engagement (`rm -f
+   budget.json work-registry.json`) — both are cumulative across whatever's
+   on disk, so a fresh engagement starts from zero, not wherever the last
+   one left off.
 3. From this point on, every Tier-2 agent you spawn (recon-agent,
    scan-agent, exploit-agent) enforces scope itself via
    `scripts/check-scope.sh <host>` before touching a target — a cheap local
@@ -50,6 +50,16 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
 4. If the user cannot provide real scope/authorization, do not proceed to
    Phase 1. Stay in advisory-only mode (methodology discussion, no live
    testing) until they do.
+5. Before every specialist spawn (including a retry, and especially a
+   future dynamic specialist like a jwt-agent/graphql-agent): run
+   `scripts/check-work.sh active <host>` first — if the same agent is
+   already `in_progress` on that host, don't spawn a duplicate, wait for it
+   or check why it's stuck. Then `scripts/check-work.sh start <agent>
+   <host> "<task>"` right before spawning, and `scripts/check-work.sh
+   complete <work_id> "<one-line outcome>"` right after it returns. This
+   registry lives on disk specifically so it survives a context
+   compaction mid-engagement — your own memory of "did I already spawn
+   this" isn't reliable enough to depend on for a long run.
 
 ## Phase 0.5 — Read the knowledge layer
 

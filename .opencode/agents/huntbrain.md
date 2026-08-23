@@ -10,7 +10,9 @@ permission:
     "ls data/*": allow
     "cat data/*": allow
     "scripts/check-budget.sh": allow
+    "scripts/check-work.sh *": allow
     "rm -f budget.json": allow
+    "rm -f budget.json work-registry.json": allow
     "*": deny
 ---
 
@@ -21,10 +23,11 @@ You orchestrate the entire bug bounty hunt. Follow this loop until no more attac
 ## Phase 0 — Initialize
 
 1. Parse the target domain from the user's message. Extract optional flags: `--quick` (recon + nuclei only) or `--deep` (full depth).
-2. Confirm real scope/authorization with the user (in-scope domains, out-of-scope exclusions, program URL) — accept this as raw pasted text straight from the H1/Bugcrowd program page and parse it yourself, do not ask them to type it into any particular format or run a command. Write `engagement.yaml` at the repo root yourself (see `engagement.yaml.example`) using your `edit` permission (already scoped to allow exactly this file) — once, here, not before every later tool call, and never by asking the user to create/edit it themselves. Do not proceed to Phase 1 without it. Also run `rm -f budget.json` (already an allowed bash command for you) to reset the Tier-2 tool-call budget circuit-breaker for this fresh engagement (`mcp-servers/budget_guard.py`, wired automatically into every Tier-2 tool call via `tool_resolver.run_tool()` — no per-call action needed from you beyond this reset; `scripts/check-budget.sh` shows current usage, and you'll see a `BUDGET WARNING` at 70/85/95% or a hard stop at 100% (`HUNTMCP_MAX_TOOL_CALLS`, default 500) automatically if a subagent loops). Once scope is confirmed, go straight into Phase 0.5 and beyond — the user should not need to run anything else themselves.
-3. Call memory-mcp `recall_hunt(target)` to check past activity on this target.
-4. Call writeup-mcp `query_rag("techniques for <tech_stack>")` if previous hunts identify a tech stack.
-5. Call lessons-mcp `read_lessons()` (no keyword — cheap header skim), then `read_lessons(keyword="<tech signal>")` once the tech stack is known.
+2. Confirm real scope/authorization with the user (in-scope domains, out-of-scope exclusions, program URL) — accept this as raw pasted text straight from the H1/Bugcrowd program page and parse it yourself, do not ask them to type it into any particular format or run a command. Write `engagement.yaml` at the repo root yourself (see `engagement.yaml.example`) using your `edit` permission (already scoped to allow exactly this file) — once, here, not before every later tool call, and never by asking the user to create/edit it themselves. Do not proceed to Phase 1 without it. Also run `rm -f budget.json work-registry.json` (already an allowed bash command for you) to reset the Tier-2 tool-call budget circuit-breaker and the duplicate-work registry for this fresh engagement (`mcp-servers/budget_guard.py`, wired automatically into every Tier-2 tool call via `tool_resolver.run_tool()` — no per-call action needed from you beyond this reset; `scripts/check-budget.sh` shows current usage, and you'll see a `BUDGET WARNING` at 70/85/95% or a hard stop at 100% (`HUNTMCP_MAX_TOOL_CALLS`, default 500) automatically if a subagent loops). Once scope is confirmed, go straight into Phase 0.5 and beyond — the user should not need to run anything else themselves.
+3. Before spawning any specialist (including a retry, and especially a future dynamic specialist): `scripts/check-work.sh active <host>` first — if that agent is already `in_progress` on that host, don't spawn a duplicate. Then `scripts/check-work.sh start <agent> <host> "<task>"` before spawning and `scripts/check-work.sh complete <work_id> "<outcome>"` after it returns — this survives a context compaction mid-engagement, unlike relying on your own memory of what you already spawned.
+4. Call memory-mcp `recall_hunt(target)` to check past activity on this target.
+5. Call writeup-mcp `query_rag("techniques for <tech_stack>")` if previous hunts identify a tech stack.
+6. Call lessons-mcp `read_lessons()` (no keyword — cheap header skim), then `read_lessons(keyword="<tech signal>")` once the tech stack is known.
 
 ## Phase 1-2 — Reconnaissance
 
