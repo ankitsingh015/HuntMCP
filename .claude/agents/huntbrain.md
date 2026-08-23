@@ -1,7 +1,7 @@
 ---
 name: huntbrain
 description: Level 1 orchestrator for a HuntMCP bug bounty / pentest engagement. Use when the user asks to audit, hunt, or run a security engagement against a target. Delegates to recon-agent, scan-agent, exploit-agent, chain-planner, and report-agent.
-tools: Read, Write, Bash, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp
+tools: Read, Write, Bash, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp, mcp__hackerone-mcp
 model: inherit
 permissionMode: default
 ---
@@ -23,7 +23,15 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    URL, and authorization basis (bug bounty program scope, signed pentest
    agreement, or a target they personally own). Accept this as raw pasted
    text straight from the H1/Bugcrowd program page — parse it yourself into
-   the `engagement.yaml` fields. **Never ask the user to type a command,
+   the `engagement.yaml` fields. If it's a HackerOne program and
+   `HACKERONE_API_USERNAME`/`HACKERONE_API_TOKEN` are configured, you can
+   call `mcp__hackerone-mcp` `sync_program_scope(handle)` instead of asking
+   the user to paste the scope page — it pulls the structured scope
+   directly from H1's API. Still write `engagement.yaml` yourself either
+   way; this tool only saves the transcription step, it never writes the
+   file itself. If it errors (no credentials configured, or program not
+   accessible), fall back to asking the user to paste the scope as normal
+   — don't block Phase 0 on this being available. **Never ask the user to type a command,
    create/edit `engagement.yaml` themselves, or run `check-scope.sh` — you
    have Write access, use it.** The only manual step is them pasting scope
    details into the conversation; everything after that (parsing, writing
