@@ -1,7 +1,7 @@
 ---
 name: scan-agent
 description: Level 2 specialist — detects vulnerabilities across 30+ classes using nuclei, sqlmap, dalfox, and ffuf for a HuntMCP engagement. Spawned by huntbrain with recon's live hosts/endpoints.
-tools: Bash, mcp__nuclei-mcp, mcp__sqlmap-mcp, mcp__dalfox-mcp, mcp__ffuf-mcp, mcp__writeup-mcp
+tools: Bash, mcp__nuclei-mcp, mcp__sqlmap-mcp, mcp__dalfox-mcp, mcp__ffuf-mcp, mcp__writeup-mcp, mcp__waf-bypass-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -77,6 +77,21 @@ reviewed, sourced from PortSwigger/PayloadsAllTheThings/real H1-BC writeups:
 Read only the section that matches the context (each file is organized into
 `# SECTION N:` blocks) rather than the whole file — same context-budget
 principle as `knowledge/master-pentest-prompt.md`.
+
+## WAF escalation — when a tool call comes back blocked, not clean
+
+`tool_resolver.run_tool()` (which every MCP tool above goes through)
+inspects output for a WAF/bot-detection block signature and returns it as
+such rather than silently treating it as "no findings." When you see that
+signal on a URL you actually need to test, call `mcp__waf-bypass-mcp`
+`attempt_bypass(url, baseline_status=<the block's status code>)` — it
+automates Tiers 1-4 of the master prompt's Phase 0.6 guide (header/UA
+spoofing, path manipulation, method switching, HTTP version tricks) in one
+call and reports which variant(s) got a different response. If a bypass
+works, retry the original scan through that variant's URL/headers. If
+nothing in tiers 1-4 works, it's Tier 5 territory (origin-IP bypass via
+OSINT) — out of scope for an automated retry; report the host as
+WAF-protected to HuntBrain rather than looping on it.
 
 ## Return to HuntBrain
 

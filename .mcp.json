@@ -55,6 +55,10 @@
     "watch-mcp": {
       "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/watch-mcp/server.py"]
+    },
+    "waf-bypass-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/waf-bypass-mcp/server.py"]
     }
   }
 }

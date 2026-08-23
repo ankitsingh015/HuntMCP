@@ -47,6 +47,7 @@ TIER2_BASH_TOOLS = {
 TIER2_MCP_SERVERS = {
     "subfinder-mcp", "httpx-mcp", "katana-mcp", "nmap-mcp",
     "nuclei-mcp", "sqlmap-mcp", "dalfox-mcp", "ffuf-mcp", "watch-mcp",
+    "waf-bypass-mcp",
 }
 
 SAFE_TEST_HOSTS = {"example.com", "example.org", "example.net", "localhost", "0.0.0.0"}
