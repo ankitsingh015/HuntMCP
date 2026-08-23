@@ -18,9 +18,12 @@ phase-by-phase "Build Plan" further down for detail):
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Phase 1 — Local system (agents, MCP servers, knowledge base) | ✅ Built | 6 agents (incl. chain-planner), 13 MCP servers, dual OpenCode + Claude Code harness, payloads/wordlists seeded |
+| Phase 1 — Local system (agents, MCP servers, knowledge base) | ✅ Built | 6 agents (incl. chain-planner), 14 MCP servers, dual OpenCode + Claude Code harness, payloads/wordlists seeded |
 | Phase 2 — Go backend (API, auth, pgvector) | ✅ Built | See `backend/` — Gin + PostgreSQL/pgvector, JWT auth, `/mcp` endpoint. Not yet wired to the local agent system — see "World-project integration map" |
 | Phase 2.5-2.7 — Methodology depth, harness/safety hardening, knowledge/model backlog | ✅ Built | Scope gate, reactive rate limiting, model gateway, lessons registry, CVE search index — see Build Plan below |
+| Phase 2.8 — claude-bug-bounty-derived backlog | 🔶 High priority done | Scope-enforcement hook, OOB listener (`oob-mcp`), WAF bypass tooling (`waf-bypass-mcp`), HackerOne read-only MCP (`hackerone-mcp`, untested against a live account) all done; Medium/Lower priority items (secrets scanning, audit log, skills split, test suite, SAST, web3, mobile) still open |
+| Phase 2.9 — Strix-derived backlog | 🔶 In progress | Budget circuit-breaker and duplicate-work check (`work_registry.py`) both done; context compaction strategy, Caido support still open |
+| Phase 2.10 — Full world-research backlog | ❌ Not started | Large menu, not priority-ranked — see Build Plan below |
 | Phase 3 — Web platform (Next.js dashboard, community PRs, CI/CD auto-train) | ❌ Not started | Design only, see Build Plan below |
 | Self-improvement / lessons registry (`lessons-mcp`) | ✅ Built | Real write-back on every confirmed finding and closed false positive, not a documentation placeholder |
 
@@ -1118,7 +1121,7 @@ Not originally planned as its own phase, but this is what actually got built onc
 | Local fine-tuned model as a provider | ✅ Done — `HUNTMCP_LOCAL_MODEL` env var overrides the `ollama` chain entry's model name (defaults to `whiterabbitneo`), so any locally-hosted fine-tune (e.g. a QLoRA'd model) is selectable with zero code changes: `HUNTMCP_MODEL=ollama HUNTMCP_LOCAL_MODEL=my-finetune` |
 | CVE search index | ✅ Done — `mcp-servers/writeup-mcp/cve_fetch.py` pulls CVEs from the NVD REST API for a keyword and writes them as writeup-shaped `.md` files (reuses the existing chunk/embed/ChromaDB pipeline rather than a parallel store); exposed as writeup-mcp's `fetch_cves(keyword, limit)` tool and `scripts/fetch-cves.sh`. Idempotent (already-fetched CVEs are skipped) and gitignored (`data/writeups/cve-*.md`) so auto-fetched dumps don't dilute the curated, git-tracked writeup set. scan-agent calls it in Phase 0 when a specific product/version is fingerprinted |
 
-### Phase 2.8: claude-bug-bounty-derived Backlog (Not started)
+### Phase 2.8: claude-bug-bounty-derived Backlog (High priority done, Medium/Lower not started)
 
 Researched from [`shuvonsec/claude-bug-bounty`](https://github.com/shuvonsec/claude-bug-bounty)
 (4.3k★, actively maintained) on 2026-08-22, including its own `docs/CAPABILITY-GAPS.md`
@@ -1129,10 +1132,10 @@ solo operator) rather than raw feature count.
 
 | What | Idea | Notes |
 |------|------|-------|
-| Scope enforcement via Claude Code hooks | Add a `PreToolUse` hook (`.claude/settings.json` / `hooks/hooks.json`-style) that calls `scope_guard.is_in_scope()` and blocks the tool call outright for any Bash/MCP call touching a host outside `engagement.yaml` | Strictly stronger than the current design: today, scope compliance depends on each agent's system-prompt instruction to run `check-scope.sh` first — an LLM could in principle skip it. A hook makes it structurally unskippable instead of instructed |
-| HackerOne MCP server | Port the idea of `mcp/hackerone-mcp/server.py` — pull a program's scope directly into `engagement.yaml` instead of hand-transcribing it, and (if H1's API exposes it) check for existing/duplicate reports on a finding before it's written up. **Read-only by design — scope-sync and duplicate-check only, never a submit/create-report call.** report-agent's output stays a local draft for the human operator to review and submit themselves; see report-agent.md's "Never submit" rule | Directly targets the user's stated problem: reducing HackerOne duplicates, without ever letting an unreviewed AI-drafted report reach a program |
-| OOB interaction listener | Wrap `interactsh-client` (or similar) as a new `oob-mcp` server: generate a per-injection callback URL, hand it to exploit-agent for blind SSRF/XXE/SQLi/RCE payloads, correlate inbound DNS/HTTP/SMTP hits back to the finding | Was the #1 highest-leverage gap in claude-bug-bounty's own audit. Currently HuntMCP's only OOB path is optional Burp Collaborator — this removes that dependency |
-| WAF bypass tooling | Wire `whatwaf`/`unwaf`/`byp4xx` (or equivalent) as the actual escalation path when `tool_resolver.classify_block()` returns `"waf"` | Closes a gap flagged and left open during Phase 2.6: reactive rate-limiting detects a WAF block and surfaces it, but nothing automated actually attempts a bypass yet |
+| Scope enforcement via Claude Code hooks | ✅ Done — `scripts/hooks/scope_gate_hook.py`, wired via `.claude/settings.json`'s `PreToolUse` hook. Runs `scope_guard.is_in_scope()` before every `Bash` call whose invoked binary is one of the actual Tier-2 tools (`subfinder`/`httpx`/`katana`/`nmap`/`nuclei`/`sqlmap`/`dalfox`/`ffuf`) and every Tier-2 MCP tool call (`subfinder-mcp`, `httpx-mcp`, `katana-mcp`, `nmap-mcp`, `nuclei-mcp`, `sqlmap-mcp`, `dalfox-mcp`, `ffuf-mcp`, `watch-mcp`, `waf-bypass-mcp`), blocking (exit 2) any real-looking target host that isn't in `engagement.yaml`'s `in_scope` list. `example.com`/`localhost`/RFC1918/loopback are always allowed with no `engagement.yaml` needed — ordinary MCP-server dev/testing (like this session's own httpx screenshot testing) stays unaffected, only real-looking non-test hosts require a written engagement. Knowledge-layer MCP servers (`writeup-mcp`, `memory-mcp`, `lessons-mcp`, `chainer-mcp`) and any Bash command not invoking a Tier-2 binary (`git`, `go install`, `pip install`, etc.) are exempt so this can't break normal repo development. Tested against 11 scenarios (safe-host allow, real-target block with/without `engagement.yaml`, in-scope allow, explicit out-of-scope block, non-Tier-2 server exemption, malformed-input fail-open) — strictly stronger than the previous instruction-only design: an LLM can no longer skip `check-scope.sh` by simply not calling it | Strictly stronger than the previous design: today, scope compliance depended on each agent's system-prompt instruction to run `check-scope.sh` first — an LLM could in principle skip it. A hook makes it structurally unskippable instead of instructed |
+| HackerOne MCP server | ✅ Done — `mcp-servers/hackerone-mcp/server.py`. `sync_program_scope(handle)` pulls a program's structured scope from H1's official v1 API and formats it as an engagement.yaml-ready snippet (never writes the file itself — HuntBrain still owns that write, once, at Phase 0). `check_my_duplicates(handle, keyword)` searches the *authenticated hunter's own accessible reports* for likely self-duplicates before writing one up. **Honest scope note**: H1's API does not expose other hunters' private/pending reports to you — that's a deliberate platform privacy boundary, not a gap here, so this is a self-duplicate check, not a full program-wide one; the original idea's "check for existing/duplicate reports" framing overstated what's actually achievable, corrected here. **Read-only by design, no exceptions** — no submit/create-report call exists in this file; report-agent's local-draft-only design remains the actual submission boundary. **Caveat unlike every other tool built this session: NOT functionally tested against a live HackerOne account** (no test API credentials were available) — request-building and JSON-parsing logic were verified against mocked responses matching H1's documented API shape, and the no-credentials error path was tested for real, but the exact endpoint paths/field names need a real-account pass before being fully trusted | Directly targets the user's stated problem: reducing HackerOne duplicates, without ever letting an unreviewed AI-drafted report reach a program |
+| OOB interaction listener | ✅ Done — `mcp-servers/oob-mcp/server.py` wraps `interactsh-client`. `generate_payload_url(label)` starts a detached, session-persistent listener (`start_new_session=True` so it survives independently of whatever short-lived call spawned it) and returns a real callback URL; `check_interactions(url)` reads the accumulated DNS/HTTP/SMTP hits; `list_listeners()` / `stop_listener(url)` manage the registry (`data/oob-sessions/registry.json`, gitignored). Counted once against the Phase 2.9 budget circuit-breaker per listener started. Wired into `opencode.jsonc`/`.mcp.json` and granted to exploit-agent in both harnesses, referenced directly from the Phase 1.5 SSRF rationalization check. Functionally tested end-to-end against the real interactsh public infrastructure: generated a live `*.oast.fun` URL, confirmed the background process survives after its launching process exits, fired a real `curl` at the callback, and confirmed both the DNS and HTTP interactions were correctly captured and reported | Was the #1 highest-leverage gap in claude-bug-bounty's own audit. Previously HuntMCP's only OOB path was optional Burp Collaborator — this removes that dependency |
+| WAF bypass tooling | ✅ Done — `mcp-servers/waf-bypass-mcp/server.py`'s `attempt_bypass(url, baseline_status, tiers, delay)`. Automates Tiers 1-4 of `knowledge/master-pentest-prompt.md`'s Phase 0.6 403/WAF bypass guide (24 variants: 9 header/UA spoofs, 8 path manipulations, 6 method switches, 3 HTTP-version tricks) via direct curl calls, reports every variant whose status differs from the observed block code. Tier 5 (CDN/origin-IP bypass) needs external OSINT (Shodan/Censys/CT logs) rather than a retry loop, so it's intentionally left manual, per the master prompt. Scope-gated like the other Tier-2 MCP servers (its `url` arg is covered by the Phase 2.8 scope-gate hook above); counts once against the Phase 2.9 budget circuit-breaker per call, not per variant. Functionally tested against a real target (all 24 variants execute correctly, exact `%61dmin`-style encoding matches the master prompt's own example, malformed `tiers` input handled) | Closes a gap flagged and left open during Phase 2.6: reactive rate-limiting detects a WAF block and surfaces it, but nothing automated actually attempts a bypass yet |
 
 **Medium priority — real coverage gaps, no dependency conflicts:**
 
@@ -1152,7 +1155,7 @@ solo operator) rather than raw feature count.
 | Web3/smart-contract auditing | Slither/Aderyn/Echidna/Mythril wrapper + a `web3-auditor` specialist | Whole new domain, not a small addition — only worth it if in-scope for actual target programs |
 | Mobile (Android/iOS) testing | APK decompile, Frida/objection scripting, MobSF | Also a new domain; HuntMCP is currently web-only |
 
-### Phase 2.9: Strix-derived Backlog (Not started)
+### Phase 2.9: Strix-derived Backlog (In progress)
 
 Researched from [`usestrix/strix`](https://github.com/usestrix/strix) (57k★, actively
 maintained — pushed the same day this was researched, 2026-08-22) via its actual source, not
@@ -1167,8 +1170,8 @@ agent graph isn't worth it at HuntMCP's current scale).
 
 | What | Idea | Notes |
 |------|------|-------|
-| Budget circuit-breaker | Track cumulative LLM $ cost per engagement; graduated warning bands (e.g. 70%/85%/95% of a configured `HUNTMCP_MAX_BUDGET_USD`) surfaced to HuntBrain, hard-stop at 100% | HuntMCP has *no* cost guardrail today — a stuck loop or an unexpectedly large attack surface could burn unlimited API spend with nothing noticing. Small, self-contained, no dependency on adopting the agent-graph model. High leverage relative to effort |
-| Duplicate-work check before spawning a specialist | A lightweight `list_active_work()`-style read (which specialists are already running/completed on which host) that HuntBrain checks before spawning another, mirroring Strix's `view_agent_graph` tool | Take *only* the dedup-check idea, not Strix's full dynamic any-agent-spawns-any-agent graph — gets the "don't redo work" benefit without taking on shared-coordinator locking complexity for a fixed 5-specialist roster that doesn't need it |
+| Budget circuit-breaker | ✅ Done — `mcp-servers/budget_guard.py`, wired into `tool_resolver.run_tool()`'s single shared chokepoint (every Tier-2 MCP server routes through it). Tracks **cumulative Tier-2 tool-call count**, not literal LLM $ cost — no MCP server has visibility into the orchestrating agent's own token spend (that number lives inside whichever harness is driving the session, not exposed to a subprocess-launching tool server), so call volume is used as an honest, directly-observable proxy for "is something burning unbounded spend" instead of pretending to meter dollars it can't see. Graduated stderr warnings at 70/85/95% of `HUNTMCP_MAX_TOOL_CALLS` (default 500), hard stop (`BudgetExceeded`, subprocess never runs) at 100%. State in gitignored `budget.json`, reset by HuntBrain at Phase 0 alongside `engagement.yaml`; `scripts/check-budget.sh` for an on-demand status read. Functionally tested end-to-end with a low cap (10 calls): warnings fired at exactly 7/9/10 calls, call 10 onward correctly raised and blocked before the subprocess ran | HuntMCP had *no* cost/volume guardrail before this — a stuck loop or an unexpectedly large attack surface could burn unlimited API spend with nothing noticing. Small, self-contained, no dependency on adopting the agent-graph model |
+| Duplicate-work check before spawning a specialist | ✅ Done — `mcp-servers/work_registry.py` (`start_work`/`complete_work`/`list_active_work`/`list_all_work`), CLI via `scripts/check-work.sh {start,complete,active,all}`. State in gitignored `work-registry.json`, reset by HuntBrain at Phase 0 alongside `engagement.yaml`/`budget.json`. HuntBrain checks `active <host>` before every specialist spawn (including retries and future dynamic specialists) and records `start`/`complete` around each — deliberately on disk rather than relying on HuntBrain's own conversation context, since a long engagement getting context-compacted mid-run (a real thing that happened in this repo's own development) can otherwise lose track of what's already running. Functionally tested: two specialists tracked on the same host, one completed, active-list correctly narrows to the other, a different host's active-list correctly returns empty, bad work_id fails loudly | Take *only* the dedup-check idea, not Strix's full dynamic any-agent-spawns-any-agent graph — gets the "don't redo work" benefit without taking on shared-coordinator locking complexity for a fixed 5-specialist roster that doesn't need it |
 | Context budget / compaction strategy | An explicit policy for what happens as a single agent's conversation approaches its context window on a long engagement (summarize older tool results, drop stale recon data once it's been merged into HuntBrain's state) | Not yet a problem HuntMCP has hit, but a long multi-host engagement could hit it; Strix treats this as a first-class concern, HuntMCP has no strategy at all currently |
 | Caido proxy support alongside Burp | A `caido-mcp` mirroring the existing optional Burp integration tier | Caido is a real open-source Burp alternative; lowers the barrier for anyone who doesn't have a Burp Pro license. Low priority — Burp is already optional, this just adds a second optional option |
 
@@ -1178,6 +1181,67 @@ Claude Code's own interfaces already work; and its opt-in telemetry (`strix/tele
 posthog/scarf) — even opt-in, a tool that processes real target/engagement data warrants extra
 caution before wiring in any outbound analytics, and it isn't solving a problem HuntMCP
 actually has.
+
+### Phase 2.10: Full World-Research Backlog (Not started)
+
+Everything else distilled from the 2026-08-22 100+-repo survey (`RESEARCH-TODO.md`, private/
+gitignored — 227 repos surveyed, 22 deep-dived) that isn't already covered by Phase 2.7/2.8/2.9
+above. Grouped by kind, not priority-ranked — treat this as the full menu, not a sequence.
+
+**Validation & quality — extends the Phase 2.9 confidence-calibration work:**
+
+| What | Idea | Source |
+|------|------|--------|
+| Cross-model second opinion | Before a HIGH-confidence finding is finalized, optionally shell out to a *different* provider than the one that found it (via `model_gateway.py`'s existing multi-provider chain) for independent review — same infra, used for cross-validation instead of failover | `trailofbits/skills` `second-opinion` |
+| `mantis-dedupe` / `mantis-threat-model` style skills | A dedicated dedup-check skill (has this exact finding already been reported this engagement?) and a threat-modeling skill (what's actually at risk here, not just what's technically true) as explicit steps rather than implicit agent judgment | `google/mantis` |
+| Sandbox abstraction reference | `sandboxes/gvisor.py` / `sandboxes/microsandbox.py` in `google/mantis`'s `reference/` — a second concrete implementation to compare against Strix's Docker sandboxing (Phase 2.9) when exploit-agent's sandboxing item gets built | `google/mantis` |
+| LLM-guided traversal for future static-analysis skill | Instead of a fixed AST/regex ruleset, let the LLM decide what code to inspect next by walking the actual call graph — relevant if the Phase 2.8 SAST idea (`semgrep`) ever grows a custom analysis pass | `protectai/vulnhuntr` (project itself is stale/dead, technique is not) |
+
+**Self-scanning HuntMCP's own agent-generated surface:**
+
+| What | Idea | Source |
+|------|------|--------|
+| Scan agent-generated skills/tools before trusting them | Once the "self-expanding toolkit" mechanic exists (an agent authoring new MCP servers/skills when it hits a technique gap — already in the Methodology Engine design), those files are a real, unreviewed attack surface (prompt injection, supply-chain risk) the moment they're agent-authored rather than human-reviewed. A lightweight CI-style check against the OWASP Skill/MCP Top 10 patterns, run on any new/changed `skills/*/SKILL.md` or `mcp-servers/*`, closes this before it's a problem instead of after | `NVIDIA/SkillSpector`, `snyk/agent-scan`, `Tencent/AI-Infra-Guard` — three independent projects converging on the same category confirms it's a real, not speculative, gap |
+
+**Benchmarking — a real number instead of "seems to work":**
+
+| What | Idea | Source |
+|------|------|--------|
+| Score exploit-agent against a standardized benchmark | XBOW's `validation-benchmarks` suite is public even though XBOW itself is closed-source; `straylabs-ai/deadend-cli` already demonstrates 81% on it in full black-box mode using only open/self-hosted models. Running HuntMCP's exploit-agent against the same suite gives an apples-to-apples effectiveness number instead of only real-engagement anecdote | `xbow-engineering/validation-benchmarks`, `straylabs-ai/deadend-cli` |
+
+**Concrete tool/source additions to already-known backlog items:**
+
+| What | Idea | Source |
+|------|------|--------|
+| `bloodhound-mcp` for Active Directory | AD attack-path analysis — HuntMCP currently has zero AD coverage; adds specificity to the existing "mcp-security-hub not yet pulled in" item | `FuzzingLabs/mcp-security-hub` |
+| `ghidra-mcp` / `radare2-mcp` for binary analysis | Zero current coverage for any binary-format target; same catalog as above | `FuzzingLabs/mcp-security-hub` |
+| EPSS + CISA KEV as CVE prioritization signals | Cheap, high-signal inputs (exploit-probability score + known-actively-exploited flag) missing from the Phase 2.7 CVE search index's NVD-only source | `mukul975/cve-mcp-server` (21-source catalog — a checklist, not a dependency to adopt wholesale) |
+| Config-profile pattern for `--quick`/`--deep` modes | `reconftw_full.cfg` / `reconftw_quick.cfg` / `reconftw_stealth.cfg` — worth comparing against HuntMCP's own quick-mode tool selection for gaps once ReconFTW (already a known "not yet pulled in" item) is actually wrapped | `six2dez/reconftw` |
+
+**Skills to add (formalizing the earlier candidate-skills list):**
+
+| What | Idea | Source |
+|------|------|--------|
+| Playbooks cite real disclosed H1 reports as precedent | Each vuln-class skill file references actual disclosed HackerOne reports for that weakness class, not just generic technique description — concrete precedent reads as more credible in a submitted report too | `MyuriKanao/src-hunter-skill` (2,887 disclosed reports pre-organized by weakness class) |
+| Skill-with-checked-in-eval-file | Any HuntMCP skill beyond a static reference doc gets a small `evals/evals.json` alongside it — cheap regression check when the skill file is edited later | `wgpsec/AboutSecurity` |
+| `writing-great-skills` meta-skill | A skill about how to write HuntMCP's own future skills consistently (frontmatter conventions, when-to-use/when-not-to-use sections) — write this *before* the skills-restructuring work (Phase 2.8) starts, not after | `GreyDGL/PentestGPT` |
+| `AGENT-BRIEF.md` + `OUT-OF-SCOPE.md` pairing per engagement | Explicit out-of-scope documentation alongside the in-scope `engagement.yaml`, not just an implicit "not in the list" — makes accidental scope creep easier to catch on review | `GreyDGL/PentestGPT` `.agents/skills/triage/` |
+| GraphQL, JWT/OAuth/SAML, request smuggling, prototype pollution, SSTI, CI/CD & dependency-confusion, Kubernetes/container escape, Active Directory, race conditions, WebSocket, mobile SSL pinning | Clear vuln-class coverage gaps vs. current `master-pentest-prompt.md` — see the ~95-topic catalog | `yaklang/hack-skills` |
+
+**Architecture references (cite, don't necessarily adopt):**
+
+| What | Idea | Source |
+|------|------|--------|
+| `plan → loop → memory → trace → audit` module split | Cleaner decomposition than HuntBrain's current single-file orchestration, worth comparing against if HuntBrain is ever refactored | `GreyDGL/PentestGPT` |
+| `worker_pool.py` | A concrete reference implementation to read before designing HuntMCP's own parallel-fan-out rework (already a known backlog item, previously design-only) | `GH05TCREW/pentestagent` |
+| `Flow → Task → SubTask → Action → {Artifact, Memory}` data model | Cleaner formalization of the Flow/Task/Action decomposition HuntBrain already does informally — worth a look only if the Memory DB schema is revisited. **Explicitly not adopting the rest of this project** (React UI, Neo4j, Grafana/VictoriaMetrics/Jaeger/Loki stack) — team-scale SaaS infra, wrong shape for a solo operator | `vxcontrol/pentagi` (user-confirmed: data model only, reject the multi-team stack) |
+| Agent-pattern naming vocabulary | `agents_as_tools`, `deterministic`, `forcing_tool_use`, `input_guardrails`/`output_guardrails`, `llm_as_a_judge`, `handoffs` — useful shared terminology, not a dependency (project is archived/discontinued, folded into a paid successor) | `aliasrobotics/cai` |
+| `.planning/` spec-driven process | `PROJECT.md`/`REQUIREMENTS.md`/`ROADMAP.md`/`STATE.md` plus per-phase `PLAN.md`/`SUMMARY.md` — a lighter-weight planning convention worth considering for smaller features instead of a full `ARCHITECTURE.md` rewrite each time | `six2dez/burp-ai-agent` |
+| Telemetry-off-by-default privacy bar | If HuntMCP ever adds any usage telemetry (e.g. for the lessons registry, or a future hosted backend), this is the bar to match: off by default, explicit opt-in, respects `DO_NOT_TRACK`, "raw prompts/targets/credentials/tool output never transmitted" even when on | `PurpleAILAB/Decepticon`'s `TELEMETRY.md` |
+| Topic-coverage checklist | 817 skill topics mapped to MITRE ATT&CK/NIST CSF/ATLAS/D3FEND — use to spot HuntMCP methodology gaps by skimming topic names, not as a content source (bulk/unverified, size makes hand-review of each one impractical) | `mukul975/Anthropic-Cybersecurity-Skills` (star count itself is anomalous — see `RESEARCH-TODO.md`'s caveat — judged on content only) |
+
+**Confirmed, no action needed:** `garak`/`PyRIT` remain the right picks for Phase 14.5/14.6 (AI/LLM
+surface testing) when that gets built — this survey found no credible newer competitor to either.
 
 ### Phase 3: Full Platform (Not started)
 

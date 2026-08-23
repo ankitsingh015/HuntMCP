@@ -13,6 +13,8 @@ import subprocess
 import sys
 import time
 
+from budget_guard import enforce as _enforce_budget
+
 GO_BIN = os.path.expanduser("~/go/bin")
 GO_BIN_CANDIDATES = [
     GO_BIN,
@@ -92,7 +94,14 @@ def run_tool(
     browser-driven tool like Playwright for JS-challenge WAFs) rather than
     silently waiting on something a sleep won't fix. Use classify_block() on
     the result to check which case happened.
+
+    Every call is recorded against the per-engagement budget circuit-breaker
+    (mcp-servers/budget_guard.py) BEFORE the subprocess runs -- this is the
+    single chokepoint all Tier-2 MCP servers share, so it's where a stuck
+    loop or runaway attack surface actually gets caught. Raises
+    BudgetExceeded instead of running the tool once the hard cap is hit.
     """
+    _enforce_budget(name)
     binary = resolve_tool(name)
     kwargs.setdefault("capture_output", True)
     kwargs.setdefault("text", True)

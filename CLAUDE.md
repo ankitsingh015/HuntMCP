@@ -83,7 +83,7 @@ Two independent systems, both queried by agents before acting on a target:
 
 ### MCP servers (`mcp-servers/`)
 
-One subdirectory per tool, each a small FastMCP (Python) server exposing `@app.tool()` functions that shell out to a security binary and return formatted text. Current servers: `subfinder`, `httpx`, `katana`, `nmap`, `nuclei`, `sqlmap`, `dalfox`, `ffuf`, `chainer` (DAG-based chain planner, 15 templates), `watch` (continuous recon diffing), `writeup`, `memory`.
+One subdirectory per tool, each a small FastMCP (Python) server exposing `@app.tool()` functions that shell out to a security binary and return formatted text. Current servers: `subfinder`, `httpx`, `katana`, `nmap`, `nuclei`, `sqlmap`, `dalfox`, `ffuf`, `chainer` (DAG-based chain planner, 15 templates), `watch` (continuous recon diffing), `oob` (interactsh-client wrapper for blind SSRF/XXE/SQLi/RCE callback confirmation), `writeup`, `memory`, `lessons`.
 
 `mcp-servers/tool_resolver.py` is shared by these servers to resolve external binary paths — it exists specifically to prefer Go/system binaries over same-named Python packages that shadow them on `PATH` (e.g. ProjectDiscovery's `httpx` vs the Python `httpx` HTTP client). Use `resolve_tool()`/`run_tool()` from it rather than calling `subprocess` with a bare tool name.
 

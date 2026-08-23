@@ -11,7 +11,7 @@ permission:
 
 You receive live hosts and endpoints from the Recon Agent. Your job is to find vulnerabilities.
 
-Available MCPs: nuclei-mcp, sqlmap-mcp, dalfox-mcp, ffuf-mcp, writeup-mcp.
+Available MCPs: nuclei-mcp, sqlmap-mcp, dalfox-mcp, ffuf-mcp, writeup-mcp, waf-bypass-mcp.
 
 Before touching any host, run `scripts/check-scope.sh <host>` via bash. If it
 exits non-zero, stop and skip that host — report the block to HuntBrain,
@@ -72,6 +72,19 @@ Read the relevant file with a `grep`/head-style pass for the section that
 matches the context (e.g. `xss.txt`'s "SECTION 1: CONTEXT-SPECIFIC" vs its
 WAF-bypass section) rather than loading the whole file — same context-budget
 principle as `knowledge/master-pentest-prompt.md`.
+
+## WAF escalation — when a tool call comes back blocked, not clean
+
+`tool_resolver.run_tool()` (used by every MCP tool above) flags a WAF/bot-
+detection block instead of silently treating it as "no findings." When you
+see that on a URL you actually need to test, call waf-bypass-mcp
+`attempt_bypass(url, baseline_status=<the block's status code>)` — it
+automates Tiers 1-4 of the master prompt's Phase 0.6 guide (header/UA
+spoofing, path manipulation, method switching, HTTP version tricks) in one
+call and reports which variant(s) got a different response. If one works,
+retry the original scan through that variant. If nothing in tiers 1-4
+works, that's Tier 5 territory (origin-IP bypass via OSINT) — report the
+host as WAF-protected to HuntBrain rather than looping on it.
 
 ## Return to HuntBrain
 

@@ -91,6 +91,24 @@
       "enabled": true,
       "command": "./.venv/bin/python",
       "args": ["mcp-servers/watch-mcp/server.py"]
+    },
+    "oob-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "./.venv/bin/python",
+      "args": ["mcp-servers/oob-mcp/server.py"]
+    },
+    "waf-bypass-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "./.venv/bin/python",
+      "args": ["mcp-servers/waf-bypass-mcp/server.py"]
+    },
+    "hackerone-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "./.venv/bin/python",
+      "args": ["mcp-servers/hackerone-mcp/server.py"]
     }
   },
   "autoupdate": "notify"
