@@ -5,7 +5,7 @@
 [![CI](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![Harness](https://img.shields.io/badge/harness-OpenCode%20%2B%20Claude%20Code-purple)
-![MCP Count](https://img.shields.io/badge/MCP-13%20servers-orange)
+![MCP Count](https://img.shields.io/badge/MCP-14%20servers-orange)
 ![Model Providers](https://img.shields.io/badge/models-no%20lock--in-yellow)
 ![Last Commit](https://img.shields.io/github/last-commit/ankitsingh015/HuntMCP?color=blue)
 ![Top Language](https://img.shields.io/github/languages/top/ankitsingh015/HuntMCP)
@@ -135,6 +135,7 @@ go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 go install github.com/projectdiscovery/katana/cmd/katana@latest
 go install github.com/ffuf/ffuf/v2@latest
 go install github.com/hahwul/dalfox/v2@latest
+go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest
 # nmap via your OS package manager (apt/brew/...)
 
 # Initialize local databases
@@ -241,7 +242,9 @@ locked-down tool access, not persistent processes.*
 
 Burp Suite integration (Repeater/Collaborator validation) is designed as an optional
 enhancement tier in `ARCHITECTURE.md`, not a hard requirement — the built agents above run
-entirely on the open-source tool chain.
+entirely on the open-source tool chain. Out-of-band confirmation (blind SSRF/XXE/SQLi/RCE) is
+already covered without Burp via `oob-mcp` (wraps `interactsh-client`) — exploit-agent generates
+a real callback URL, embeds it in the payload, and confirms the hit.
 
 ## Model Providers
 
@@ -290,18 +293,23 @@ methodology:
 
 ```
 HuntMCP/
-├── mcp-servers/               13 FastMCP servers (one per tool) + shared libs:
+├── mcp-servers/               14 FastMCP servers (one per tool) + shared libs:
 │   ├── tool_resolver.py         binary resolution + reactive rate-limit/WAF handling
 │   ├── scope_guard.py           engagement.yaml scope checks
-│   └── model_gateway.py         multi-provider model selection
+│   ├── budget_guard.py          Tier-2 tool-call budget circuit-breaker
+│   ├── model_gateway.py         multi-provider model selection
+│   └── oob-mcp/                 interactsh-client wrapper (blind SSRF/XXE/SQLi/RCE)
 ├── .opencode/
 │   ├── agents/                 Multi-level agent files (OpenCode harness)
 │   └── commands/                /ingest, /learn, /chain, /watch
 ├── .claude/
 │   ├── agents/                 Same agent roster, native Claude Code subagents
-│   └── commands/                /audit
+│   ├── commands/                /audit
+│   └── settings.json            PreToolUse hook: structural scope enforcement
 ├── .mcp.json                   MCP server registration for Claude Code
-├── scripts/                    setup, scope-check, model-select, ingestion, cron
+├── scripts/
+│   ├── hooks/scope_gate_hook.py  Claude Code PreToolUse hook implementation
+│   └── check-scope.sh, check-budget.sh, setup, ingestion, cron
 ├── knowledge/
 │   ├── master-pentest-prompt.md  Phase-mapped WSTG methodology reference
 │   ├── payloads/                 Curated payload lists per vulnerability class
