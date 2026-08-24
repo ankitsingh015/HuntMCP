@@ -1,6 +1,9 @@
 import os
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+import disclosed_reports
 from chroma_client import collection_stats, query, upsert_chunks
 from chunker import chunk_writeup
 from cve_fetch import fetch_cves as _fetch_cves
@@ -99,6 +102,43 @@ def fetch_cves(keyword: str, limit: int = 20) -> str:
         f"Fetched and embedded {len(written)} new CVE(s) for '{keyword}' "
         f"({total_chunks} chunks)."
     )
+
+
+@app.tool()
+def search_disclosed_reports(vuln_class: str = "", platform: str = "", keyword: str = "", limit: int = 10) -> str:
+    """Search a locally-cached catalog of 11k+ real disclosed vulnerability
+    reports (bug-bounty-disclosures.vercel.app) for real-world precedent to
+    cite -- e.g. writing/enhancing a skill's "real disclosed reports"
+    section, or exploit-agent checking whether a vuln class has known
+    precedent on a similar platform/program. Filter by vuln_class (e.g.
+    'Cross-site scripting', 'Access control'), platform (e.g. 'HackerOne'),
+    and/or a keyword matched against title/program. Does not auto-refresh
+    the cache -- call refresh_disclosed_reports() first if it might be
+    empty/stale. This is citation material only, not scope authorization."""
+    results = disclosed_reports.search(vuln_class=vuln_class, platform=platform, keyword=keyword, limit=limit)
+    if not results:
+        return "No matching disclosed reports (check filters, or the cache may need refresh_disclosed_reports())."
+    lines = [f"{len(results)} matching report(s):"]
+    for r in results:
+        bounty = f", ${r['bounty']}" if r.get("bounty") else ""
+        cves = f", {', '.join(r['cves'])}" if r.get("cves") else ""
+        lines.append(
+            f"  [{r.get('platform', '?')}] {r.get('title', 'Untitled')} "
+            f"(program: {r.get('program', '?')}, class: {r.get('vulnerabilityClass', '?')}"
+            f"{bounty}{cves}) -- {r.get('url', 'N/A')}"
+        )
+    return "\n".join(lines)
+
+
+@app.tool()
+def refresh_disclosed_reports(force: bool = False) -> str:
+    """Refresh the local cache of the disclosed-reports catalog. This
+    dataset moves slowly (a daily refresh is plenty) -- skips the download
+    if the cache is under 24h old unless force=True."""
+    result = disclosed_reports.refresh(force=force)
+    if not result.get("refreshed"):
+        return f"Not refreshed: {result.get('reason', 'unknown')} (cached: {result.get('count', 0)} reports)"
+    return f"Refreshed -- {result['count']} disclosed reports cached."
 
 
 @app.tool()
