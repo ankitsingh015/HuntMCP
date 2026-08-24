@@ -74,6 +74,69 @@ def test_list_engagements_empty_when_no_root(tmp_path):
     assert engagement_paths.list_engagements(root) == []
 
 
+def test_check_conflict_none_when_nothing_active(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    assert engagement_paths.check_conflict("example.com", pointer_path=pointer) is None
+
+
+def test_check_conflict_none_when_same_target(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("example.com", pointer, root)
+    assert engagement_paths.check_conflict(
+        "example.com", pointer_path=pointer, engagements_root=root
+    ) is None
+
+
+def test_check_conflict_warns_on_different_incomplete_target(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    warning = engagement_paths.check_conflict(
+        "target-b.com", pointer_path=pointer, engagements_root=root
+    )
+    assert warning is not None
+    assert "target-a-com" in warning
+    assert "target-b-com" in warning
+
+
+def test_check_conflict_none_when_active_target_marked_complete(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    engagement_paths.mark_complete(pointer, root)
+    warning = engagement_paths.check_conflict(
+        "target-b.com", pointer_path=pointer, engagements_root=root
+    )
+    assert warning is None
+
+
+def test_mark_complete_returns_none_when_nothing_active(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    assert engagement_paths.mark_complete(pointer, root) is None
+
+
+def test_is_complete_false_until_marked(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("example.com", pointer, root)
+    assert engagement_paths.is_complete("example-com", root) is False
+    engagement_paths.mark_complete(pointer, root)
+    assert engagement_paths.is_complete("example-com", root) is True
+
+
+def test_list_engagements_includes_complete_flag(tmp_path):
+    root = str(tmp_path / "engagements")
+    pointer = str(tmp_path / ".active-engagement")
+    engagement_paths.set_active_target("example.com", pointer, root)
+    result = engagement_paths.list_engagements(root)
+    assert result[0]["complete"] is False
+    engagement_paths.mark_complete(pointer, root)
+    result = engagement_paths.list_engagements(root)
+    assert result[0]["complete"] is True
+
+
 def test_list_engagements_reports_target_and_calls(tmp_path):
     root = str(tmp_path / "engagements")
     slug_dir = os.path.join(root, "example-com")
