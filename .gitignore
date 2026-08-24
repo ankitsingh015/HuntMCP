@@ -40,6 +40,9 @@ budget.json
 # security.txt-discovered candidate targets — local catalog, not for git.
 data/candidate-targets.db*
 
+# Structured audit log — per-engagement Tier-2 call log, real target data.
+data/audit.jsonl
+
 # OOB listener sessions (oob-mcp) — live target interaction data
 # (source IPs, callback hits), workstation-private like chat-logs/.
 data/oob-sessions/

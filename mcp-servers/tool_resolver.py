@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 
+from audit_log import log_call as _log_call
 from budget_guard import enforce as _enforce_budget
 
 GO_BIN = os.path.expanduser("~/go/bin")
@@ -105,12 +106,17 @@ def run_tool(
     binary = resolve_tool(name)
     kwargs.setdefault("capture_output", True)
     kwargs.setdefault("text", True)
+    start = time.monotonic()
     result = subprocess.run([binary, *args], **kwargs)
 
+    block = None
     if retry_on_rate_limit:
         combined = (result.stdout or "") + (result.stderr or "")
-        if classify_block(combined) == "rate_limit":
+        block = classify_block(combined)
+        if block == "rate_limit":
             time.sleep(5)
             result = subprocess.run([binary, *args], **kwargs)
+            block = None
 
+    _log_call(name, args, result.returncode, (time.monotonic() - start) * 1000, block)
     return result

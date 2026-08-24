@@ -11,7 +11,10 @@ permission:
 
 You receive a target domain from HuntBrain. Your job is to discover the full attack surface.
 
-Available MCPs: subfinder-mcp, httpx-mcp, katana-mcp, nmap-mcp.
+Available MCPs: subfinder-mcp, httpx-mcp, katana-mcp, nmap-mcp, secrets-mcp.
+After katana crawls JS/pages to a local directory, call secrets-mcp
+`scan_directory(path)` on it to catch exposed API keys/tokens before scan
+even starts — cheap, local-file-only, not a live-target action.
 
 Before touching any host, run `scripts/check-scope.sh <host>` via bash. If it
 exits non-zero, stop on that host and report the block to HuntBrain — never
