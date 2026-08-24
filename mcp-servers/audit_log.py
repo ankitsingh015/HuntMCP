@@ -19,7 +19,7 @@ LOG_PATH = os.getenv(
 
 
 def log_call(tool: str, args: list[str], returncode: int | None,
-             duration_ms: float, block: str | None) -> None:
+             duration_ms: float, block: str | None, path: str = LOG_PATH) -> None:
     entry = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "tool": tool,
@@ -28,6 +28,6 @@ def log_call(tool: str, args: list[str], returncode: int | None,
         "duration_ms": round(duration_ms, 1),
         "block": block,
     }
-    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-    with open(LOG_PATH, "a") as f:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
