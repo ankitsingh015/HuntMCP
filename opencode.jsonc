@@ -104,6 +104,12 @@
       "command": "./.venv/bin/python",
       "args": ["mcp-servers/waf-bypass-mcp/server.py"]
     },
+    "browser-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "./.venv/bin/python",
+      "args": ["mcp-servers/browser-mcp/server.py"]
+    },
     "hackerone-mcp": {
       "type": "local",
       "enabled": true,
