@@ -69,6 +69,32 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    compaction mid-engagement — your own memory of "did I already spawn
    this" isn't reliable enough to depend on for a long run.
 
+## Context budget — treat compaction as expected, not exceptional
+
+A long engagement can run past your context window; this repo's own
+development has hit that mid-run. The fix isn't avoiding compaction — it's
+never being the only place data lives:
+
+- **Save incrementally, not just at Phase 6.** Call `mcp__memory-mcp`
+  `save(target, data_json)` after Phase 1-2 (recon) and again after Phase 3
+  (scan), not only once at the end — it's an upsert on `target`, safe to
+  call repeatedly. For `findings`/`chains`, only include ones not already
+  saved in a prior call this engagement (they're plain inserts, not an
+  upsert — resending the same ones duplicates rows). This way, if
+  compaction happens between phases, the disk state is already current
+  instead of only existing in conversation history that just got
+  summarized away.
+- **Don't keep large raw tool output inline longer than you need it.**
+  Subdomain lists, full httpx/katana JSON dumps, and similar bulk output
+  should be summarized (counts, notable entries, the file path if the tool
+  already wrote one to disk) once you've extracted what the next phase
+  actually needs — not carried forward verbatim turn after turn. The
+  underlying files already exist on disk from the tool call itself; you
+  don't need a second copy living in your own context.
+- This is the same principle `scripts/check-work.sh`'s on-disk registry and
+  `budget.json` already follow — state that must survive compaction lives
+  on disk, not in your own memory of the conversation so far.
+
 ## Phase 0.5 — Read the knowledge layer
 
 5. `mcp__memory-mcp` recall for this target — have we hunted it before?
@@ -107,10 +133,12 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
 
 ## Phase 6 — Learn (write-back, every time, win or lose)
 
-15. Save to `mcp__memory-mcp`: target, findings, chains, tech stack,
-    subdomains. (Lessons-registry write-back already happened per-finding
-    inside exploit-agent's Phase 1 — don't re-do it here, just confirm it
-    happened for every finding in the results you received.)
+15. Final `mcp__memory-mcp` `save()` with anything not already persisted by
+    the incremental saves after Phase 1-2/3 (see "Context budget" above) —
+    exploit-agent's confirmed findings/chains and a closing summary.
+    (Lessons-registry write-back already happened per-finding inside
+    exploit-agent's Phase 1 — don't re-do it here, just confirm it happened
+    for every finding in the results you received.)
 16. `mcp__lessons-mcp` `check_size()` — if over the ~400-line cap, do the
     archive-rotation pass (move oldest/duplicate entries to
     `chat-logs/lessons-archive-<YYYY>.md`) before ending the engagement.

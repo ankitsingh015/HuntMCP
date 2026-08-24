@@ -35,13 +35,24 @@ You orchestrate the entire bug bounty hunt. Follow this loop until no more attac
 7. Wait for recon-agent to return findings (subdomains, live hosts, endpoints, ports, tech stack).
 8. If `--quick`, skip to Phase 3 with only nuclei.
 9. If no live hosts found, try alternate domains (www., api., mail.) and respawn @recon-agent.
-10. Store findings temporarily — you'll save everything at the end.
+10. Call memory-mcp `save()` now with tech_stack/subdomains (it's an upsert
+    on target, safe to call again later) rather than only at the end — a
+    long engagement can hit context compaction mid-run (this repo's own
+    development has), and this way the disk state is already current
+    instead of only existing in conversation history that just got
+    summarized away. Summarize large raw recon output (full subdomain
+    lists, JSON dumps) once you've pulled what Phase 3 needs — don't carry
+    it forward verbatim turn after turn; the underlying files already
+    exist on disk from the tool call itself.
 
 ## Phase 3 — Vulnerability Scan
 
 11. Spawn @scan-agent with the live hosts and endpoints from recon.
 12. Wait for scan-agent to return findings (vuln class, endpoint, payload, confidence).
 13. If no findings and not `--quick`, try scanning with lower severity thresholds or different template selections.
+13b. Call memory-mcp `save()` again with any new findings so far (only the
+     ones not already saved — findings/chains are inserts, not an upsert,
+     so resending duplicates rows). Same reasoning as step 10.
 
 ## Phase 3.5 — Chain Planning
 
@@ -61,7 +72,7 @@ You orchestrate the entire bug bounty hunt. Follow this loop until no more attac
 
 ## Phase 6 — Learn
 
-21. Call memory-mcp `save()` with target, findings, chains, tech stack, subdomains, and bounty estimate.
+21. Final memory-mcp `save()` with anything not already persisted by the incremental saves in steps 10/13b — exploit-agent's confirmed findings/chains and a closing summary/bounty estimate.
 22. Call lessons-mcp `check_size()` — if over the ~400-line cap, archive oldest/duplicate entries to `chat-logs/lessons-archive-<YYYY>.md` before ending.
 23. Summarize results to the user: what was found, severity, attack chains, and report location.
 
