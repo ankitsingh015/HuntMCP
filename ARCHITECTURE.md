@@ -18,12 +18,12 @@ phase-by-phase "Build Plan" further down for detail):
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Phase 1 — Local system (agents, MCP servers, knowledge base) | ✅ Built | 6 agents (incl. chain-planner), 14 MCP servers, dual OpenCode + Claude Code harness, payloads/wordlists seeded |
+| Phase 1 — Local system (agents, MCP servers, knowledge base) | ✅ Built | 6 agents (incl. chain-planner), 19 MCP servers, dual OpenCode + Claude Code harness, payloads/wordlists seeded, 53-test pytest suite in CI |
 | Phase 2 — Go backend (API, auth, pgvector) | ✅ Built | See `backend/` — Gin + PostgreSQL/pgvector, JWT auth, `/mcp` endpoint. Not yet wired to the local agent system — see "World-project integration map" |
 | Phase 2.5-2.7 — Methodology depth, harness/safety hardening, knowledge/model backlog | ✅ Built | Scope gate, reactive rate limiting, model gateway, lessons registry, CVE search index — see Build Plan below |
-| Phase 2.8 — claude-bug-bounty-derived backlog | 🔶 High priority done | Scope-enforcement hook, OOB listener (`oob-mcp`), WAF bypass tooling (`waf-bypass-mcp`), HackerOne read-only MCP (`hackerone-mcp`, untested against a live account) all done; Medium/Lower priority items (secrets scanning, audit log, skills split, test suite, SAST, web3, mobile) still open |
+| Phase 2.8 — claude-bug-bounty-derived backlog | 🔶 High + most Medium priority done | All 4 High-priority items done (scope hook, `oob-mcp`, `waf-bypass-mcp`, `hackerone-mcp` — the last untested against a live account). Medium: secrets scanning, audit log, pytest suite all done; skills-as-Claude-Code-Skills restructuring still open (deliberately — a 59-section mechanical split isn't a "quick" task, see its own note below). Lower priority (SAST, web3, mobile) still open — new domains, larger scope commitment |
 | Phase 2.9 — Strix-derived backlog | ✅ Complete | Budget circuit-breaker, duplicate-work check, context-compaction strategy, Caido support all done |
-| Phase 2.10 — Full world-research backlog | ❌ Not started | Large menu, not priority-ranked — see Build Plan below |
+| Phase 2.10 — Full world-research backlog | 🔶 Concrete items done | EPSS+KEV CVE scoring, `AGENT-BRIEF.md`, cross-model second opinion, `mantis-dedupe` finding-level dedup all done. Remaining items are either "cite, don't adopt" references (no code needed), contingent on an unbuilt prerequisite (self-scan needs the self-expanding-toolkit mechanic first), or genuinely large commitments needing live infra (XBOW benchmark run, bloodhound-mcp/ghidra-mcp for domains with no current target) — see Build Plan below |
 | Phase 3 — Web platform (Next.js dashboard, community PRs, CI/CD auto-train) | ❌ Not started | Design only, see Build Plan below |
 | Self-improvement / lessons registry (`lessons-mcp`) | ✅ Built | Real write-back on every confirmed finding and closed false positive, not a documentation placeholder |
 
