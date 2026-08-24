@@ -37,6 +37,9 @@ engagement.yaml
 # reset alongside engagement.yaml at the start of each new engagement.
 budget.json
 
+# security.txt-discovered candidate targets — local catalog, not for git.
+data/candidate-targets.db*
+
 # OOB listener sessions (oob-mcp) — live target interaction data
 # (source IPs, callback hits), workstation-private like chat-logs/.
 data/oob-sessions/

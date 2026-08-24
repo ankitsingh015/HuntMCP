@@ -63,6 +63,10 @@
     "hackerone-mcp": {
       "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/hackerone-mcp/server.py"]
+    },
+    "target-discovery-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/target-discovery-mcp/server.py"]
     }
   }
 }

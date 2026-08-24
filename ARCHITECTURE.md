@@ -1188,6 +1188,14 @@ Everything else distilled from the 2026-08-22 100+-repo survey (`RESEARCH-TODO.m
 gitignored — 227 repos surveyed, 22 deep-dived) that isn't already covered by Phase 2.7/2.8/2.9
 above. Grouped by kind, not priority-ranked — treat this as the full menu, not a sequence.
 
+**Also done, not from the research pass — user-requested:** `mcp-servers/target-discovery-mcp/`
+(`check_security_txt`/`add_candidate`/`list_candidates`) — finds real, explicitly-authorized-but-
+unlisted targets via RFC 9116 `security.txt` discovery (a company doesn't need a HackerOne listing
+to have a valid disclosure policy) and catalogs validated ones in a local gitignored DB
+(`data/candidate-targets.db`) for human triage. Deliberately does NOT test unauthorized domains —
+security.txt is a publicly-published policy file, reading it is not a Tier-2 action, and a domain
+without one is not added as a candidate. Functionally tested against a real domain (github.com).
+
 **Validation & quality — extends the Phase 2.9 confidence-calibration work:**
 
 | What | Idea | Source |
