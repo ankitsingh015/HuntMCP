@@ -1,6 +1,6 @@
 ---
 name: writing-great-skills
-description: Conventions for writing HuntMCP's own Claude Code Skills, especially the ongoing conversion of knowledge/master-pentest-prompt.md's [PHASE N] sections into skills/<topic>/SKILL.md files. Use this before creating or editing any file under skills/.
+description: Conventions for writing HuntMCP's own Claude Code Skills, especially the ongoing conversion of knowledge/master-pentest-prompt.md's [PHASE N] sections into .claude/skills/<topic>/SKILL.md files. Use this before creating or editing any file under .claude/skills/.
 ---
 
 # Writing HuntMCP's skills
@@ -21,9 +21,25 @@ matching the skill's `description` against what it's currently doing,
 instead of the agent having to already know the right grep pattern.
 
 **`master-pentest-prompt.md` stays the source of truth for OpenCode and is
-never deleted.** `skills/` is an additional, Claude-Code-only front door
-onto the same technique content — converting a phase means writing a new
-skill file, not removing the phase from the master prompt.
+never deleted.** `.claude/skills/` is an additional, Claude-Code-only
+front door onto the same technique content — converting a phase means
+writing a new skill file, not removing the phase from the master prompt.
+
+## Where skills actually live (get this right first)
+
+Project skills belong at **`.claude/skills/<skill-name>/SKILL.md`** —
+committed to the repo, project-scoped. Not a bare top-level `skills/`
+directory; Claude Code doesn't discover skills there at all. (The first
+batch of this conversion was written to `skills/` by mistake and had to be
+moved — corrected the same session it was caught, before any further
+phases were converted on top of the wrong location. Verified against the
+official docs at `code.claude.com/docs/en/skills`, not assumed from
+memory.)
+
+The directory name is what you type to invoke the skill directly
+(`/engagement-setup`); the frontmatter `name` field only sets the display
+label in listings for a project skill like these, it doesn't change the
+invocation name.
 
 ## One skill = one coherent testing concern, not one phase
 
@@ -44,8 +60,12 @@ description: One or two sentences. State what it covers AND when to reach for it
 ---
 ```
 
-No other frontmatter fields are required. Don't invent extra ones without
-a concrete reason.
+Per Claude Code's actual spec, every frontmatter field is optional and
+only `description` is recommended — `name` isn't required. HuntMCP's own
+convention keeps `name` anyway, matching the directory, purely for
+consistency/traceability across ~39 files; don't add other fields (like
+`allowed-tools`, `model`, `context: fork`) without a concrete reason, since
+these are reference-content skills, not task-automation ones.
 
 ## Body structure
 
@@ -61,6 +81,10 @@ a concrete reason.
 3. **Reference back**, not duplication: if a technique needs a payload
    list already tracked in `knowledge/payloads/<class>.txt`, link to that
    file rather than copying its contents into the skill.
+
+Keep `SKILL.md` under 500 lines (Claude Code's own guidance) — move
+detailed reference material to a separate file in the skill's directory
+and link to it if a conversion genuinely needs more room than that.
 
 ## What NOT to carry over
 
@@ -85,11 +109,12 @@ something was silently dropped is not.
 
 ## Skill-with-eval-file (when it applies)
 
-For a skill that's more than a static reference doc — one with a
-non-obvious decision procedure a future edit could quietly break — add a
-small `evals/evals.json` alongside `SKILL.md`: a handful of
-input/expected-behavior pairs a human can eyeball after an edit. Most of
-the phase-conversion skills are reference material and don't need this;
-reach for it on skills like the WAF-bypass decision tree or the
-low-hanging-fruit priority order, where getting the sequence wrong has a
-real cost.
+Claude Code's real eval mechanism (the official `skill-creator` plugin)
+stores test cases in `evals/evals.json` alongside `SKILL.md` — prompts,
+expected behavior, and a should-trigger/should-not-trigger check on the
+description itself. For a skill that's more than a static reference doc —
+one with a non-obvious decision procedure a future edit could quietly
+break — add that file. Most of the phase-conversion skills are reference
+material and don't need this; reach for it on skills like the WAF-bypass
+decision tree or the low-hanging-fruit priority order, where getting the
+sequence wrong has a real cost.
