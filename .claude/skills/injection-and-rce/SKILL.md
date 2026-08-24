@@ -64,3 +64,27 @@ check whether it chains into RCE via this skill's second half.
   `contextIsolation` bypass.
 - **First-class escalation path**: desync/request smuggling (see the
   `request-smuggling` skill) chained into RCE.
+
+## Real disclosed reports (precedent, not just theory)
+
+These confirm the technique classes above paid out on real programs, not
+just in theory:
+
+- **SQLi**: HackerOne #2599826 (U.S. DoD, blind boolean-based SQLi via
+  the `User-Agent` header -- a header-based injection point, not just a
+  query param), #1069561 (Automattic, SQLi in intensedebate.com),
+  #962889 (Acronis, SQLi in `agent-manager`).
+- **RCE via deserialization**: HackerOne #1174185 (U.S. DoD, RCE via
+  insecure deserialization in Telerik UI, CVE-2019-18935), #274990
+  (RubyGems, RCE via deserialization on rubygems.org itself -- a
+  reminder that package-registry infrastructure is as much a target as
+  the applications built on it), #1248052 (U.S. DoD, pre-auth RCE in
+  ForgeRock OpenAM via unsafe Java deserialization in its Jato
+  framework, CVE-2021-35464).
+
+The DoD reports are a useful pattern on their own: government bug bounty
+programs disclose at high volume and tend toward exactly the boring,
+systematic injection classes in this skill (header-based SQLi, known-CVE
+deserialization in a bundled third-party component) rather than exotic
+chains -- confirming that thorough coverage of the basics here is
+higher-yield than hunting for novelty.
