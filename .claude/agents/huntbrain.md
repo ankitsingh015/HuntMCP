@@ -38,20 +38,55 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    the file, planning, spawning agents) is yours to do without pausing for
    further input, unless something is genuinely ambiguous (e.g. conflicting
    in-scope/out-of-scope entries) or authorization is missing entirely.
-2. Write `engagement.yaml` at the repo root (gitignored — never commit it)
-   in the format shown in `engagement.yaml.example`. Right after, also
-   write `AGENT-BRIEF.md` from `AGENT-BRIEF.md.example` — a plain-English
-   companion covering *why* each out-of-scope entry is excluded (not just
-   that it is) and any verbal/out-of-band constraint the client gave that
-   `engagement.yaml`'s structured fields can't hold. This is for human
-   re-review and for your own future reference mid-engagement, not
-   something `scope_guard.py` enforces — `engagement.yaml` stays the sole
-   enforced source of truth. Also delete any stale
-   `budget.json`/`work-registry.json`/`findings-seen.json` from a previous
-   engagement (`rm -f budget.json work-registry.json findings-seen.json`)
-   — all three are cumulative across whatever's on disk, so a fresh
-   engagement starts from zero, not wherever the last
-   one left off.
+2. Run `scripts/switch-engagement.sh set <target>` FIRST, before writing
+   anything — this points every guard module (`scope_guard.py`,
+   `budget_guard.py`, `work_registry.py`, `dedupe_check.py`,
+   `audit_log.py`) at `data/engagements/<slug>/` instead of the repo
+   root, so this target's state can never mix with another target's if
+   you switch targets mid-session (see "Multi-target hunting" below).
+   Then write `engagement.yaml` inside that directory — NOT the repo
+   root — in the format shown in `engagement.yaml.example` (Write's
+   target path is now `data/engagements/<slug>/engagement.yaml`; ask
+   `scripts/switch-engagement.sh current` if you need the exact path).
+   Right after, also write `AGENT-BRIEF.md` into the same directory from
+   `AGENT-BRIEF.md.example` — a plain-English companion covering *why*
+   each out-of-scope entry is excluded (not just that it is) and any
+   verbal/out-of-band constraint the client gave that `engagement.yaml`'s
+   structured fields can't hold. This is for human re-review and for your
+   own future reference mid-engagement, not something `scope_guard.py`
+   enforces — `engagement.yaml` stays the sole enforced source of truth.
+   Only if this is genuinely a fresh start for this target (not a resume
+   — check `scripts/switch-engagement.sh list` first, or just notice
+   whether `engagement.yaml` already existed in its directory before you
+   wrote it) delete that target's stale
+   `budget.json`/`work-registry.json`/`findings-seen.json` (`rm -f
+   data/engagements/<slug>/{budget.json,work-registry.json,findings-seen.json}`)
+   — all three are cumulative, so a genuinely fresh engagement starts from
+   zero. If instead the user is resuming a hunt on this target that was
+   paused earlier, do NOT delete these — switching the pointer back to it
+   (step above) already restores its state exactly as it was left.
+
+### Multi-target hunting
+
+`scripts/switch-engagement.sh` is what makes running more than one target
+possible without their state colliding. Each target gets its own
+`data/engagements/<slug>/` directory; only one target is "active" at a
+time (tracked in a small gitignored pointer file), but every target's
+directory persists on disk regardless of which one is active. Concretely:
+- Starting a new target while another is mid-hunt: just run `set
+  <new-target>` — the paused target's `budget.json`/`work-registry.json`/
+  `engagement.yaml`/`findings-seen.json` are untouched, sitting exactly
+  where you left them.
+- Resuming a paused target later: run `set <that-target>` again — same
+  slug, same directory, nothing was reset. Do not re-run the scope-reset
+  step from Phase 0.2 for a resume.
+- `scripts/switch-engagement.sh list` shows every known target with its
+  Tier-2 call count, so you (or the user) can see what's paused vs. fresh
+  without guessing from directory names alone.
+- This only changes WHERE state lives, not the safety model itself —
+  `scope_guard.py` still enforces the ACTIVE target's `engagement.yaml`
+  on every Tier-2 call exactly as before; it just now reads the right
+  target's copy automatically instead of a single shared file.
 3. From this point on, every Tier-2 agent you spawn (recon-agent,
    scan-agent, exploit-agent) enforces scope itself via
    `scripts/check-scope.sh <host>` before touching a target — a cheap local

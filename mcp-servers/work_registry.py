@@ -32,7 +32,13 @@ import sys
 import time
 import uuid
 
-DEFAULT_PATH = os.getenv("HUNTMCP_WORK_REGISTRY_PATH", "work-registry.json")
+try:
+    import engagement_paths
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import engagement_paths
+
+DEFAULT_PATH = engagement_paths.resolve("work-registry.json", override_env="HUNTMCP_WORK_REGISTRY_PATH")
 
 
 def _load(path: str = DEFAULT_PATH) -> dict:

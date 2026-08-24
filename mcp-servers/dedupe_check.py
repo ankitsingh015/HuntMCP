@@ -27,7 +27,13 @@ import os
 import sys
 import time
 
-DEFAULT_PATH = os.getenv("HUNTMCP_FINDINGS_SEEN_PATH", "findings-seen.json")
+try:
+    import engagement_paths
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import engagement_paths
+
+DEFAULT_PATH = engagement_paths.resolve("findings-seen.json", override_env="HUNTMCP_FINDINGS_SEEN_PATH")
 
 
 def _fingerprint(vuln_class: str, endpoint: str, parameter: str = "") -> str:

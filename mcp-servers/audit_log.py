@@ -10,11 +10,18 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 
-LOG_PATH = os.getenv(
-    "HUNTMCP_AUDIT_LOG",
-    os.path.join(os.path.dirname(__file__), "..", "data", "audit.jsonl"),
+try:
+    import engagement_paths
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import engagement_paths
+
+_LEGACY_LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "audit.jsonl")
+LOG_PATH = engagement_paths.resolve(
+    "audit.jsonl", override_env="HUNTMCP_AUDIT_LOG", legacy_default=_LEGACY_LOG_PATH,
 )
 
 

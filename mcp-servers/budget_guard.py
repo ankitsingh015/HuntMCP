@@ -28,7 +28,13 @@ import json
 import os
 import sys
 
-DEFAULT_PATH = os.getenv("HUNTMCP_BUDGET_PATH", "budget.json")
+try:
+    import engagement_paths
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import engagement_paths
+
+DEFAULT_PATH = engagement_paths.resolve("budget.json", override_env="HUNTMCP_BUDGET_PATH")
 MAX_CALLS = int(os.getenv("HUNTMCP_MAX_TOOL_CALLS", "500"))
 WARNING_BANDS = (0.70, 0.85, 0.95)
 
