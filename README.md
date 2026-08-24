@@ -181,12 +181,20 @@ automatically as the engagement progresses.
 
 ## Scope & Authorization
 
-Nothing runs against a target without `engagement.yaml` at the repo root (gitignored — this
-file names a real target and stays local). HuntBrain validates it **once** at the start of an
-engagement; every subsequent Tier-2 action (recon/scan/exploit) then runs the cheap,
-deterministic `scripts/check-scope.sh <host>` before touching that host — no LLM call, no
-per-action re-validation, no way to silently wander out of scope either. See
-`engagement.yaml.example` for the format.
+Nothing runs against a target without `engagement.yaml` (gitignored — this file names a real
+target and stays local). HuntBrain validates it **once** at the start of an engagement; every
+subsequent Tier-2 action (recon/scan/exploit) then runs the cheap, deterministic
+`scripts/check-scope.sh <host>` before touching that host — no LLM call, no per-action
+re-validation, no way to silently wander out of scope either. See `engagement.yaml.example`
+for the format.
+
+**Multiple targets:** `scripts/switch-engagement.sh set <target>` puts `engagement.yaml` (and
+`budget.json`/`work-registry.json`/`findings-seen.json`) under `data/engagements/<slug>/`
+instead of the repo root — HuntBrain runs this automatically at Phase 0. Pausing one target to
+start another is just `set <other-target>`; the paused target's state sits untouched until you
+`set` back to it. `scripts/switch-engagement.sh list` shows every target with state on disk. A
+single-target workflow that never calls this (e.g. the quick-start below) keeps using the flat
+repo-root files exactly as before.
 
 ## How It Works
 
@@ -297,6 +305,7 @@ HuntMCP/
 │   ├── tool_resolver.py         binary resolution + reactive rate-limit/WAF handling
 │   ├── scope_guard.py           engagement.yaml scope checks
 │   ├── budget_guard.py          Tier-2 tool-call budget circuit-breaker
+│   ├── engagement_paths.py      per-target state dirs -- multi-target hunting, no state mixing
 │   ├── model_gateway.py         multi-provider model selection
 │   └── oob-mcp/                 interactsh-client wrapper (blind SSRF/XXE/SQLi/RCE)
 ├── .opencode/
@@ -309,7 +318,7 @@ HuntMCP/
 ├── .mcp.json                   MCP server registration for Claude Code
 ├── scripts/
 │   ├── hooks/scope_gate_hook.py  Claude Code PreToolUse hook implementation
-│   └── check-scope.sh, check-budget.sh, setup, ingestion, cron
+│   └── check-scope.sh, check-budget.sh, switch-engagement.sh, setup, ingestion, cron
 ├── knowledge/
 │   ├── master-pentest-prompt.md  Phase-mapped WSTG methodology reference
 │   ├── payloads/                 Curated payload lists per vulnerability class

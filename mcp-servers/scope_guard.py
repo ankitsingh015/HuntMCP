@@ -27,7 +27,13 @@ try:
 except ImportError:
     yaml = None
 
-DEFAULT_PATH = os.getenv("HUNTMCP_ENGAGEMENT_PATH", "engagement.yaml")
+try:
+    import engagement_paths
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import engagement_paths
+
+DEFAULT_PATH = engagement_paths.resolve("engagement.yaml", override_env="HUNTMCP_ENGAGEMENT_PATH")
 
 
 @dataclass
