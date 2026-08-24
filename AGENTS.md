@@ -86,7 +86,12 @@ opencode run "HuntMCP audit testphp.vulnweb.com --quick"
 ## Required runtime dependencies
 
 - OpenCode v1.17+
-- Burp Suite with MCP Server extension on `127.0.0.1:9876`
+- Burp Suite with MCP Server extension on `127.0.0.1:9876` — **optional**;
+  if you don't have a Burp Pro license, Caido (free, open-source) covers
+  the same Repeater/proxy-replay validation role via its own MCP-compatible
+  plugin — point exploit-agent at whichever one you have running locally,
+  neither is a hard requirement (the proof-capsule validation in
+  `exploit-agent.md` works with plain curl too, just more manually)
 - Python 3.10+
 - Go toolchain (for security tools)
 
