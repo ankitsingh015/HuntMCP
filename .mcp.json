@@ -71,6 +71,10 @@
     "secrets-mcp": {
       "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/secrets-mcp/server.py"]
+    },
+    "second-opinion-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/second-opinion-mcp/server.py"]
     }
   }
 }
