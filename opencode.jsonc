@@ -109,6 +109,12 @@
       "enabled": true,
       "command": "./.venv/bin/python",
       "args": ["mcp-servers/hackerone-mcp/server.py"]
+    },
+    "target-discovery-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "./.venv/bin/python",
+      "args": ["mcp-servers/target-discovery-mcp/server.py"]
     }
   },
   "autoupdate": "notify"
