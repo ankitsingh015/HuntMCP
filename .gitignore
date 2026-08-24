@@ -41,6 +41,9 @@ budget.json
 # security.txt-discovered candidate targets — local catalog, not for git.
 data/candidate-targets.db*
 
+# Finding-level dedup registry — per-engagement, reset alongside engagement.yaml.
+findings-seen.json
+
 # Structured audit log — per-engagement Tier-2 call log, real target data.
 data/audit.jsonl
 

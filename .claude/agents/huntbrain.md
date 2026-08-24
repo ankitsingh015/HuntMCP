@@ -47,9 +47,10 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    re-review and for your own future reference mid-engagement, not
    something `scope_guard.py` enforces — `engagement.yaml` stays the sole
    enforced source of truth. Also delete any stale
-   `budget.json`/`work-registry.json` from a previous engagement (`rm -f
-   budget.json work-registry.json`) — both are cumulative across whatever's
-   on disk, so a fresh engagement starts from zero, not wherever the last
+   `budget.json`/`work-registry.json`/`findings-seen.json` from a previous
+   engagement (`rm -f budget.json work-registry.json findings-seen.json`)
+   — all three are cumulative across whatever's on disk, so a fresh
+   engagement starts from zero, not wherever the last
    one left off.
 3. From this point on, every Tier-2 agent you spawn (recon-agent,
    scan-agent, exploit-agent) enforces scope itself via
