@@ -1182,7 +1182,7 @@ posthog/scarf) — even opt-in, a tool that processes real target/engagement dat
 caution before wiring in any outbound analytics, and it isn't solving a problem HuntMCP
 actually has.
 
-### Phase 2.10: Full World-Research Backlog (Not started)
+### Phase 2.10: Full World-Research Backlog (Concrete items done, rest is references/contingent/large-scope)
 
 Everything else distilled from the 2026-08-22 100+-repo survey (`RESEARCH-TODO.md`, private/
 gitignored — 227 repos surveyed, 22 deep-dived) that isn't already covered by Phase 2.7/2.8/2.9
