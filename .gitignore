@@ -41,6 +41,12 @@ budget.json
 # security.txt-discovered candidate targets — local catalog, not for git.
 data/candidate-targets.db*
 
+# Aggregated bounty-program scope cache (bounty_scope.py, from
+# arkadiyt/bounty-targets-data) and disclosed-reports catalog cache
+# (disclosed_reports.py) — both re-downloadable, not for git.
+data/bounty-scope-cache/
+data/disclosed-reports-cache/
+
 # Finding-level dedup registry — per-engagement, reset alongside engagement.yaml.
 findings-seen.json
 

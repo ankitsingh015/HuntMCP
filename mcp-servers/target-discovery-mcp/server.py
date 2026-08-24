@@ -1,15 +1,16 @@
-"""security.txt-aware target discovery (Phase 2.10-adjacent).
+"""Target discovery, both halves: unlisted (security.txt) and listed
+(aggregated bounty-platform scope) (Phase 2.10-adjacent).
 
-Not every real, in-scope-for-testing target is listed on HackerOne/
-Bugcrowd -- a company can publish its own vulnerability disclosure policy
-via a security.txt file (RFC 9116) at its domain root without ever
-appearing on a bounty platform. Those targets are both explicitly
-authorized (the whole point of security.txt is "here's how/whether you may
-report what you find") and less competed-over than an already-listed H1
-program, which is the actual, legitimate version of "less visible target"
--- unlike testing a domain with no published policy at all and hoping for
-the best afterward, which this project does not do (see ARCHITECTURE.md's
-Scope & Authorization section).
+**Unlisted half** -- not every real, in-scope-for-testing target is listed
+on HackerOne/Bugcrowd -- a company can publish its own vulnerability
+disclosure policy via a security.txt file (RFC 9116) at its domain root
+without ever appearing on a bounty platform. Those targets are both
+explicitly authorized (the whole point of security.txt is "here's how/
+whether you may report what you find") and less competed-over than an
+already-listed H1 program, which is the actual, legitimate version of
+"less visible target" -- unlike testing a domain with no published policy
+at all and hoping for the best afterward, which this project does not do
+(see ARCHITECTURE.md's Scope & Authorization section).
 
 Fetching a domain's own published security.txt is not a Tier-2 action --
 it's reading a file the domain owner explicitly publishes for exactly this
@@ -25,6 +26,20 @@ add_candidate(domain, notes) to store it (only if it validated) in a local
 DB for later triage -- list_candidates() to review what's accumulated.
 Nothing here spawns a hunt automatically; a human still decides what to do
 with an entry.
+
+**Listed half** (`bounty_scope.py`) -- the complementary case: a domain
+that IS already covered by a published program on HackerOne, Bugcrowd,
+Intigriti, Federacy, or YesWeHack, sourced from arkadiyt/bounty-targets-data
+(no credentials needed, unlike hackerone-mcp's sync_program_scope, which
+needs a live H1 account and only covers H1 -- keep both, this is a
+complement, not a replacement). refresh_bounty_scope() pulls the latest
+aggregated data and logs any newly-added scope; lookup_bounty_scope(domain)
+checks a specific domain against the cache; list_new_bounty_scope() reads
+back what's newly appeared -- the cheap, safe-to-run-often half of
+continuous scope discovery. Same rule applies here as above: none of this
+spawns a hunt or implies active testing is authorized on its own -- it only
+surfaces that a published program covers the domain; engagement.yaml is
+still the sole enforced scope boundary before any Tier-2 action.
 """
 
 from __future__ import annotations
@@ -37,7 +52,8 @@ from datetime import UTC, datetime
 
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 
-import db  # noqa: E402
+import bounty_scope
+import db
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("target-discovery-mcp")
@@ -181,6 +197,64 @@ def list_candidates(validated_only: bool = True) -> str:
             f"  [{mark}] {r['domain']} -- contact: {r['contact'] or '(none)'} "
             f"-- policy: {r['policy_url'] or '(none)'} -- notes: {r['notes'] or '(none)'}"
         )
+    return "\n".join(lines)
+
+
+@app.tool()
+def refresh_bounty_scope(force: bool = False) -> str:
+    """Refresh the local cache of aggregated bounty-program scope from
+    arkadiyt/bounty-targets-data (HackerOne/Bugcrowd/Intigriti/Federacy/
+    YesWeHack, no credentials needed). Skips the download if the cache is
+    still fresh (<20 min old) unless force=True -- the upstream source
+    itself only updates every 30 min, so calling this often is cheap and
+    safe. Logs any newly-added or newly-removed (domain, platform, program)
+    pairs -- see list_new_bounty_scope() to read that log."""
+    result = bounty_scope.refresh(force=force)
+    if not result.get("refreshed"):
+        return f"Not refreshed: {result.get('reason', 'unknown')} (cached domains: {result.get('domains', 0)})"
+    lines = [
+        f"Refreshed -- {result['domains']} domains across cached platforms.",
+        f"  {result['added']} newly added, {result['removed']} newly removed since last refresh.",
+    ]
+    if result.get("failed_platforms"):
+        lines.append(f"  Failed to fetch: {', '.join(result['failed_platforms'])} (kept prior cached data for those)")
+    return "\n".join(lines)
+
+
+@app.tool()
+def lookup_bounty_scope(domain: str) -> str:
+    """Check whether a domain is already covered by a published bounty
+    program on any of the 5 aggregated platforms -- the Phase 0
+    auto-discovery use case: a target the user names may already have a
+    known, structured scope you don't have to ask them to paste. Matches
+    exact domains and wildcard subdomain patterns. Reads the local cache
+    only -- call refresh_bounty_scope() first if it might be stale."""
+    matches = bounty_scope.lookup_domain(domain)
+    if not matches:
+        return f"{domain!r} not found in any cached bounty-program scope (may be unlisted, or cache needs a refresh)."
+    lines = [f"{len(matches)} match(es) for {domain!r}:"]
+    for m in matches:
+        bounty = "bounty-eligible" if m["eligible_for_bounty"] else "NOT bounty-eligible"
+        sev = f", max severity {m['max_severity']}" if m.get("max_severity") else ""
+        lines.append(
+            f"  [{m['platform']}] {m['program']} ({bounty}{sev}) -- {m['program_url']}"
+        )
+    return "\n".join(lines)
+
+
+@app.tool()
+def list_new_bounty_scope(since_hours: int = 24) -> str:
+    """List (domain, platform, program) pairs newly added to any cached
+    platform's published scope within the last since_hours -- the cheap
+    half of continuous scope discovery (see ARCHITECTURE.md's "Continuous
+    bounty-scope discovery" section). This only reads the diff log built by
+    refresh_bounty_scope() calls; it does not itself touch any target."""
+    events = bounty_scope.list_new_scope(since_hours=since_hours)
+    if not events:
+        return f"No newly-added scope in the last {since_hours}h."
+    lines = [f"{len(events)} newly-added scope entr{'y' if len(events)==1 else 'ies'} in the last {since_hours}h:"]
+    for e in events:
+        lines.append(f"  [{e['platform']}] {e['domain']} -- {e['program']} (seen {e['ts']})")
     return "\n".join(lines)
 
 
