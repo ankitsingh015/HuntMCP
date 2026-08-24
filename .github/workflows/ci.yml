@@ -6,6 +6,7 @@ on:
     paths:
       - 'mcp-servers/**/*.py'
       - 'scripts/**'
+      - 'tests/**'
       - 'opencode.jsonc'
       - 'Dockerfile'
       - '.github/workflows/ci.yml'
@@ -14,6 +15,7 @@ on:
     paths:
       - 'mcp-servers/**/*.py'
       - 'scripts/**'
+      - 'tests/**'
       - 'Dockerfile'
 
 concurrency:
@@ -50,6 +52,23 @@ jobs:
           done < <(find mcp-servers -name '*.py' -print0)
           if [ "$failed" -eq 1 ]; then exit 1; fi
           echo "✅ All Python files pass syntax check"
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir pytest pyyaml
+
+      - name: Run pytest
+        run: python3 -m pytest tests/ -v
 
   lint-shell:
     name: Shell Lint
@@ -245,7 +264,7 @@ jobs:
 
   summary:
     name: Build Summary
-    needs: [lint-python, lint-shell, validate-config, validate-agent-files, docker-build]
+    needs: [lint-python, unit-tests, lint-shell, validate-config, validate-agent-files, docker-build]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -256,6 +275,7 @@ jobs:
           echo "| Job | Result |" >> $GITHUB_STEP_SUMMARY
           echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| lint-python | ${{ needs.lint-python.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| unit-tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| lint-shell | ${{ needs.lint-shell.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| validate-config | ${{ needs.validate-config.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| validate-agent-files | ${{ needs.validate-agent-files.result }} |" >> $GITHUB_STEP_SUMMARY
