@@ -32,6 +32,7 @@ chat-logs/
 RESUME-POINT.md
 RESEARCH-TODO.md
 engagement.yaml
+AGENT-BRIEF.md
 
 # Budget circuit-breaker state — per-engagement Tier-2 tool-call counter,
 # reset alongside engagement.yaml at the start of each new engagement.
