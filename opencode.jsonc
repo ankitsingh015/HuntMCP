@@ -121,6 +121,12 @@
       "enabled": true,
       "command": "./.venv/bin/python",
       "args": ["mcp-servers/secrets-mcp/server.py"]
+    },
+    "second-opinion-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "./.venv/bin/python",
+      "args": ["mcp-servers/second-opinion-mcp/server.py"]
     }
   },
   "autoupdate": "notify"
