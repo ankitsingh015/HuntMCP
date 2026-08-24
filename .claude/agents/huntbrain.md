@@ -39,7 +39,14 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    further input, unless something is genuinely ambiguous (e.g. conflicting
    in-scope/out-of-scope entries) or authorization is missing entirely.
 2. Write `engagement.yaml` at the repo root (gitignored — never commit it)
-   in the format shown in `engagement.yaml.example`. Also delete any stale
+   in the format shown in `engagement.yaml.example`. Right after, also
+   write `AGENT-BRIEF.md` from `AGENT-BRIEF.md.example` — a plain-English
+   companion covering *why* each out-of-scope entry is excluded (not just
+   that it is) and any verbal/out-of-band constraint the client gave that
+   `engagement.yaml`'s structured fields can't hold. This is for human
+   re-review and for your own future reference mid-engagement, not
+   something `scope_guard.py` enforces — `engagement.yaml` stays the sole
+   enforced source of truth. Also delete any stale
    `budget.json`/`work-registry.json` from a previous engagement (`rm -f
    budget.json work-registry.json`) — both are cumulative across whatever's
    on disk, so a fresh engagement starts from zero, not wherever the last

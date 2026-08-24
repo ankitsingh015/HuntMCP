@@ -1,0 +1,60 @@
+# Agent Brief — plain-English companion to engagement.yaml
+
+`engagement.yaml` is what `scope_guard.py` actually enforces (machine-
+readable, exact host matching). This file is for humans and for HuntBrain
+itself to re-read before Phase 1 — the nuance a flat host list can't
+carry: *why* something is out of scope, not just *that* it is, so a scope
+decision doesn't get silently re-litigated three phases later.
+
+Copy this to `AGENT-BRIEF.md` (gitignored, same as `engagement.yaml`) at
+Phase 0, right after writing `engagement.yaml`. HuntBrain writes this
+itself, same as `engagement.yaml` — never ask the user to fill it in by
+hand.
+
+---
+
+## Target
+
+`example.com` — [one line: what this company/product is, so a payload
+choice makes sense in context, e.g. "B2B SaaS invoicing platform"]
+
+## Why we're testing
+
+[Bug bounty program / signed pentest / personally-owned target — link or
+reference. This is the authorization basis, restated in prose so it's
+obvious at a glance, not just implied by the presence of engagement.yaml.]
+
+## In scope
+
+See `engagement.yaml`'s `in_scope` list — that's the enforced source of
+truth. Restate here only if there's a nuance worth flagging, e.g. "admin
+panel is in scope but extremely rate-limited, go slow."
+
+## Out of scope — and why
+
+Don't just copy `engagement.yaml`'s `out_of_scope` list here — explain
+*why* each one is excluded, so a future re-read (or a different session
+picking this up later) doesn't accidentally treat "not explicitly listed"
+as "fair game":
+
+- `internal.example.com` — explicitly excluded by the program, internal
+  tooling not covered by the bounty
+- `staging-legacy.example.com` — decommissioned, testing it wastes time
+  and could alarm whoever still monitors it
+- [payment/checkout flow, even though technically in-scope] — client
+  asked (outside the written scope doc) not to touch live payment
+  processing; note this kind of out-of-band constraint here since
+  `engagement.yaml` has no field for it
+
+## Constraints
+
+- Rate limit: [e.g. "1 req/s per host, program-mandated"]
+- No DoS, no social engineering, no physical access attempts
+- [Any other explicit constraint the program/client gave verbally or in
+  writing that isn't captured in engagement.yaml's structured fields]
+
+## Special notes
+
+[Anything else worth a human catching on a quick re-read: known false-
+positive traps on this target from a past hunt, a WAF vendor already
+identified, test account credentials location, etc.]
