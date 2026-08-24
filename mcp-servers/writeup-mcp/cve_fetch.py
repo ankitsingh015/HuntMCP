@@ -18,6 +18,8 @@ import urllib.parse
 import urllib.request
 
 NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+EPSS_API = "https://api.first.org/data/v1/epss"
+KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 WRITEUP_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "writeups")
 
 
@@ -40,7 +42,33 @@ def _cwe(weaknesses: list | None) -> str:
     return "N/A"
 
 
-def _cve_to_markdown(cve: dict, keyword: str) -> str:
+def _fetch_epss_scores(cve_ids: list[str]) -> dict[str, str]:
+    """Batch-fetch EPSS (exploit prediction) scores for a list of CVE IDs
+    in one API call. Returns {cve_id: score_str}; missing entries just
+    aren't in the dict (EPSS doesn't score every CVE, e.g. very new ones)."""
+    if not cve_ids:
+        return {}
+    url = f"{EPSS_API}?cve={','.join(cve_ids)}"
+    try:
+        data = _fetch_json(url, {"User-Agent": "HuntMCP-cve-fetch/1.0"}, retries=1)
+    except (urllib.error.URLError, RuntimeError):
+        return {}
+    return {row["cve"]: row["epss"] for row in data.get("data", [])}
+
+
+def _fetch_kev_set() -> set[str]:
+    """CISA's Known Exploited Vulnerabilities catalog -- CVEs confirmed
+    actively exploited in the wild, not just theoretically scorable.
+    Best-effort: an empty set (not an exception) if CISA's feed is
+    unreachable, since KEV is a priority signal, not a hard requirement."""
+    try:
+        data = _fetch_json(KEV_URL, {"User-Agent": "HuntMCP-cve-fetch/1.0"}, retries=1)
+    except (urllib.error.URLError, RuntimeError):
+        return set()
+    return {v["cveID"] for v in data.get("vulnerabilities", [])}
+
+
+def _cve_to_markdown(cve: dict, keyword: str, epss_score: str | None, in_kev: bool) -> str:
     cve_id = cve["id"]
     descriptions = cve.get("descriptions", [])
     desc = next(
@@ -50,6 +78,8 @@ def _cve_to_markdown(cve: dict, keyword: str) -> str:
     score, severity = _best_cvss(cve.get("metrics", {}))
     cwe = _cwe(cve.get("weaknesses"))
     published = cve.get("published", "")[:10]
+    epss_line = f"{float(epss_score):.1%} probability of exploitation in the next 30 days" if epss_score else "not scored"
+    kev_line = "**YES -- actively exploited, per CISA KEV**" if in_kev else "not listed"
 
     return f"""---
 title: "{cve_id} -- {keyword}"
@@ -63,6 +93,8 @@ tech: {keyword}
 - **CVSS**: {score} ({severity})
 - **CWE**: {cwe}
 - **Published**: {published}
+- **EPSS**: {epss_line}
+- **CISA KEV**: {kev_line}
 - **NVD**: https://nvd.nist.gov/vuln/detail/{cve_id}
 
 ## Description
@@ -108,15 +140,31 @@ def fetch_cves(
     data = _fetch_json(url, headers)
 
     os.makedirs(target_dir, exist_ok=True)
-    written = []
+    new_cves = []
     for vuln in data.get("vulnerabilities", [])[:limit]:
         cve = vuln["cve"]
+        fpath = os.path.join(target_dir, f"{cve['id'].lower()}.md")
+        if not os.path.exists(fpath):
+            new_cves.append(cve)
+
+    if not new_cves:
+        return []
+
+    # EPSS + KEV are prioritization signals (which of these CVEs actually
+    # matters), fetched once for the whole new batch rather than per-CVE.
+    epss_scores = _fetch_epss_scores([c["id"] for c in new_cves])
+    kev_set = _fetch_kev_set()
+
+    written = []
+    for cve in new_cves:
         fname = f"{cve['id'].lower()}.md"
         fpath = os.path.join(target_dir, fname)
-        if os.path.exists(fpath):
-            continue
         with open(fpath, "w") as f:
-            f.write(_cve_to_markdown(cve, keyword))
+            f.write(_cve_to_markdown(
+                cve, keyword,
+                epss_score=epss_scores.get(cve["id"]),
+                in_kev=cve["id"] in kev_set,
+            ))
         written.append(fname)
 
     return written
