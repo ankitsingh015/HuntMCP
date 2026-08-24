@@ -67,6 +67,10 @@
     "target-discovery-mcp": {
       "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/target-discovery-mcp/server.py"]
+    },
+    "secrets-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/secrets-mcp/server.py"]
     }
   }
 }

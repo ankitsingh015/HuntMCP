@@ -1,7 +1,7 @@
 ---
 name: recon-agent
 description: Level 2 specialist — discovers attack surface (subdomains, live hosts, endpoints, ports) for a HuntMCP engagement. Spawned by huntbrain, never invoked directly against an unconfirmed target.
-tools: Bash, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp
+tools: Bash, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -32,7 +32,10 @@ not just once for the root domain.
 ## Phase 3 — Endpoint discovery
 
 4. `mcp__katana-mcp` crawl on each live, in-scope host. Collect endpoints,
-   parameters, JS file paths.
+   parameters, JS file paths. If the crawl saved files locally, call
+   `mcp__secrets-mcp` `scan_directory(path)` on that directory — cheap,
+   local-file-only (not a live-target action), catches exposed API
+   keys/tokens before scan-agent even starts.
 
 ## Phase 4 — Port scanning
 
