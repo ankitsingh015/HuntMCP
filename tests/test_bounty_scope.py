@@ -141,3 +141,42 @@ def test_refresh_keeps_prior_cache_when_all_fetches_fail(cache, monkeypatch):
     assert "failed" in result["reason"]
     # prior data should still be there
     assert bounty_scope.lookup_domain("api.example.com")
+
+
+BUGCROWD_SAMPLE = [
+    {
+        "name": "Bugcrowd Example",
+        "url": "https://bugcrowd.com/example",
+        "offers_bounties": True,
+        "submission_state": "open",
+        "targets": {
+            "in_scope": [
+                {"asset_identifier": "*.bugcrowd-target.com", "asset_type": "URL",
+                 "eligible_for_bounty": True},
+            ],
+        },
+    },
+]
+
+
+def test_refresh_partial_failure_carries_forward_and_excludes_from_diff(cache, monkeypatch):
+    # First refresh: both platforms succeed.
+    monkeypatch.setattr(bounty_scope, "_fetch_json", _fake_fetch({
+        "hackerone": HACKERONE_SAMPLE,
+        "bugcrowd": BUGCROWD_SAMPLE,
+    }))
+    bounty_scope.refresh(force=True)
+    assert bounty_scope.lookup_domain("bugcrowd-target.com")
+
+    # Second refresh: hackerone succeeds, bugcrowd fails to fetch.
+    monkeypatch.setattr(bounty_scope, "_fetch_json", _fake_fetch({"hackerone": HACKERONE_SAMPLE}))
+    result = bounty_scope.refresh(force=True)
+
+    assert result["refreshed"] is True
+    assert "bugcrowd" in result["failed_platforms"]
+    # bugcrowd's domain must not show up as "removed" just because its
+    # fetch failed this round.
+    assert result["removed"] == 0
+    assert result["added"] == 0
+    # and its last-known-good data must still be in the cache, not dropped.
+    assert bounty_scope.lookup_domain("bugcrowd-target.com")

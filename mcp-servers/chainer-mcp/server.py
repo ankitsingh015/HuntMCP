@@ -1,6 +1,5 @@
 import json
 import sys
-from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("chainer-mcp")
@@ -215,6 +214,32 @@ CHAIN_TEMPLATES = {
             "5. If successful, document the race window, request timing, and financial impact",
         ],
     },
+    "massassignment_pollution_privesc": {
+        "name": "Mass Assignment + Parameter Pollution → Privilege Escalation",
+        "description": "Combine an API that blindly binds client-supplied fields onto a server-side object (mass assignment) with HTTP parameter pollution to smuggle a privileged field past validation that only inspects the first/last occurrence of a parameter.",
+        "required_findings": ["MASS ASSIGNMENT", "PARAMETER POLLUTION"],
+        "severity_multiplier": "Critical (9.0+)",
+        "chain_steps": [
+            "1. Find a write endpoint (signup, profile update, order creation) and diff its response/behavior against the documented request schema for extra accepted fields",
+            "2. Probe for privileged fields the docs don't mention: role, isAdmin, is_verified, accountType, permissions, price, balance",
+            "3. If a direct extra field is rejected or stripped, retry with parameter pollution: role=user&role=admin, role[]=user&role[]=admin, or a duplicate JSON key -- many frameworks bind to the first occurrence while a validation layer in front only checks the last (or vice versa)",
+            "4. Confirm the escalation took effect: re-authenticate or re-fetch the profile/object and check the privileged field's actual stored value",
+            "5. Document the exact field name, the pollution technique that worked, and the before/after privilege state",
+        ],
+    },
+    "cors_xss_credential_theft": {
+        "name": "CORS Misconfiguration + XSS → Unauthenticated Session/Data Theft",
+        "description": "A CORS policy that reflects an arbitrary Origin (or uses a permissive wildcard-with-credentials pattern) combined with a way to run JavaScript in the victim's browser context turns a same-origin-only bug into fully unauthenticated account takeover -- the attacker's page reads the victim's authenticated API responses directly.",
+        "required_findings": ["CORS MISCONFIGURATION", "XSS"],
+        "severity_multiplier": "Critical (9.0+)",
+        "chain_steps": [
+            "1. Confirm the CORS misconfiguration: send Origin: https://attacker.example and check whether Access-Control-Allow-Origin reflects it (or is '*') together with Access-Control-Allow-Credentials: true -- that combination is what makes credentialed cross-origin reads possible",
+            "2. Confirm XSS fires in the victim's browser context (or use an attacker-controlled page if the CORS hole alone is reachable without XSS, e.g. via a link the victim visits)",
+            "3. From the XSS/attacker page, issue a credentialed fetch/XHR to the sensitive API endpoint (fetch(url, {credentials: 'include'})) and read the response -- this succeeds specifically because of the CORS misconfiguration, not same-origin defaults",
+            "4. Exfiltrate the sensitive data (session tokens, PII, account details) to an attacker-controlled endpoint, or replay a state-changing request as the victim (CSRF-equivalent impact) if the API is write-capable",
+            "5. Document the exact Origin/Access-Control-Allow-* header pair, the JS used to read the cross-origin response, and what was actually exfiltrated",
+        ],
+    },
 }
 
 
@@ -255,11 +280,13 @@ def analyze_chains(findings_json: str) -> str:
 
     matched_chains = []
     for key, template in sorted(CHAIN_TEMPLATES.items()):
-        required = set(template["required_findings"])
-        cls_upper = set()
-        for fc in finding_classes:
-            cls_upper.add(fc.upper())
-        if required.issubset(cls_upper):
+        # finding_classes is already uppercase (built above); required_findings
+        # in CHAIN_TEMPLATES is written in nice display casing ("SQL Injection",
+        # "File Upload", ...) for get_chain_templates()/plan_chain() output, so
+        # each requirement must be uppercased individually at comparison time --
+        # comparing the sets directly silently drops every multi-word template.
+        required = {r.upper() for r in template["required_findings"]}
+        if required.issubset(finding_classes):
             severity = template["severity_multiplier"]
             matched_chains.append({"key": key, "template": template, "severity": severity})
 
@@ -334,10 +361,9 @@ def plan_chain(chain_key: str, findings_json: str) -> str:
         })
 
     required = set(template["required_findings"])
-    cls_upper = set()
-    for fc in finding_classes:
-        cls_upper.add(fc.upper())
-    missing = required - cls_upper
+    # See analyze_chains for why each requirement is uppercased individually
+    # rather than diffing the sets directly.
+    missing = {r for r in required if r.upper() not in finding_classes}
 
     lines = [
         f"╔══ Chain Plan: {template['name']} ═══",
@@ -435,7 +461,7 @@ def suggest_next_tool(findings_json: str, current_phase: str = "") -> str:
     if "LFI" in finding_classes:
         suggestions.append("Try log poisoning via User-Agent header for RCE")
         suggestions.append("Try PHP wrappers: php://filter/convert.base64-encode/resource=config.php")
-    if "SQL Injection" in finding_classes or "SQLI" in finding_classes:
+    if "SQL INJECTION" in finding_classes or "SQLI" in finding_classes:
         suggestions.append("Extract database schema and user credentials tables")
         suggestions.append("Try --os-shell for RCE if database user has FILE privilege")
     if "SSTI" in finding_classes:

@@ -7,10 +7,8 @@ shadow the Go/system binary names (e.g., Python httpx vs ProjectDiscovery httpx)
 
 import os
 import re
-import shlex
 import shutil
 import subprocess
-import sys
 import time
 
 from audit_log import log_call as _log_call
@@ -116,7 +114,12 @@ def run_tool(
         if block == "rate_limit":
             time.sleep(5)
             result = subprocess.run([binary, *args], **kwargs)
-            block = None
+            # Re-classify the retry's own output rather than assuming it
+            # succeeded -- the retry can still be rate-limited (or now hit a
+            # WAF), and logging block=None unconditionally here made the
+            # audit trail claim it wasn't.
+            combined = (result.stdout or "") + (result.stderr or "")
+            block = classify_block(combined)
 
     _log_call(name, args, result.returncode, (time.monotonic() - start) * 1000, block)
     return result

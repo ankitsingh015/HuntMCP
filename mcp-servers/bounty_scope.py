@@ -194,25 +194,45 @@ def refresh(force: bool = False) -> dict:
 
     new_index: dict[str, list[dict]] = {}
     failed_platforms = []
+    fetched_platforms = []
     for platform in PLATFORMS:
         data = _fetch_json(f"{BASE_URL}/{platform}_data.json")
         if data is None:
             failed_platforms.append(platform)
             continue
+        fetched_platforms.append(platform)
         for row in _normalize_platform(platform, data):
             new_index.setdefault(row["domain"], []).append(row)
 
-    if not new_index and failed_platforms:
+    if not fetched_platforms:
         # every platform failed -- don't overwrite a good cache with an empty one
         return {"refreshed": False, "reason": "all platform fetches failed", "failed": failed_platforms}
+
+    if failed_platforms:
+        # Carry forward the last-known-good rows for any platform that
+        # failed this round, so a transient fetch failure doesn't (a) look
+        # like every one of that platform's domains just got removed, or
+        # (b) drop that platform's data from the saved index entirely.
+        failed_set = set(failed_platforms)
+        for domain, rows in previous.items():
+            for row in rows:
+                if row["platform"] in failed_set:
+                    new_index.setdefault(domain, []).append(row)
 
     current_pairs = {
         (row["domain"], row["platform"], row["program"])
         for rows in new_index.values() for row in rows
     }
 
-    added = current_pairs - previous_pairs
-    removed = previous_pairs - current_pairs
+    # Only diff platforms actually fetched this round -- a failed platform's
+    # pairs are carried forward unchanged, so they should show up as neither
+    # "added" nor "removed".
+    fetched_set = set(fetched_platforms)
+    comparable_previous = {p for p in previous_pairs if p[1] in fetched_set}
+    comparable_current = {p for p in current_pairs if p[1] in fetched_set}
+
+    added = comparable_current - comparable_previous
+    removed = comparable_previous - comparable_current
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     events = (
         [{"ts": now, "event": "added", "domain": d, "platform": p, "program": prog} for d, p, prog in added]

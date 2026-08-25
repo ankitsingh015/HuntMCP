@@ -38,6 +38,8 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import engagement_paths
 
+import file_lock
+
 DEFAULT_PATH = engagement_paths.resolve("work-registry.json", override_env="HUNTMCP_WORK_REGISTRY_PATH")
 
 
@@ -56,36 +58,39 @@ def _save(state: dict, path: str = DEFAULT_PATH) -> None:
 def start_work(agent: str, host: str, task: str = "", path: str = DEFAULT_PATH) -> str:
     """Record a specialist as in-progress on a host. Returns a work_id to
     pass to complete_work() when it returns."""
-    state = _load(path)
-    work_id = uuid.uuid4().hex[:8]
-    state[work_id] = {
-        "agent": agent,
-        "host": host,
-        "task": task,
-        "status": "in_progress",
-        "started_at": time.time(),
-        "completed_at": None,
-        "outcome": None,
-    }
-    _save(state, path)
+    with file_lock.locked(path):
+        state = _load(path)
+        work_id = uuid.uuid4().hex[:8]
+        state[work_id] = {
+            "agent": agent,
+            "host": host,
+            "task": task,
+            "status": "in_progress",
+            "started_at": time.time(),
+            "completed_at": None,
+            "outcome": None,
+        }
+        _save(state, path)
     return work_id
 
 
 def complete_work(work_id: str, outcome: str = "", path: str = DEFAULT_PATH) -> bool:
-    state = _load(path)
-    if work_id not in state:
-        return False
-    state[work_id]["status"] = "completed"
-    state[work_id]["completed_at"] = time.time()
-    state[work_id]["outcome"] = outcome
-    _save(state, path)
-    return True
+    with file_lock.locked(path):
+        state = _load(path)
+        if work_id not in state:
+            return False
+        state[work_id]["status"] = "completed"
+        state[work_id]["completed_at"] = time.time()
+        state[work_id]["outcome"] = outcome
+        _save(state, path)
+        return True
 
 
 def list_active_work(host: str | None = None, path: str = DEFAULT_PATH) -> list[dict]:
     """Everything currently in_progress -- check this before spawning a
     specialist to avoid redundant work on the same host."""
-    state = _load(path)
+    with file_lock.locked(path):
+        state = _load(path)
     items = [dict(id=k, **v) for k, v in state.items() if v["status"] == "in_progress"]
     if host:
         items = [i for i in items if i["host"] == host]
@@ -93,7 +98,8 @@ def list_active_work(host: str | None = None, path: str = DEFAULT_PATH) -> list[
 
 
 def list_all_work(path: str = DEFAULT_PATH) -> list[dict]:
-    state = _load(path)
+    with file_lock.locked(path):
+        state = _load(path)
     return [dict(id=k, **v) for k, v in state.items()]
 
 

