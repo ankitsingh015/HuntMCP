@@ -1,7 +1,7 @@
 ---
 name: recon-agent
 description: Level 2 specialist — discovers attack surface (subdomains, live hosts, endpoints, ports) for a HuntMCP engagement. Spawned by huntbrain, never invoked directly against an unconfirmed target.
-tools: Bash, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp
+tools: Bash, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -18,6 +18,21 @@ Run `scripts/check-scope.sh <host>` via Bash first. If it exits non-zero,
 `engagement.yaml` exists. Never work around a block. This check is cheap
 (no LLM reasoning, plain local lookup) — run it per new host you discover,
 not just once for the root domain.
+
+## Phase 0 — Burp import (optional, if the user already has one)
+
+0. If the user mentions a Burp Suite HTTP-history export (a saved XML
+   file from Proxy/Target > "Save selected items"), call
+   `mcp__burp-import-mcp` `import_history(export_path, target)` before
+   anything else. This seeds authenticated endpoints (session cookies,
+   Authorization headers) a human hunter already explored manually --
+   territory subfinder/katana can't reach on their own since they don't
+   know how to log in. Then `list_endpoints(target, authenticated_only=True)`
+   and fold those endpoints into what you return, tagged as
+   already-authenticated so exploit-agent knows it can replay them
+   directly with `get_endpoint_detail(id)` instead of re-deriving auth.
+   Skip this phase entirely if no export was mentioned -- it's not part
+   of the default flow.
 
 ## Phase 1 — Subdomain enumeration
 
