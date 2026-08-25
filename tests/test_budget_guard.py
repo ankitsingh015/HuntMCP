@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 import budget_guard
 
@@ -53,3 +56,35 @@ def test_by_tool_breakdown(monkeypatch, state_path):
     budget_guard.enforce("sqlmap", path=state_path)
     status = budget_guard.check_budget(state_path)
     assert status["by_tool"] == {"nuclei": 2, "sqlmap": 1}
+
+
+def test_enforce_is_safe_under_concurrent_calls(monkeypatch, state_path):
+    """Regression test for the lost-update race: enforce() used to
+    load-mutate-save with no locking, so two concurrent Tier-2 calls could
+    both read the same starting state and one's increment would clobber
+    the other's. Widen the race window artificially (sleep between the
+    read and the write) so this fails reliably without file_lock, instead
+    of only failing on unlucky scheduling."""
+    monkeypatch.setattr(budget_guard, "MAX_CALLS", 10_000)
+    orig_load = budget_guard._load
+
+    def slow_load(path):
+        state = orig_load(path)
+        time.sleep(0.01)
+        return state
+
+    monkeypatch.setattr(budget_guard, "_load", slow_load)
+
+    n = 20
+    threads = [
+        threading.Thread(target=budget_guard.enforce, args=("nuclei",), kwargs={"path": state_path})
+        for _ in range(n)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    status = budget_guard.check_budget(state_path)
+    assert status["calls"] == n
+    assert status["by_tool"]["nuclei"] == n

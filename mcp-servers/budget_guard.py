@@ -34,6 +34,8 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import engagement_paths
 
+import file_lock
+
 DEFAULT_PATH = engagement_paths.resolve("budget.json", override_env="HUNTMCP_BUDGET_PATH")
 MAX_CALLS = int(os.getenv("HUNTMCP_MAX_TOOL_CALLS", "500"))
 WARNING_BANDS = (0.70, 0.85, 0.95)
@@ -74,7 +76,8 @@ def _status(state: dict) -> dict:
 
 def check_budget(path: str = DEFAULT_PATH) -> dict:
     """Read-only status check -- does not record a call."""
-    return _status(_load(path))
+    with file_lock.locked(path):
+        return _status(_load(path))
 
 
 def enforce(tool_name: str, path: str = DEFAULT_PATH) -> dict:
@@ -86,20 +89,21 @@ def enforce(tool_name: str, path: str = DEFAULT_PATH) -> dict:
     caller proceed) once the hard cap is reached -- call this BEFORE
     running the actual subprocess, not after.
     """
-    state = _load(path)
-    state["calls"] += 1
-    state["by_tool"][tool_name] = state["by_tool"].get(tool_name, 0) + 1
-    status = _status(state)
+    with file_lock.locked(path):
+        state = _load(path)
+        state["calls"] += 1
+        state["by_tool"][tool_name] = state["by_tool"].get(tool_name, 0) + 1
+        status = _status(state)
 
-    if status["band"] is not None and status["band"] not in state["warned_bands"]:
-        state["warned_bands"].append(status["band"])
-        print(
-            f"BUDGET WARNING: {status['calls']}/{status['max_calls']} Tier-2 tool "
-            f"calls used this engagement ({status['pct_used']}%).",
-            file=sys.stderr,
-        )
+        if status["band"] is not None and status["band"] not in state["warned_bands"]:
+            state["warned_bands"].append(status["band"])
+            print(
+                f"BUDGET WARNING: {status['calls']}/{status['max_calls']} Tier-2 tool "
+                f"calls used this engagement ({status['pct_used']}%).",
+                file=sys.stderr,
+            )
 
-    _save(state, path)
+        _save(state, path)
 
     if status["exceeded"]:
         raise BudgetExceeded(
