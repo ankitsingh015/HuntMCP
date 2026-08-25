@@ -5,6 +5,8 @@ permission:
   edit: deny
   webfetch: deny
   bash: allow
+  skill:
+    "*": allow
 ---
 
 # Scan Agent — Level 2 Specialist
