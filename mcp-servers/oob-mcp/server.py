@@ -131,7 +131,10 @@ def generate_payload_url(label: str = "") -> str:
 
     if not url:
         proc.kill()
-        proc.wait(timeout=5)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         tail = ""
         if os.path.isfile(startup_log_path):
             with open(startup_log_path) as f:
