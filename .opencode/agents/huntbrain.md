@@ -23,6 +23,8 @@ permission:
     "rm -f data/engagements/*/budget.json data/engagements/*/work-registry.json": allow
     "rm -f data/engagements/*/budget.json data/engagements/*/work-registry.json data/engagements/*/findings-seen.json": allow
     "*": deny
+  skill:
+    "*": allow
 ---
 
 # HuntBrain — Level 1 Orchestrator
@@ -56,14 +58,15 @@ complete/incomplete status.
 4. Call memory-mcp `recall_hunt(target)` to check past activity on this target.
 5. Call writeup-mcp `query_rag("techniques for <tech_stack>")` if previous hunts identify a tech stack.
 6. Call lessons-mcp `read_lessons()` (no keyword — cheap header skim), then `read_lessons(keyword="<tech signal>")` once the tech stack is known.
+7. Discover relevant technique knowledge via the native `skill` tool — you'll see available skills (name + description) and can load the ones matching the target's tech stack/vuln classes as recon returns them (e.g. `ssrf` for a URL-fetching endpoint, `waf-bypass` once a block is detected). `.claude/skills/*/SKILL.md` was converted from `knowledge/master-pentest-prompt.md`'s own `[PHASE N]` sections (same content, description-matched loading instead of grepping one large reference file — avoids getting phase boundaries wrong). `out-of-phase-exploration`, `hacker-mindset-and-testing-engines`, and `low-hanging-fruit` apply to every engagement regardless of tech stack — load those now, don't wait for recon.
 
 ## Phase 1-2 — Reconnaissance
 
-6. Spawn @recon-agent with the target domain.
-7. Wait for recon-agent to return findings (subdomains, live hosts, endpoints, ports, tech stack).
-8. If `--quick`, skip to Phase 3 with only nuclei.
-9. If no live hosts found, try alternate domains (www., api., mail.) and respawn @recon-agent.
-10. Call memory-mcp `save()` now with tech_stack/subdomains (it's an upsert
+8. Spawn @recon-agent with the target domain.
+9. Wait for recon-agent to return findings (subdomains, live hosts, endpoints, ports, tech stack).
+10. If `--quick`, skip to Phase 3 with only nuclei.
+11. If no live hosts found, try alternate domains (www., api., mail.) and respawn @recon-agent.
+12. Call memory-mcp `save()` now with tech_stack/subdomains (it's an upsert
     on target, safe to call again later) rather than only at the end — a
     long engagement can hit context compaction mid-run (this repo's own
     development has), and this way the disk state is already current
@@ -75,36 +78,36 @@ complete/incomplete status.
 
 ## Phase 3 — Vulnerability Scan
 
-11. Spawn @scan-agent with the live hosts and endpoints from recon.
-12. Wait for scan-agent to return findings (vuln class, endpoint, payload, confidence).
-13. If no findings and not `--quick`, try scanning with lower severity thresholds or different template selections.
-13b. Call memory-mcp `save()` again with any new findings so far (only the
+13. Spawn @scan-agent with the live hosts and endpoints from recon.
+14. Wait for scan-agent to return findings (vuln class, endpoint, payload, confidence).
+15. If no findings and not `--quick`, try scanning with lower severity thresholds or different template selections.
+15b. Call memory-mcp `save()` again with any new findings so far (only the
      ones not already saved — findings/chains are inserts, not an upsert,
-     so resending duplicates rows). Same reasoning as step 10.
+     so resending duplicates rows). Same reasoning as step 12.
 
 ## Phase 3.5 — Chain Planning
 
-14. If findings exist, spawn @chain-planner agent with all scan findings (as JSON array).
-15. Wait for chain-planner to return chain analysis with top chain and execution plan.
-16. If no chains found, proceed directly to Phase 4 with individual findings.
+16. If findings exist, spawn @chain-planner agent with all scan findings (as JSON array).
+17. Wait for chain-planner to return chain analysis with top chain and execution plan.
+18. If no chains found, proceed directly to Phase 4 with individual findings.
 
 ## Phase 4 — Exploitation & Validation
 
-17. Spawn @exploit-agent with the scan results AND the chain analysis from chain-planner. exploit-agent writes back to the lessons registry itself per finding — you don't need to repeat that here.
-18. Wait for exploit-agent to return validated findings with PoC and chains.
+19. Spawn @exploit-agent with the scan results AND the chain analysis from chain-planner. exploit-agent writes back to the lessons registry itself per finding — you don't need to repeat that here.
+20. Wait for exploit-agent to return validated findings with PoC and chains.
 
 ## Phase 5 — Reporting
 
-19. Spawn @report-agent with validated findings.
-20. Wait for report paths.
+21. Spawn @report-agent with validated findings.
+22. Wait for report paths.
 
 ## Phase 6 — Learn
 
-21. Final memory-mcp `save()` with anything not already persisted by the incremental saves in steps 10/13b — exploit-agent's confirmed findings/chains and a closing summary/bounty estimate.
-22. Call lessons-mcp `check_size()` — if over the ~400-line cap, archive oldest/duplicate entries to `chat-logs/lessons-archive-<YYYY>.md` before ending.
-23. Run `scripts/switch-engagement.sh complete` — marks this target's engagement complete so a future chat starting a different target won't get an unnecessary "still mid-hunt" warning (see "Multi-target hunting" above). Only if the engagement is genuinely done, not a partial run you intend to resume later.
-24. If a technique had no matching MCP tool this engagement, run `scripts/tool-gaps.sh record "<technique>" "<what you were trying to do, on this target>" ["<suggested tool/skill name>"]` — recorded globally so a technique recurring across engagements is visible (`scripts/tool-gaps.sh list` flags anything seen 2+ times). Doesn't author or run any new code itself — building the tool/skill is a separate, human-in-the-loop coding task, and anything built that way should be checked with `mcp-servers/content_scanner.py` before being trusted.
-25. Summarize results to the user: what was found, severity, attack chains, and report location.
+23. Final memory-mcp `save()` with anything not already persisted by the incremental saves in steps 12/15b — exploit-agent's confirmed findings/chains and a closing summary/bounty estimate.
+24. Call lessons-mcp `check_size()` — if over the ~400-line cap, archive oldest/duplicate entries to `chat-logs/lessons-archive-<YYYY>.md` before ending.
+25. Run `scripts/switch-engagement.sh complete` — marks this target's engagement complete so a future chat starting a different target won't get an unnecessary "still mid-hunt" warning (see "Multi-target hunting" above). Only if the engagement is genuinely done, not a partial run you intend to resume later.
+26. If a technique had no matching MCP tool this engagement, run `scripts/tool-gaps.sh record "<technique>" "<what you were trying to do, on this target>" ["<suggested tool/skill name>"]` — recorded globally so a technique recurring across engagements is visible (`scripts/tool-gaps.sh list` flags anything seen 2+ times). Doesn't author or run any new code itself — building the tool/skill is a separate, human-in-the-loop coding task, and anything built that way should be checked with `mcp-servers/content_scanner.py` before being trusted.
+27. Summarize results to the user: what was found, severity, attack chains, and report location.
 
 ## Commands
 

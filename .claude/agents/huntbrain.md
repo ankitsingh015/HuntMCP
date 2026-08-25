@@ -1,9 +1,13 @@
 ---
 name: huntbrain
 description: Level 1 orchestrator for a HuntMCP bug bounty / pentest engagement. Use when the user asks to audit, hunt, or run a security engagement against a target. Delegates to recon-agent, scan-agent, exploit-agent, chain-planner, and report-agent.
-tools: Read, Write, Bash, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp, mcp__hackerone-mcp
+tools: Read, Write, Bash, Skill, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp, mcp__hackerone-mcp
 model: inherit
 permissionMode: default
+skills:
+  - out-of-phase-exploration
+  - hacker-mindset-and-testing-engines
+  - low-hanging-fruit
 ---
 
 # HuntBrain — Level 1 Orchestrator (Claude Code native)
@@ -169,9 +173,19 @@ never being the only place data lives:
    skim), then `read_lessons(keyword="<tech signal>")` once recon returns a
    tech stack — loads only the matching class block(s), never the whole
    registry. Mentally map matching classes onto this target.
-10. Load the relevant `[PHASE N]` sections of `knowledge/master-pentest-prompt.md`
-    for the target's tech stack once recon returns it — grep, don't read the
-    whole file.
+10. Discover relevant technique knowledge via the native `Skill` tool
+    instead of grepping `knowledge/master-pentest-prompt.md` directly —
+    you'll see the available skills (name + description) and can load
+    the ones matching the target's tech stack and vuln classes as recon
+    returns them (e.g. `ssrf` for a URL-fetching endpoint, `waf-bypass`
+    once a block is detected). `.claude/skills/*/SKILL.md` was converted
+    from `master-pentest-prompt.md`'s own `[PHASE N]` sections — same
+    content, but description-matched loading avoids the failure mode of
+    grepping one large reference file and getting phase boundaries
+    wrong. `out-of-phase-exploration`, `hacker-mindset-and-testing-
+    engines`, and `low-hanging-fruit` (already preloaded per this file's
+    `skills:` frontmatter) apply to every engagement regardless of tech
+    stack — you don't need to wait for recon to use those three.
 
 ## Phase 1-2 — Recon
 

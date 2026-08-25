@@ -24,27 +24,35 @@ never test it anyway.
 3. If a specific product/version was fingerprinted (not just a generic stack name),
    call writeup-mcp `fetch_cves(keyword)` once for it — pulls known CVEs from NVD
    into the RAG so the query_rag call above can surface them too.
+4. Discover technique knowledge for this stack/vuln class via the native
+   `skill` tool — e.g. `injection-and-rce` for an injectable parameter,
+   `cms-and-framework-specific` once a CMS/framework is fingerprinted,
+   `api-security-top10` for an API-only target. `.claude/skills/*/SKILL.md`
+   is discovered natively by OpenCode (same catalog as Claude Code) and
+   was converted from `knowledge/master-pentest-prompt.md`'s own
+   `[PHASE N]` sections — same content, but description-matched loading
+   instead of grepping one large reference file.
 
 ## Phase 1 — Template-Based Scanning
 
-4. Call nuclei-mcp `scan_target(url, "medium,high,critical")` on each live host.
-5. For `--deep`: also run `scan_target(url, "low,medium,high,critical")` and `scan_with_templates(url, "exposures/")`.
+5. Call nuclei-mcp `scan_target(url, "medium,high,critical")` on each live host.
+6. For `--deep`: also run `scan_target(url, "low,medium,high,critical")` and `scan_with_templates(url, "exposures/")`.
 
 ## Phase 2 — SQL Injection
 
-6. For every URL with query parameters, call sqlmap-mcp `test_injection(url, "GET", "", 1, 1)`.
-7. For POST endpoints, use `test_injection(url, "POST", data, 2, 1)`.
-8. For `--deep`: increase level to 3 and risk to 2.
+7. For every URL with query parameters, call sqlmap-mcp `test_injection(url, "GET", "", 1, 1)`.
+8. For POST endpoints, use `test_injection(url, "POST", data, 2, 1)`.
+9. For `--deep`: increase level to 3 and risk to 2.
 
 ## Phase 3 — XSS
 
-9. For every parameter that reflects in responses, call dalfox-mcp `scan_parameter(url, param)`.
-10. For remaining endpoints, call dalfox-mcp `scan_url(url)`.
+10. For every parameter that reflects in responses, call dalfox-mcp `scan_parameter(url, param)`.
+11. For remaining endpoints, call dalfox-mcp `scan_url(url)`.
 
 ## Phase 4 — Fuzzing
 
-11. For interesting paths, call ffuf-mcp `fuzz_directory(url)` to discover hidden content — it now defaults to `knowledge/wordlists/directories.txt`, so you don't need to specify one for the common case. Pass `wordlist="api-endpoints.txt"` explicitly when the target looks API-shaped.
-12. If login forms or APIs are found, call ffuf-mcp `fuzz_with_data(url, ..., "POST", data_template)`.
+12. For interesting paths, call ffuf-mcp `fuzz_directory(url)` to discover hidden content — it now defaults to `knowledge/wordlists/directories.txt`, so you don't need to specify one for the common case. Pass `wordlist="api-endpoints.txt"` explicitly when the target looks API-shaped.
+13. If login forms or APIs are found, call ffuf-mcp `fuzz_with_data(url, ..., "POST", data_template)`.
 
 ## Payload Library — when the automated tools miss something
 

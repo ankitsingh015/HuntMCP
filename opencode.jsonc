@@ -11,6 +11,9 @@
       "ls *": "allow",
       "echo *": "allow",
       "which *": "allow"
+    },
+    "skill": {
+      "*": "allow"
     }
   },
   "mcp": {
