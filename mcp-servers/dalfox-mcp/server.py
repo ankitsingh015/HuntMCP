@@ -45,6 +45,11 @@ def scan_url(url: str, timeout: int = 180) -> str:
             "payload": data.get("payload", ""),
         })
 
+    # A crashed/failed run with no parsed findings used to be silently
+    # reported as "no XSS found" instead of surfacing the failure.
+    if result.returncode != 0 and not findings:
+        return f"dalfox failed (exit {result.returncode}): {result.stderr.strip()[:500]}"
+
     if not findings:
         return f"No XSS vulnerabilities found on {url}."
 
@@ -90,6 +95,9 @@ def scan_parameter(url: str, param: str, timeout: int = 180) -> str:
             "evidence": data.get("evidence", ""),
             "payload": data.get("payload", ""),
         })
+
+    if result.returncode != 0 and not findings:
+        return f"dalfox failed (exit {result.returncode}): {result.stderr.strip()[:500]}"
 
     if not findings:
         return f"No XSS found on parameter '{param}'."

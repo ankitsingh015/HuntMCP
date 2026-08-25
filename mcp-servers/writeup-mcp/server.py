@@ -56,7 +56,11 @@ def query_rag(query_text: str, top_k: int = 5) -> str:
 
 @app.tool()
 def ingest_writeup(filepath: str) -> str:
-    resolved = filepath if os.path.isabs(filepath) else os.path.join(WRITEUP_DIR, filepath)
+    base = os.path.realpath(WRITEUP_DIR)
+    candidate = filepath if os.path.isabs(filepath) else os.path.join(WRITEUP_DIR, filepath)
+    resolved = os.path.realpath(candidate)
+    if os.path.commonpath([base, resolved]) != base:
+        return f"Error: {filepath!r} resolves outside the writeups directory ({WRITEUP_DIR}); refusing to ingest it."
     if not os.path.exists(resolved):
         return f"File not found: {resolved}"
     n = _embed_file(resolved)
