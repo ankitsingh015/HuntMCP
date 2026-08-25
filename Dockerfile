@@ -58,7 +58,7 @@ COPY mcp-servers/memory-mcp/requirements.txt /tmp/requirements-memory.txt
 # Combined requirements
 RUN pip install --no-cache-dir -U pip && \
     pip install --no-cache-dir \
-        mcp>=1.0.0 \
+        "mcp>=1.0.0,<2.0.0" \
         chromadb>=0.5.0 \
         sentence-transformers>=3.0.0 \
         numpy>=1.24.0 \
