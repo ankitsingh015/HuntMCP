@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -10,6 +11,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
+
+// vectorLiteral renders a []float32 as pgvector's "[v1,v2,...]" input
+// syntax. pq.Array produces Postgres's native "{v1,v2,...}" array syntax
+// instead, which pgvector's `vector` type rejects.
+func vectorLiteral(v []float32) string {
+	parts := make([]string, len(v))
+	for i, f := range v {
+		parts[i] = strconv.FormatFloat(float64(f), 'f', -1, 32)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
 
 type WriteupRepository struct {
 	db *DB
@@ -245,7 +257,7 @@ func (r *WriteupRepository) VectorSearch(query []float32, topK int, minScore flo
 		   AND 1 - (embedding <=> $1::vector) > $2
 		 ORDER BY similarity DESC
 		 LIMIT $3`,
-		pq.Array(query), minScore, topK,
+		vectorLiteral(query), minScore, topK,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
@@ -322,7 +334,7 @@ func (r *WriteupRepository) ReindexAll(embeddings map[string][]float32) error {
 	for id, vec := range embeddings {
 		_, err := r.db.Exec(
 			"UPDATE writeups SET embedding = $1::vector WHERE id = $2",
-			pq.Array(vec), id,
+			vectorLiteral(vec), id,
 		)
 		if err != nil {
 			return fmt.Errorf("reindex writeup %s: %w", id, err)

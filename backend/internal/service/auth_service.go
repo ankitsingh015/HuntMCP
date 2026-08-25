@@ -59,10 +59,10 @@ func (s *AuthService) Register(req model.UserCreateRequest) (model.AuthResponse,
 	}
 
 	user := model.User{
-		ID:       id,
-		Email:    req.Email,
-		Username: req.Username,
-		Role:     "user",
+		ID:        id,
+		Email:     req.Email,
+		Username:  req.Username,
+		Role:      "user",
 		CreatedAt: time.Now(),
 	}
 
@@ -117,11 +117,20 @@ func (s *AuthService) ValidateToken(tokenString string) (*model.Claims, error) {
 		return nil, fmt.Errorf("invalid token claims")
 	}
 
-	return &model.Claims{
-		UserID:   claims["user_id"].(string),
-		Username: claims["username"].(string),
-		Role:     claims["role"].(string),
-	}, nil
+	userID, ok := claims["user_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid token claims: user_id missing or wrong type")
+	}
+	username, ok := claims["username"].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid token claims: username missing or wrong type")
+	}
+	role, ok := claims["role"].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid token claims: role missing or wrong type")
+	}
+
+	return &model.Claims{UserID: userID, Username: username, Role: role}, nil
 }
 
 func (s *AuthService) generateToken(user model.User) (string, error) {

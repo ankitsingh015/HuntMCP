@@ -75,12 +75,18 @@ func (r *HuntRepository) Save(req model.HuntSaveRequest) (model.Hunt, error) {
 	chainsJSON, _ := json.Marshal(req.Chains)
 	id := uuid.New().String()
 
+	var userID interface{}
+	if req.UserID != "" {
+		userID = req.UserID
+	}
+
 	_, err := r.db.Exec(
-		`INSERT INTO hunts (id, target, tech_stack, findings, chains, subdomains, bounty_estimate, summary, hunted_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+		`INSERT INTO hunts (id, target, tech_stack, findings, chains, subdomains, bounty_estimate, summary, user_id, hunted_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
 		id, req.Target, pq.Array(req.TechStack),
 		string(findingsJSON), string(chainsJSON),
 		pq.Array(req.Subdomains), req.BountyEstimate, req.Summary,
+		userID,
 	)
 	if err != nil {
 		return model.Hunt{}, fmt.Errorf("save hunt: %w", err)

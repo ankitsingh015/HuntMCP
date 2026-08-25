@@ -16,7 +16,7 @@ type DB struct {
 func NewDB() (*DB, error) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgres://huntmcp:huntmcp@localhost:5432/huntmcp?sslmode=disable"
+		return nil, fmt.Errorf("DATABASE_URL is not set")
 	}
 
 	db, err := sql.Open("postgres", dsn)
@@ -35,6 +35,9 @@ func NewDB() (*DB, error) {
 	return &DB{db}, nil
 }
 
+// RunMigrations is the single source of truth for the runtime schema.
+// migrations/*.sql documents the same schema for readability but is never
+// executed directly -- keep the two in sync by hand when either changes.
 func (db *DB) RunMigrations() error {
 	migrations := []string{
 		`CREATE EXTENSION IF NOT EXISTS vector`,
@@ -78,8 +81,18 @@ func (db *DB) RunMigrations() error {
 
 		`CREATE INDEX IF NOT EXISTS idx_writeups_vuln_class ON writeups(vuln_class)`,
 		`CREATE INDEX IF NOT EXISTS idx_writeups_created_at ON writeups(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_writeups_source_type ON writeups(source_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_writeups_embedding ON writeups
+			USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)`,
+		`CREATE INDEX IF NOT EXISTS idx_writeups_fts ON writeups
+			USING GIN (to_tsvector('english', title || ' ' || content))`,
+		`CREATE INDEX IF NOT EXISTS idx_writeups_vuln_class_created ON writeups(vuln_class, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`,
 		`CREATE INDEX IF NOT EXISTS idx_hunts_target ON hunts(target)`,
 		`CREATE INDEX IF NOT EXISTS idx_hunts_user_id ON hunts(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_hunts_hunted_at ON hunts(hunted_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_hunts_findings_gin ON hunts USING GIN (findings jsonb_path_ops)`,
+		`CREATE INDEX IF NOT EXISTS idx_hunts_tech_gin ON hunts USING GIN (tech_stack)`,
 	}
 
 	for _, m := range migrations {

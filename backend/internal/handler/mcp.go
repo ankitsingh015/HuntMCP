@@ -9,6 +9,7 @@ import (
 
 	"github.com/ankitsingh015/HuntMCP/backend/internal/model"
 	"github.com/ankitsingh015/HuntMCP/backend/internal/repository"
+	"github.com/ankitsingh015/HuntMCP/backend/internal/service"
 )
 
 type MCPHandler struct {
@@ -108,7 +109,18 @@ func (h *MCPHandler) ServeMCP(c *gin.Context) {
 			if params.Score <= 0 {
 				params.Score = 0.5
 			}
-			results, err := h.writeupRepo.VectorSearch(nil, params.TopK, params.Score)
+			queryVector, err := service.EmbedQuery(params.Query)
+			if err != nil {
+				c.JSON(http.StatusOK, MCPResponse{
+					JSONRPC: "2.0", ID: req.ID,
+					Result: map[string]interface{}{
+						"results": []interface{}{},
+						"error":   err.Error(),
+					},
+				})
+				return
+			}
+			results, err := h.writeupRepo.VectorSearch(queryVector, params.TopK, params.Score)
 			if err != nil {
 				c.JSON(http.StatusOK, MCPResponse{
 					JSONRPC: "2.0", ID: req.ID,
@@ -135,6 +147,11 @@ func (h *MCPHandler) ServeMCP(c *gin.Context) {
 					Error: &MCPError{Code: -32602, Message: "Invalid hunt params"},
 				})
 				return
+			}
+			if uid, ok := c.Get("user_id"); ok {
+				if s, ok := uid.(string); ok {
+					params.UserID = s
+				}
 			}
 			hunt, err := h.huntRepo.Save(params)
 			if err != nil {
