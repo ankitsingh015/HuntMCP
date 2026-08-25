@@ -143,12 +143,42 @@ def _sql_comment_split(s: str) -> str:
 
 
 def _js_hex_escape(s: str) -> str:
-    return "".join(f"\\x{ord(c):02x}" if ord(c) < 256 else f"\\u{ord(c):04x}" for c in s)
+    out = []
+    for c in s:
+        cp = ord(c)
+        if cp < 256:
+            out.append(f"\\x{cp:02x}")
+        elif cp <= 0xFFFF:
+            out.append(f"\\u{cp:04x}")
+        else:
+            # \uXXXX is only valid for the BMP (exactly 4 hex digits) -- a
+            # codepoint above 0xFFFF (e.g. an emoji) needs JS's \u{...}
+            # codepoint escape form instead, or \uXXXX just emits invalid
+            # syntax with 5+ digits.
+            out.append(f"\\u{{{cp:x}}}")
+    return "".join(out)
+
+
+def _has_xss_marker(payload: str) -> bool:
+    lower = payload.lower()
+    for marker in _XSS_MARKERS:
+        m = marker.lower()
+        # A word boundary only makes sense on a side where the marker
+        # itself starts/ends with a word character -- markers anchored by
+        # punctuation ("<script", "alert(", "javascript:") are already
+        # distinctive without one. Plain-word markers like "onload"/
+        # "onclick" need it, or they match as a substring of an unrelated
+        # word ("onload" inside "salonload", "onclick" inside "econclick").
+        prefix = r"\b" if m[0].isalnum() else ""
+        suffix = r"\b" if m[-1].isalnum() else ""
+        if re.search(prefix + re.escape(m) + suffix, lower):
+            return True
+    return False
 
 
 def _detect_context(payload: str) -> str:
     has_sql = any(re.search(rf"\b{re.escape(kw)}\b", payload, re.IGNORECASE) for kw in _SQL_KEYWORDS)
-    has_xss = any(marker.lower() in payload.lower() for marker in _XSS_MARKERS)
+    has_xss = _has_xss_marker(payload)
     if has_sql and has_xss:
         return "both"
     if has_sql:

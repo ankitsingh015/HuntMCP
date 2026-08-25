@@ -79,6 +79,15 @@ def test_js_hex_escape():
     assert waf_server._js_hex_escape("<a>") == "\\x3c\\x61\\x3e"
 
 
+def test_js_hex_escape_non_bmp_uses_codepoint_form():
+    # \uXXXX is only valid JS syntax for exactly 4 hex digits (the BMP). A
+    # codepoint above 0xFFFF (e.g. an emoji) used to emit ὠ0 (5
+    # digits) -- not valid JS. Must use the \u{...} codepoint form instead.
+    out = waf_server._js_hex_escape("\U0001F600")
+    assert out == "\\u{1f600}"
+    assert "\\u1f600" not in out
+
+
 def test_detect_context_sql():
     assert waf_server._detect_context("' UNION SELECT username,password FROM users--") == "sql"
 
@@ -87,6 +96,17 @@ def test_detect_context_does_not_false_positive_on_substring():
     # "california" contains "or" as a substring ("calif-OR-nia") -- must
     # not be misdetected as SQL context.
     assert waf_server._detect_context("search=california") == "generic"
+
+
+def test_detect_context_xss_marker_word_boundary():
+    # "onload"/"onclick" embedded inside an unrelated longer word (no word
+    # boundary around them) must not trigger a false-positive XSS-context
+    # detection on a SQL-only payload. (A LIKE '%onload%' pattern is a
+    # different case -- "onload" there genuinely is a bounded standalone
+    # word since '%' isn't a word character, so it's not something word-
+    # boundary matching fixes or should fix.)
+    assert waf_server._detect_context("SELECT * FROM sales WHERE region='salonload'") == "sql"
+    assert waf_server._detect_context("1; SELECT pg_sleep(5) -- econclick") == "sql"
 
 
 def test_detect_context_xss():
