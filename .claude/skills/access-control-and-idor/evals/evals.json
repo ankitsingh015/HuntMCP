@@ -1,0 +1,38 @@
+{
+  "skill_name": "access-control-and-idor",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I'm testing an endpoint that lets a user edit their own profile. The request body includes a nested object like {\"user\": {\"id\": \"attacker-id\", \"bio\": \"...\"}} -- how should I actually test this for IDOR, and where should I look for the vulnerable reference?",
+      "expected_output": "Follows the explicit two-account procedure: create/use an attacker and victim account, intercept the request, and swap the object identifier in the BODY (the nested user.id field) from attacker to victim, not just URL parameters -- this matches mechanism 1 ('your request, their object') from the skill's four-IDOR-mechanisms section, which explicitly warns that the reference increasingly lives in the request body/GraphQL variables rather than the URL, so a URL-only fuzz pass would miss it. Correctly notes this requires two real accounts, not a single-account test.",
+      "files": [],
+      "expectations": [
+        "Recommends using two accounts (attacker and victim), not testing with a single account",
+        "Recommends swapping the identifier in the request BODY specifically, not just the URL",
+        "Correctly maps this to mechanism 1 ('your request, their object') from the skill's framework, or describes equivalent reasoning about body-based references being commonly missed"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "I found that /api/user/12345 lets me swap the ID and see another user's profile data (name, email). Is this a critical finding? What's the actual value here versus a theoretical IDOR?",
+      "expected_output": "References the skill's severity-calibration guidance (question 5 of the five-question framework): impact should track what the object actually represents, not just the bug class -- a leaked invoice with card digits/address paid a real bounty precisely because the specific data inside it mattered, while some 'critical' IDORs in the same disclosed-report survey carried no public bounty at all. Recommends climbing one level to assess what the leaked profile data actually unlocks (e.g. does the email enable account takeover elsewhere, is this PII regulated) before assigning severity, rather than defaulting to a fixed severity based on the bug class alone.",
+      "files": [],
+      "expectations": [
+        "Does not assign a fixed/default severity based on 'IDOR = critical' alone",
+        "Recommends assessing what the specific leaked data actually enables/unlocks before finalizing severity",
+        "References or reflects the skill's point that bug class and real-world impact don't always correlate directly"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "I confirmed an IDOR on /api/documents/{id} using two test accounts. Should I write this up now, or is there anything else worth checking first?",
+      "expected_output": "Recommends widening the test before writing up: method swap (GET/DELETE/PUT on the same object), parameter pollution, nested/deep-link IDs, and checking whether the same pattern exists on other resource types (e.g. /api/orders/{id}, /api/projects/{id}) per the skill's explicit instruction not to stop after one apparent immunity elsewhere. Frames this as 'assume the pattern exists elsewhere' rather than treating the single confirmed instance as the complete finding.",
+      "files": [],
+      "expectations": [
+        "Recommends checking other resource types for the same pattern before considering the finding complete",
+        "Mentions widening via method swap and/or parameter pollution as additional tests on the same endpoint",
+        "Does not simply recommend writing up the single confirmed instance without further exploration"
+      ]
+    }
+  ]
+}

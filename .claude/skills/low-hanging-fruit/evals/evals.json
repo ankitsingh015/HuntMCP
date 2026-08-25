@@ -1,0 +1,38 @@
+{
+  "skill_name": "low-hanging-fruit",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I just started a new engagement on target.example.com. I already found what looks like an interesting SSTI candidate on one endpoint and I'm excited to dig into it. Should I do that first?",
+      "expected_output": "Recommends running the low-hanging-fruit checklist early regardless of the more interesting-looking lead, citing that these cheap checks account for a disproportionate share (21%) of real confirmed findings across engagements, and that skipping them to chase something more interesting is a real cost, not a shortcut. Does not tell the user to abandon the SSTI lead entirely -- just not to let it displace the cheap checks this early in the engagement.",
+      "files": [],
+      "expectations": [
+        "States or implies these checks should happen early in the engagement, not deferred",
+        "Cites the 21%-of-findings framing as the reason not to skip them for a more interesting-looking lead",
+        "Does not simply agree to skip straight to the SSTI lead without addressing the low-hanging-fruit checklist"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "I found a login endpoint that accepts a 6-digit OTP code with what looks like no rate limiting. Is this actually worth reporting, and how would I demonstrate it?",
+      "expected_output": "Confirms this is a real, high-value finding per the skill's rate-limiting section: a 6-digit OTP is only 10^6 possible values, and at 100 requests/second that's roughly an 83-minute account takeover if truly unlimited. Recommends demonstrating it by measuring actual achievable request rate against the endpoint and calculating/estimating time-to-brute-force from that, not just asserting 'no rate limit' without a concrete demonstration.",
+      "files": [],
+      "expectations": [
+        "Correctly explains the 10^6 keyspace / ~83-minute-at-100rps math for a 6-digit OTP",
+        "Recommends an actual rate demonstration rather than just noting the absence of a rate limit",
+        "Treats this as a legitimate, reportable finding, not a theoretical/low-severity one"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "OPTIONS request to an endpoint shows Allow: GET, POST, PATCH, DELETE. GET requires auth and returns 401 without a session. What should I try next?",
+      "expected_output": "Recommends replaying the same privileged action across the other allowed methods (POST/PATCH/DELETE/HEAD), since verb tampering can bypass auth checks that were only wired up for GET -- e.g. HEAD requests sometimes still set admin cookies, or PATCH can flip a role field a POST-only validation path would have blocked. Also mentions trying method-override headers (X-HTTP-Method-Override, X-HTTP-Method, _method) as an additional bypass vector, citing this class of bug (referencing the CVE-2023-30845/ESPv2 JWT-validation-skip precedent from the skill).",
+      "files": [],
+      "expectations": [
+        "Recommends replaying the privileged action across the other methods shown in the Allow header",
+        "Mentions method-override headers (X-HTTP-Method-Override or equivalent) as a distinct additional vector, not just raw verb switching",
+        "References the real precedent this class of bug has had (auth/JWT-validation bypass), not just a generic 'try other methods' suggestion"
+      ]
+    }
+  ]
+}

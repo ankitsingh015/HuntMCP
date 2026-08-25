@@ -22,7 +22,7 @@ looking at a fresh URL and deciding what to test first.
 | 400 | malformed request -- clean up headers, URL-encode special chars, fix `Content-Type` |
 | 401 | needs a session cookie / Bearer token / Basic auth (`-u user:pass` or `-u :`) |
 | 403 | see the `waf-bypass` skill's tiered bypass guide |
-| 429 | 5s delay, rotate `X-Forwarded-For`, fresh session, retry exactly once |
+| 429 | `tool_resolver.run_tool()` already does a 5s delay + exactly one automatic retry of the identical request for any Tier-2 tool call -- if that single retry still 429s, escalate manually: rotate `X-Forwarded-For`, start a fresh session, before trying again |
 | 500 | **potential vuln** -- simplify the payload to isolate the trigger, try variants of the triggering input |
 | Payload not reflected | URL-encode, double-encode, HTML entities, hex, unicode, case variation, JSON-unicode-escape, or an alternative vector entirely |
 | Genuinely stuck | `curl --help all` / `--help <category>` / `--manual` |

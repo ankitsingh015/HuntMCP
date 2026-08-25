@@ -36,9 +36,13 @@ domain too. Subdomain enumeration is mandatory regardless of mode
 domain before moving to the next; thoroughly test one endpoint before the
 next rather than skimming many shallowly.
 
-Rate-limit policy: 1s delay between same-host requests by default; on
-HTTP 429 increase to 5s and retry once (this matches
-`tool_resolver.classify_block()`'s reactive rate-limit handling); if a
+Rate-limit policy: no artificial per-request delay by default -- run at
+real recon/scan speed. `tool_resolver.run_tool()` is purely reactive:
+`classify_block()` only ever triggers a delay (5s, then exactly one
+retry) after an actual 429/rate-limit signal is detected in a tool's
+output, never as a blanket sleep-between-requests policy (a proactive
+per-request delay would trade away real speed for a problem that mostly
+doesn't happen). Don't hand-add your own throttling on top of this. If a
 request/scan hangs for a long time, abandon it and move on rather than
 blocking the whole engagement.
 
