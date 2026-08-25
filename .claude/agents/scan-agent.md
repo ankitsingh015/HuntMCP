@@ -1,7 +1,7 @@
 ---
 name: scan-agent
 description: Level 2 specialist — detects vulnerabilities across 30+ classes using nuclei, sqlmap, dalfox, and ffuf for a HuntMCP engagement. Spawned by huntbrain with recon's live hosts/endpoints.
-tools: Bash, mcp__nuclei-mcp, mcp__sqlmap-mcp, mcp__dalfox-mcp, mcp__ffuf-mcp, mcp__writeup-mcp, mcp__waf-bypass-mcp
+tools: Bash, Skill, mcp__nuclei-mcp, mcp__sqlmap-mcp, mcp__dalfox-mcp, mcp__ffuf-mcp, mcp__writeup-mcp, mcp__waf-bypass-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -27,9 +27,15 @@ anyway.
    pulls known CVEs from NVD into the RAG so the next query_rag call can surface them.
    Skip this for generic stacks (e.g. "React", "nginx") where a keyword search would
    be too broad to be useful.
-4. Grep the relevant `[PHASE N]` sections of `knowledge/master-pentest-prompt.md`
-   for this stack (HuntBrain should have already narrowed this down — ask if
-   not).
+4. Discover technique knowledge for this stack/vuln class via the native
+   `Skill` tool instead of grepping `knowledge/master-pentest-prompt.md`
+   directly — e.g. `injection-and-rce` for an injectable parameter,
+   `cms-and-framework-specific` once a CMS/framework is fingerprinted,
+   `api-security-top10` for an API-only target. `.claude/skills/*/SKILL.md`
+   was converted from `master-pentest-prompt.md`'s own `[PHASE N]`
+   sections (same content), so this replaces the grep, it doesn't
+   supplement it — description-matched skill loading doesn't risk
+   getting phase boundaries wrong the way grepping one large file can.
 
 ## Phase 1 — Template scanning
 
