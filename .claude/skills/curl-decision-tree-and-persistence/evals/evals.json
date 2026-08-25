@@ -1,0 +1,37 @@
+{
+  "skill_name": "curl-decision-tree-and-persistence",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I'm hitting an authorized target's endpoint through nuclei-mcp and keep getting 429 responses. What's actually happening automatically here, and what should I do if it keeps happening?",
+      "expected_output": "Correctly explains that tool_resolver.run_tool() already performs one automatic 5-second-delay retry for any Tier-2 tool call when a 429/rate-limit signal is detected -- this is not something the agent needs to implement itself. If the single automatic retry still gets 429'd, recommends manual escalation: rotating X-Forwarded-For, starting a fresh session, before trying again -- not simply looping the same request repeatedly.",
+      "files": [],
+      "expectations": [
+        "Correctly states the automatic retry is exactly one attempt with a 5-second delay, not a loop",
+        "Correctly attributes this behavior to tool_resolver.run_tool(), not something the agent must add manually for the first attempt",
+        "Recommends header rotation / fresh session only as an escalation AFTER the single automatic retry, not as the first response"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "I found a URL on the target that looks like https://target.example.com/api/search?q=widgets. No other params. What should I actually test first?",
+      "expected_output": "Uses the URL-pattern-to-test-priority table to correctly identify ?q= as matching the search/input pattern, recommending an XSS canary + reflection check first, and a SQLi single-quote probe as well -- not, e.g., treating this as an SSRF or LFI candidate, which are different patterns in the same table.",
+      "files": [],
+      "expectations": [
+        "Correctly matches ?q= to the XSS-canary-and-reflection / SQLi-quote test priority from the table",
+        "Does not misapply a different row's priority (e.g. SSRF, LFI, SSTI) to this parameter"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "I've been fuzzing an endpoint on my authorized target for a while now with no findings, and the engagement's overall attack surface still has plenty of other things I haven't looked at yet. Should I keep grinding on this one endpoint?",
+      "expected_output": "Applies the persistence rules correctly: try at least 3 alternative payloads/bypasses per failed test before moving on (not zero, not infinite), and stop pushing on this specific endpoint once that's been done without success, moving to the rest of the unexplored attack surface rather than fixating indefinitely on one endpoint. Also mentions the overall engagement-level stop condition (no new attack surface after two full passes, or the Tier-2 budget circuit-breaker) as the actual end condition, not 'give up after the first failure.'",
+      "files": [],
+      "expectations": [
+        "Recommends trying at least 3 alternative payloads/bypasses before moving on from this specific endpoint, not giving up immediately",
+        "Recommends moving on to unexplored surface once that's exhausted, rather than continuing to grind indefinitely on one endpoint",
+        "References the correct overall engagement stop condition (two full passes with nothing new, or the budget circuit-breaker) rather than an arbitrary time-based cutoff"
+      ]
+    }
+  ]
+}

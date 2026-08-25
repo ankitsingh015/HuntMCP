@@ -1,0 +1,39 @@
+{
+  "skill_name": "waf-bypass",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I sent a request to https://target.example.com/admin and got a 403. I want to try to get past whatever is blocking it before giving up on testing that endpoint. What should I try, in what order?",
+      "expected_output": "Recommends calling mcp-servers/waf-bypass-mcp's attempt_bypass(url, baseline_status=403, tiers=\"1,2,3,4\") first rather than hand-crafting each variant, since it automates Tiers 1-4 in one call. Explains the tier order (1 header manipulation, 2 path manipulation, 3 method switching, 4 HTTP version tricks) and that Tier 5 (CDN/origin-IP bypass) is NOT automated and needs manual OSINT. Does not skip straight to manual curl commands when the automated tool would cover the same ground faster.",
+      "files": [],
+      "expectations": [
+        "Recommends attempt_bypass() from waf-bypass-mcp as the first step, not hand-crafted curl commands",
+        "Correctly states Tiers 1-4 are automated and Tier 5 is not",
+        "Presents tiers in the documented order (header -> path -> method -> HTTP version)",
+        "Mentions Tier 5 requires external OSINT (SecurityTrails/Shodan/Censys/CT logs) to find the origin IP"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "attempt_bypass ran all 4 tiers against https://target.example.com/admin and every single variant still came back 403. What now?",
+      "expected_output": "Follows the skill's documented decision logic: document the host as WAF-protected and move on, rather than looping indefinitely on the same tiers. If the target is heavily WAF-protected and genuinely high-value, suggests researching current bypass techniques for the specific WAF vendor online as a next step -- but does not recommend retrying the same 4 tiers repeatedly.",
+      "files": [],
+      "expectations": [
+        "Does not recommend simply re-running the same 4 tiers again",
+        "Recommends documenting the host as WAF-protected and moving to other targets/endpoints",
+        "Only suggests vendor-specific research as a conditional next step for a genuinely high-value target, not as the default"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "curl is giving me 'curl: (35) SSL connect error' when I try to hit an endpoint on my authorized target. What's going on and how do I fix it?",
+      "expected_output": "Correctly identifies this from the curl error diagnosis table: (35) SSL means the SSL handshake failed, and the fix is -k or --tlsv1.2. Does not confuse this with a different curl error code from the table (e.g. (7) connection refused or (52) empty reply).",
+      "files": [],
+      "expectations": [
+        "Correctly identifies curl error 35 as an SSL handshake failure",
+        "Recommends -k or --tlsv1.2 as the fix, matching the skill's table",
+        "Does not misattribute this to a different error code's meaning/fix from the same table"
+      ]
+    }
+  ]
+}

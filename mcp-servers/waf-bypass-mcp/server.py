@@ -58,7 +58,10 @@ def _tier1_variants(url: str) -> list[tuple[str, list[str], str]]:
         "X-Forwarded-For: 127.0.0.1",
         "X-Real-IP: 127.0.0.1",
         "X-Originating-IP: 127.0.0.1",
+        "X-Remote-IP: 127.0.0.1",
         "X-Client-IP: 127.0.0.1",
+        "X-Custom-IP-Authorization: 127.0.0.1",
+        "X-ProxyUser-Ip: 127.0.0.1",
         "True-Client-IP: 127.0.0.1",
         "Forwarded: for=127.0.0.1;host=localhost",
     ]
@@ -86,17 +89,26 @@ def _tier2_variants(url: str) -> list[tuple[str, list[str], str]]:
             variants.append((f"path %-encode '{c}'", [], new_url))
             break
 
-    for suffix, label in [("/", "trailing /"), ("/.", "trailing /."), ("//", "double //")]:
+    for suffix, label in [
+        ("/", "trailing /"), ("/.", "trailing /."), ("//", "double //"),
+        ("%20", "trailing %20 (space)"), ("%00", "trailing %00 (null)"), ("/../", "trailing /../"),
+    ]:
         new_path = path.rstrip("/") + suffix
         new_url = urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
         variants.append((f"path {label}", [], new_url))
+
+    if "/" in path.strip("/"):
+        slash_encoded = path.replace("/", "%2f", 1) if path.count("/") > 1 else path
+        if slash_encoded != path:
+            new_url = urlunsplit((parts.scheme, parts.netloc, slash_encoded, parts.query, parts.fragment))
+            variants.append(("path %2f-encode a '/'", [], new_url))
 
     upper_path = path.upper()
     if upper_path != path:
         new_url = urlunsplit((parts.scheme, parts.netloc, upper_path, parts.query, parts.fragment))
         variants.append(("path UPPERCASE", [], new_url))
 
-    for ext in [".json", ";.css", "#"]:
+    for ext in [".json", ".html", ".php", ";.css", ";.js", "#"]:
         new_path = path.rstrip("/") + ext
         new_url = urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
         variants.append((f"path append {ext!r}", [], new_url))
@@ -106,11 +118,22 @@ def _tier2_variants(url: str) -> list[tuple[str, list[str], str]]:
 
 def _tier3_variants(url: str) -> list[tuple[str, list[str], str]]:
     """Method switching -- WAF rules are frequently method-specific."""
-    variants = [(f"method {m}", ["-X", m], url) for m in ("HEAD", "OPTIONS", "POST", "PATCH", "TRACE")]
+    variants = [(f"method {m}", ["-X", m], url) for m in ("HEAD", "OPTIONS", "POST", "PUT", "PATCH", "TRACE", "CONNECT")]
     variants.append((
         "X-HTTP-Method-Override: GET",
         ["-X", "POST", "-H", "X-HTTP-Method-Override: GET"],
         url,
+    ))
+    variants.append((
+        "X-Method-Override: GET",
+        ["-X", "POST", "-H", "X-Method-Override: GET"],
+        url,
+    ))
+    sep = "&" if "?" in url else "?"
+    variants.append((
+        "_method=GET query param",
+        ["-X", "POST"],
+        f"{url}{sep}_method=GET",
     ))
     return variants
 
@@ -121,6 +144,7 @@ def _tier4_variants(url: str) -> list[tuple[str, list[str], str]]:
         ("HTTP/1.0", ["--http1.0"], url),
         ("HTTP/1.1", ["--http1.1"], url),
         ("HTTP/2", ["--http2"], url),
+        ("HTTP/2 prior-knowledge", ["--http2-prior-knowledge"], url),
     ]
 
 

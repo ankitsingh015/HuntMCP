@@ -1,0 +1,38 @@
+{
+  "skill_name": "engagement-setup",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Should I add a small delay between every request I send to the target so I don't trip a rate limiter?",
+      "expected_output": "Correctly states there is no artificial per-request delay by default -- tool_resolver.run_tool() runs at real speed and is purely reactive, only triggering a 5-second delay + one retry after an actual 429/rate-limit signal is detected, never as a blanket sleep-between-requests policy. Recommends NOT hand-adding manual throttling on top of this.",
+      "files": [],
+      "expectations": [
+        "Correctly states there is no default proactive per-request delay",
+        "Correctly describes the reactive-only mechanism (delay only after an actual 429 is detected, not preemptively)",
+        "Recommends against manually adding extra throttling on top of the existing reactive mechanism"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Starting a new engagement against acme-corp.com. The user hasn't told me whether they want a full pentest or a lighter assessment. Can I just start with recon while I wait for them to clarify?",
+      "expected_output": "Does not proceed to recon or any testing until the user has explicitly chosen an assessment mode (FULL BLACKBOX PENTEST or NORMAL SECURITY ASSESSMENT) -- this choice is made once, then never re-asked during the engagement. Explains that mode selection affects what actually gets run (learning phases + heavy fuzzing only in full blackbox mode).",
+      "files": [],
+      "expectations": [
+        "States that the assessment mode must be chosen before proceeding, not deferred",
+        "Does not recommend starting recon before the mode is chosen",
+        "Correctly explains the mode is asked once and never re-asked mid-engagement"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Recon just came back with a live login page, an old staging subdomain, a debug endpoint returning verbose 500 errors, and an admin panel with what looks like a wallet/refund endpoint. Given limited time, what should I test first per the ROI order?",
+      "expected_output": "Correctly applies the ROI priority order: financial IDOR / access control (the wallet/refund endpoint) is the highest confirmed-payout class and should come first, ahead of the debug/verbose-error leak (rank 2) and the staging subdomain exposure (rank 7). Notes this ordering is a starting point, not a rigid cage -- if the actual recon reveals something even higher-value, follow the target rather than the fixed list.",
+      "files": [],
+      "expectations": [
+        "Correctly identifies the financial IDOR/wallet-refund endpoint as the top-priority target per the documented ROI order",
+        "Correctly ranks the debug/verbose-error leak above the staging-subdomain-exposure item, matching the documented order",
+        "Notes the ROI order is a starting point that should adapt to what recon actually reveals, not treated as an unbreakable sequence"
+      ]
+    }
+  ]
+}
