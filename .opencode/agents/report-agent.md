@@ -2,9 +2,10 @@
 description: Generates HackerOne/Bugcrowd-ready vulnerability reports from validated findings.
 mode: subagent
 permission:
-  edit: deny
-  bash:
-    "*": allow
+  edit:
+    "data/reports/**": allow
+    "*": deny
+  bash: deny
   webfetch: deny
 ---
 
