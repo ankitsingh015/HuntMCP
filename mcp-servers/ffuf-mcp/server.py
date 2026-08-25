@@ -2,7 +2,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from tool_resolver import run_tool  # noqa: E402

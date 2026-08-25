@@ -33,6 +33,8 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import engagement_paths
 
+import file_lock
+
 DEFAULT_PATH = engagement_paths.resolve("findings-seen.json", override_env="HUNTMCP_FINDINGS_SEEN_PATH")
 
 
@@ -62,18 +64,19 @@ def check_and_record(vuln_class: str, endpoint: str, parameter: str = "",
     CONFIRMED verdict -- not on every candidate, since a candidate that
     turns out to be a false positive shouldn't occupy a fingerprint slot."""
     fp = _fingerprint(vuln_class, endpoint, parameter)
-    state = _load(path)
-    if fp in state:
-        return {
-            "duplicate": True,
-            "fingerprint": fp,
-            "first_seen_at": state[fp]["seen_at"],
-            "first_seen_as": state[fp]["label"],
-        }
-    label = f"{vuln_class} @ {endpoint}" + (f" ({parameter})" if parameter else "")
-    state[fp] = {"seen_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "label": label}
-    _save(state, path)
-    return {"duplicate": False, "fingerprint": fp}
+    with file_lock.locked(path):
+        state = _load(path)
+        if fp in state:
+            return {
+                "duplicate": True,
+                "fingerprint": fp,
+                "first_seen_at": state[fp]["seen_at"],
+                "first_seen_as": state[fp]["label"],
+            }
+        label = f"{vuln_class} @ {endpoint}" + (f" ({parameter})" if parameter else "")
+        state[fp] = {"seen_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "label": label}
+        _save(state, path)
+        return {"duplicate": False, "fingerprint": fp}
 
 
 def _cli() -> None:
