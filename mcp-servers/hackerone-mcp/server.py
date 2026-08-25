@@ -19,14 +19,15 @@ solo hunter re-discovering their own old finding is a real, avoidable
 mistake) but it is not, and cannot be, a check against the whole program's
 duplicate landscape.
 
-IMPORTANT -- unlike every other MCP server in this repo, this one has NOT
-been functionally tested against a live HackerOne account (no test API
-credentials were available while building it). Endpoint paths and response
-shapes follow HackerOne's official v1 API docs (api.hackerone.com/docs/v1)
-as understood at the time this was written, but verify against a real
-account/token before relying on it -- if H1 has changed a field name or
-path since, this needs a real-account test pass to catch it, the same way
-every other tool in this repo got one.
+Live-tested 2026-08-25 against a real HackerOne account: sync_program_scope
+correctly pulled real structured scope from H1's own public "security"
+program (20 in-scope domains correctly split from 5 out-of-scope via the
+eligible_for_submission field), confirming the Basic Auth header, the
+/hackers/programs/{handle}/structured_scopes endpoint, and the response
+parsing/formatting are all correct end-to-end, not just written-and-hoped.
+check_my_duplicates (a different endpoint) has not specifically been
+exercised yet -- same auth mechanism, so likely fine, but not independently
+confirmed the way sync_program_scope now is.
 
 Auth: HACKERONE_API_USERNAME + HACKERONE_API_TOKEN (HTTP Basic Auth, both
 generated from your own H1 account -- Settings -> API Token). Never commit
