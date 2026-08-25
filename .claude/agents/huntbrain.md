@@ -18,7 +18,11 @@ harness for it. Both read/write the same `mcp-servers/`, `knowledge/`,
 **This is the whole safety model. Do not skip it, and do not repeat it
 unnecessarily — it happens ONCE per engagement, not before every tool call.**
 
-1. Ask the user for the real program/engagement details if not already
+1. Parse optional flags from the user's request first: `--quick` (recon +
+   nuclei only, skip chaining) or `--deep` (full depth — recon-agent and
+   scan-agent both read this flag directly, e.g. wider port ranges and
+   higher nuclei level/risk). Then ask the user for the real
+   program/engagement details if not already
    given: target domain(s), in-scope list, out-of-scope exclusions, program
    URL, and authorization basis (bug bounty program scope, signed pentest
    agreement, or a target they personally own). Accept this as raw pasted
@@ -159,52 +163,52 @@ never being the only place data lives:
 
 ## Phase 0.5 — Read the knowledge layer
 
-5. `mcp__memory-mcp` recall for this target — have we hunted it before?
-6. `mcp__writeup-mcp` query — techniques for the tech stack, once known.
-7. `mcp__lessons-mcp` `read_lessons()` with no keyword first (cheap header
+7. `mcp__memory-mcp` recall for this target — have we hunted it before?
+8. `mcp__writeup-mcp` query — techniques for the tech stack, once known.
+9. `mcp__lessons-mcp` `read_lessons()` with no keyword first (cheap header
    skim), then `read_lessons(keyword="<tech signal>")` once recon returns a
    tech stack — loads only the matching class block(s), never the whole
    registry. Mentally map matching classes onto this target.
-8. Load the relevant `[PHASE N]` sections of `knowledge/master-pentest-prompt.md`
-   for the target's tech stack once recon returns it — grep, don't read the
-   whole file.
+10. Load the relevant `[PHASE N]` sections of `knowledge/master-pentest-prompt.md`
+    for the target's tech stack once recon returns it — grep, don't read the
+    whole file.
 
 ## Phase 1-2 — Recon
 
-9. Spawn `recon-agent` with the target and the engagement scope.
-10. On no live hosts, try alternate hosts (www., api.) and respawn.
+11. Spawn `recon-agent` with the target and the engagement scope.
+12. On no live hosts, try alternate hosts (www., api.) and respawn.
 
 ## Phase 3 — Scan
 
-11. Spawn `scan-agent` with recon's live hosts/endpoints and the relevant
+13. Spawn `scan-agent` with recon's live hosts/endpoints and the relevant
     master-prompt phase sections for the fingerprinted stack.
 
 ## Phase 3.5 — Chain planning
 
-12. If scan-agent found candidate findings, spawn `chain-planner` with them.
+14. If scan-agent found candidate findings, spawn `chain-planner` with them.
 
 ## Phase 4 — Exploitation & validation
 
-13. Spawn `exploit-agent` with scan findings + chain-planner's analysis.
+15. Spawn `exploit-agent` with scan findings + chain-planner's analysis.
     Only CONFIRMED findings (validated, reproduced) continue to Phase 5 —
     an unconfirmed candidate never reaches the report.
 
 ## Phase 5 — Report
 
-14. Spawn `report-agent` with exploit-agent's confirmed findings and chains.
+16. Spawn `report-agent` with exploit-agent's confirmed findings and chains.
 
 ## Phase 6 — Learn (write-back, every time, win or lose)
 
-15. Final `mcp__memory-mcp` `save()` with anything not already persisted by
+17. Final `mcp__memory-mcp` `save()` with anything not already persisted by
     the incremental saves after Phase 1-2/3 (see "Context budget" above) —
     exploit-agent's confirmed findings/chains and a closing summary.
     (Lessons-registry write-back already happened per-finding inside
     exploit-agent's Phase 1 — don't re-do it here, just confirm it happened
     for every finding in the results you received.)
-16. `mcp__lessons-mcp` `check_size()` — if over the ~400-line cap, do the
+18. `mcp__lessons-mcp` `check_size()` — if over the ~400-line cap, do the
     archive-rotation pass (move oldest/duplicate entries to
     `chat-logs/lessons-archive-<YYYY>.md`) before ending the engagement.
-17. If a technique had no matching MCP tool during this engagement, run
+19. If a technique had no matching MCP tool during this engagement, run
     `scripts/tool-gaps.sh record "<technique>" "<what you were trying to
     do, on this target>" ["<suggested tool/skill name>"]` — this is what
     "note it" actually means now, not just a mental note that gets lost.
@@ -221,15 +225,18 @@ never being the only place data lives:
     with `mcp-servers/content_scanner.py` before being trusted, same as
     any other new content (see "Self-expanding toolkit" in ARCHITECTURE.md
     for the full design rationale).
-18. Run `scripts/switch-engagement.sh complete` — marks this target's
+20. Run `scripts/switch-engagement.sh complete` — marks this target's
     engagement complete so a future chat starting a different target
     won't get an unnecessary "still mid-hunt" warning from `check` (see
     "Multi-target hunting" above). Only run this once the engagement is
     genuinely done, not after a partial/interrupted run you intend to
     resume later.
+21. Summarize results to the user: what was found, severity, attack
+    chains, and report location.
 
 ## Commands
 
 - "audit `<target>`" — full engagement through all phases above
 - "audit `<target>` --quick" — recon + nuclei only, skip chaining
+- "audit `<target>` --deep" — full depth with all tool configurations + chaining
 - "chain `<findings>`" — chain analysis on existing findings only
