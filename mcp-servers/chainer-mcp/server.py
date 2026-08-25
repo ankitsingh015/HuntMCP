@@ -1,6 +1,5 @@
 import json
 import sys
-from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("chainer-mcp")
@@ -255,11 +254,13 @@ def analyze_chains(findings_json: str) -> str:
 
     matched_chains = []
     for key, template in sorted(CHAIN_TEMPLATES.items()):
-        required = set(template["required_findings"])
-        cls_upper = set()
-        for fc in finding_classes:
-            cls_upper.add(fc.upper())
-        if required.issubset(cls_upper):
+        # finding_classes is already uppercase (built above); required_findings
+        # in CHAIN_TEMPLATES is written in nice display casing ("SQL Injection",
+        # "File Upload", ...) for get_chain_templates()/plan_chain() output, so
+        # each requirement must be uppercased individually at comparison time --
+        # comparing the sets directly silently drops every multi-word template.
+        required = {r.upper() for r in template["required_findings"]}
+        if required.issubset(finding_classes):
             severity = template["severity_multiplier"]
             matched_chains.append({"key": key, "template": template, "severity": severity})
 
@@ -334,10 +335,9 @@ def plan_chain(chain_key: str, findings_json: str) -> str:
         })
 
     required = set(template["required_findings"])
-    cls_upper = set()
-    for fc in finding_classes:
-        cls_upper.add(fc.upper())
-    missing = required - cls_upper
+    # See analyze_chains for why each requirement is uppercased individually
+    # rather than diffing the sets directly.
+    missing = {r for r in required if r.upper() not in finding_classes}
 
     lines = [
         f"╔══ Chain Plan: {template['name']} ═══",
@@ -435,7 +435,7 @@ def suggest_next_tool(findings_json: str, current_phase: str = "") -> str:
     if "LFI" in finding_classes:
         suggestions.append("Try log poisoning via User-Agent header for RCE")
         suggestions.append("Try PHP wrappers: php://filter/convert.base64-encode/resource=config.php")
-    if "SQL Injection" in finding_classes or "SQLI" in finding_classes:
+    if "SQL INJECTION" in finding_classes or "SQLI" in finding_classes:
         suggestions.append("Extract database schema and user credentials tables")
         suggestions.append("Try --os-shell for RCE if database user has FILE privilege")
     if "SSTI" in finding_classes:

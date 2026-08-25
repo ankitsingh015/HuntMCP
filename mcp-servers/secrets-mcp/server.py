@@ -29,7 +29,14 @@ def scan_directory(path: str, redact: bool = True) -> str:
     if not os.path.isdir(path):
         return f"Error: {path!r} is not a directory."
 
-    report_path = tempfile.mktemp(suffix=".json")
+    # mkstemp() (not the deprecated, TOCTOU-prone mktemp()) reserves a
+    # unique path atomically; immediately remove the empty file it creates
+    # so gitleaks writes the real report there fresh, preserving the
+    # "no report" check below.
+    fd, report_path = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    os.unlink(report_path)
+
     args = [
         "detect", "--no-git", "--source", path,
         "--report-format", "json", "--report-path", report_path,
@@ -48,12 +55,14 @@ def scan_directory(path: str, redact: bool = True) -> str:
     if result.returncode != 0:
         return f"gitleaks failed (exit {result.returncode}): {result.stderr.strip()[:500]}"
 
-    if not os.path.isfile(report_path):
-        return "No findings (gitleaks produced no report)."
-
-    with open(report_path) as f:
-        findings = json.load(f)
-    os.unlink(report_path)
+    try:
+        if not os.path.isfile(report_path):
+            return "No findings (gitleaks produced no report)."
+        with open(report_path) as f:
+            findings = json.load(f)
+    finally:
+        if os.path.isfile(report_path):
+            os.unlink(report_path)
 
     if not findings:
         return f"No secrets found in {path!r}."

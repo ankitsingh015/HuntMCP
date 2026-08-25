@@ -24,7 +24,8 @@ import time
 from urllib.parse import urlsplit, urlunsplit
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from budget_guard import enforce as _enforce_budget  # noqa: E402
+from budget_guard import BudgetExceeded  # noqa: E402
+from tool_resolver import run_tool  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
 
@@ -49,12 +50,18 @@ _XSS_MARKERS = [
 
 
 def _curl_status(url: str, extra_args: list[str], timeout: int = 15) -> tuple[int | None, str | None]:
+    # Routed through tool_resolver.run_tool() rather than a bare
+    # subprocess.run() -- attempt_bypass() can send ~30-40 real requests at
+    # the live target in one call (one per Tier 1-4 variant), and run_tool()
+    # is the single chokepoint that enforces the per-engagement budget and
+    # writes the audit log for every one of them, same as every other Tier-2
+    # MCP server.
     args = [
-        "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+        "-s", "-o", "/dev/null", "-w", "%{http_code}",
         "--max-time", str(timeout), "-A", REALISTIC_UA, *extra_args, url,
     ]
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout + 5)
+        result = run_tool("curl", args, retry_on_rate_limit=False, timeout=timeout + 5)
     except subprocess.TimeoutExpired:
         return None, "timeout"
     except FileNotFoundError:
@@ -300,11 +307,6 @@ def attempt_bypass(url: str, baseline_status: int = 403, tiers: str = "1,2,3,4",
     here -- see the master prompt's Phase 0.6 for that step. `delay`
     (seconds between requests, default 0.5) keeps this from hammering an
     already-suspicious endpoint with a rapid burst."""
-    try:
-        _enforce_budget("curl-waf-bypass")
-    except Exception as e:
-        return f"Error: {e}"
-
     requested_tiers = [t.strip() for t in tiers.split(",") if t.strip()]
     variants: list[tuple[str, str, list[str], str]] = []
     for t in requested_tiers:
@@ -317,8 +319,14 @@ def attempt_bypass(url: str, baseline_status: int = 403, tiers: str = "1,2,3,4",
 
     results = []
     successes = []
+    budget_exhausted = False
     for tier, label, extra_args, variant_url in variants:
-        status, err = _curl_status(variant_url, extra_args)
+        try:
+            status, err = _curl_status(variant_url, extra_args)
+        except BudgetExceeded as e:
+            results.append(f"  [tier {tier}] {label}: SKIPPED (budget exhausted: {e})")
+            budget_exhausted = True
+            break
         time.sleep(delay)
         if err:
             results.append(f"  [tier {tier}] {label}: ERROR ({err})")
@@ -329,7 +337,8 @@ def attempt_bypass(url: str, baseline_status: int = 403, tiers: str = "1,2,3,4",
             successes.append((tier, label, status, variant_url))
         results.append(f"  [tier {tier}] {label}: HTTP {status}{marker}")
 
-    header = f"Tried {len(variants)} bypass variant(s) against {url} (baseline {baseline_status}):"
+    tried = len(results) if budget_exhausted else len(variants)
+    header = f"Tried {tried} of {len(variants)} bypass variant(s) against {url} (baseline {baseline_status}):"
     if successes:
         footer = "\n\nPossible bypasses found:\n" + "\n".join(
             f"  tier {t} / {label} -> HTTP {status} ({vurl})" for t, label, status, vurl in successes

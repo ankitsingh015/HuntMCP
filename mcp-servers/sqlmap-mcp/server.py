@@ -1,4 +1,3 @@
-import json
 import os
 import re
 import subprocess
@@ -53,7 +52,12 @@ def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1
             m = re.search(r"Parameter:\s+(.+?)\s+\((\w+)\)", line)
             if m:
                 vulns.append(f"  Parameter: {m.group(1)} ({m.group(2)})")
-            m = re.search(r"Type:\s+(.+?)(?:\s+Title:\s+(.+?))?(?:\s+Payload:\s+(.+))?", line)
+            # sqlmap prints Type:/Title:/Payload: on separate lines, never on
+            # the same line as each other -- so the trailing optional groups
+            # this used to have never matched, and the lazy `.+?` before them
+            # grabbed only the first character of the type (e.g. "b" instead
+            # of "boolean-based blind"). Greedy-match to end of line instead.
+            m = re.search(r"Type:\s+(.+)", line)
             if m:
                 vulns.append(f"  Type: {m.group(1).strip()}")
 

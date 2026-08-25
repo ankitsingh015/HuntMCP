@@ -1,9 +1,7 @@
-import json
 import os
 import re
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from tool_resolver import run_tool  # noqa: E402
@@ -28,6 +26,10 @@ def _parse_nmap_grepable(raw: str) -> list[dict]:
             ports = []
             for part in m.group(1).split(","):
                 part = part.strip()
+                # nmap -oG's port field is
+                # port/state/protocol/owner/service/rpc_info/version -- group
+                # 5 is the service name, group 7 is the version string. This
+                # used to read group(7) (version) as the service name.
                 pm = re.match(
                     r"(\d+)/(open|filtered|closed)/(tcp|udp)/([^/]*)/([^/]*)/([^/]*)/(.*)",
                     part,
@@ -37,7 +39,7 @@ def _parse_nmap_grepable(raw: str) -> list[dict]:
                         "port": int(pm.group(1)),
                         "state": pm.group(2),
                         "proto": pm.group(3),
-                        "service": pm.group(7).strip() if pm.group(7) else pm.group(4),
+                        "service": pm.group(5).strip() if pm.group(5) else "unknown",
                     })
             host["ports"] = ports
         hosts.append(host)

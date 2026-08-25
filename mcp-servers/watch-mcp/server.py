@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -178,7 +179,7 @@ def check_target(target: str) -> str:
     )
     conn.commit()
 
-    events = run_check(target)
+    events, current_subdomains, current_endpoints = run_check(target)
 
     for ev in events:
         conn.execute(
@@ -190,7 +191,10 @@ def check_target(target: str) -> str:
     conn.commit()
     conn.close()
 
-    take_snapshot(target, "check")
+    # Reuse the subfinder/katana results run_check() already fetched to
+    # compute the diff, instead of running both tools again just to
+    # persist the snapshot -- this used to run each tool twice per check.
+    take_snapshot(target, "check", subdomains=current_subdomains, endpoints=current_endpoints)
 
     if not events:
         return f"Check complete for {target}. No changes detected."
@@ -229,11 +233,13 @@ def get_watch_history(target: str, limit: int = 20) -> str:
     return "\n".join(lines)
 
 
-def take_snapshot(target: str, snapshot_type: str):
+def take_snapshot(target: str, snapshot_type: str, subdomains: list | None = None, endpoints: list | None = None):
     conn = get_db()
 
-    subdomains = run_subfinder(target)
-    endpoints = run_katana(target)
+    if subdomains is None:
+        subdomains = run_subfinder(target)
+    if endpoints is None:
+        endpoints = run_katana(target)
 
     conn.execute(
         "INSERT INTO snapshots (target, snapshot_type, data) VALUES (?, ?, ?)",
@@ -278,12 +284,18 @@ def run_httpx(domains: list) -> list:
             lines = result.stdout.strip().splitlines()
             result_list = []
             for line in lines:
-                parts = line.split()
+                # httpx's `-sc -td -title` output looks like:
+                #   https://example.com [200] [nginx] [Example Domain - Welcome]
+                # Splitting on whitespace truncates a multi-word title to its
+                # first word -- pull the bracketed fields out instead.
+                url_match = re.match(r"(\S+)", line)
+                url = url_match.group(1) if url_match else ""
+                brackets = re.findall(r"\[([^\]]*)\]", line)
                 result_list.append({
-                    "url": parts[0] if parts else "",
-                    "status": parts[1] if len(parts) > 1 else "",
-                    "tech": parts[2] if len(parts) > 2 else "",
-                    "title": parts[3] if len(parts) > 3 else "",
+                    "url": url,
+                    "status": brackets[0] if len(brackets) > 0 else "",
+                    "tech": brackets[1] if len(brackets) > 1 else "",
+                    "title": brackets[2] if len(brackets) > 2 else "",
                 })
             return result_list
     except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
@@ -303,7 +315,7 @@ def run_katana(target: str) -> list:
     return []
 
 
-def run_check(target: str) -> list:
+def run_check(target: str) -> tuple[list, list, list]:
     events = []
     previous = load_last_snapshot(target)
 
@@ -348,7 +360,7 @@ def run_check(target: str) -> list:
             "details": json.dumps({"endpoint": ep}),
         })
 
-    return events
+    return events, current_subdomains, current_endpoints
 
 
 if __name__ == "__main__":
