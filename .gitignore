@@ -4,6 +4,8 @@ data/chroma/
 # Local databases (each user has their own)
 data/memory.db
 data/watch.db
+data/candidate-targets.db
+data/burp-import.db
 
 # Python cache
 __pycache__/

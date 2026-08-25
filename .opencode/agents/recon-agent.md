@@ -11,7 +11,8 @@ permission:
 
 You receive a target domain from HuntBrain. Your job is to discover the full attack surface.
 
-Available MCPs: subfinder-mcp, httpx-mcp, katana-mcp, nmap-mcp, secrets-mcp.
+Available MCPs: subfinder-mcp, httpx-mcp, katana-mcp, nmap-mcp, secrets-mcp,
+burp-import-mcp.
 After katana crawls JS/pages to a local directory, call secrets-mcp
 `scan_directory(path)` on it to catch exposed API keys/tokens before scan
 even starts — cheap, local-file-only, not a live-target action.
@@ -20,6 +21,18 @@ Before touching any host, run `scripts/check-scope.sh <host>` via bash. If it
 exits non-zero, stop on that host and report the block to HuntBrain — never
 work around it. This is a cheap local check (no LLM call), safe to run per
 new host discovered.
+
+## Phase 0 — Burp import (optional, only if the user has one)
+
+0. If the user mentions a Burp Suite HTTP-history export (a saved XML file
+   from Proxy/Target > "Save selected items"), call burp-import-mcp
+   `import_history(export_path, target)` first, before Phase 1. This seeds
+   authenticated endpoints (session cookies, Authorization headers) a human
+   hunter already explored manually — territory subfinder/katana can't
+   reach on their own since they don't know how to log in. Then call
+   `list_endpoints(target, authenticated_only=True)` and fold those into
+   what you return, tagged as already-authenticated. Skip this phase
+   entirely if no export was mentioned.
 
 ## Phase 1 — Subdomain Enumeration
 

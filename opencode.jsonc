@@ -133,6 +133,12 @@
       "enabled": true,
       "command": "./.venv/bin/python",
       "args": ["mcp-servers/second-opinion-mcp/server.py"]
+    },
+    "burp-import-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "./.venv/bin/python",
+      "args": ["mcp-servers/burp-import-mcp/server.py"]
     }
   },
   "autoupdate": "notify"
