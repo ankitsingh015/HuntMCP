@@ -215,6 +215,32 @@ CHAIN_TEMPLATES = {
             "5. If successful, document the race window, request timing, and financial impact",
         ],
     },
+    "massassignment_pollution_privesc": {
+        "name": "Mass Assignment + Parameter Pollution → Privilege Escalation",
+        "description": "Combine an API that blindly binds client-supplied fields onto a server-side object (mass assignment) with HTTP parameter pollution to smuggle a privileged field past validation that only inspects the first/last occurrence of a parameter.",
+        "required_findings": ["MASS ASSIGNMENT", "PARAMETER POLLUTION"],
+        "severity_multiplier": "Critical (9.0+)",
+        "chain_steps": [
+            "1. Find a write endpoint (signup, profile update, order creation) and diff its response/behavior against the documented request schema for extra accepted fields",
+            "2. Probe for privileged fields the docs don't mention: role, isAdmin, is_verified, accountType, permissions, price, balance",
+            "3. If a direct extra field is rejected or stripped, retry with parameter pollution: role=user&role=admin, role[]=user&role[]=admin, or a duplicate JSON key -- many frameworks bind to the first occurrence while a validation layer in front only checks the last (or vice versa)",
+            "4. Confirm the escalation took effect: re-authenticate or re-fetch the profile/object and check the privileged field's actual stored value",
+            "5. Document the exact field name, the pollution technique that worked, and the before/after privilege state",
+        ],
+    },
+    "cors_xss_credential_theft": {
+        "name": "CORS Misconfiguration + XSS → Unauthenticated Session/Data Theft",
+        "description": "A CORS policy that reflects an arbitrary Origin (or uses a permissive wildcard-with-credentials pattern) combined with a way to run JavaScript in the victim's browser context turns a same-origin-only bug into fully unauthenticated account takeover -- the attacker's page reads the victim's authenticated API responses directly.",
+        "required_findings": ["CORS MISCONFIGURATION", "XSS"],
+        "severity_multiplier": "Critical (9.0+)",
+        "chain_steps": [
+            "1. Confirm the CORS misconfiguration: send Origin: https://attacker.example and check whether Access-Control-Allow-Origin reflects it (or is '*') together with Access-Control-Allow-Credentials: true -- that combination is what makes credentialed cross-origin reads possible",
+            "2. Confirm XSS fires in the victim's browser context (or use an attacker-controlled page if the CORS hole alone is reachable without XSS, e.g. via a link the victim visits)",
+            "3. From the XSS/attacker page, issue a credentialed fetch/XHR to the sensitive API endpoint (fetch(url, {credentials: 'include'})) and read the response -- this succeeds specifically because of the CORS misconfiguration, not same-origin defaults",
+            "4. Exfiltrate the sensitive data (session tokens, PII, account details) to an attacker-controlled endpoint, or replay a state-changing request as the victim (CSRF-equivalent impact) if the API is write-capable",
+            "5. Document the exact Origin/Access-Control-Allow-* header pair, the JS used to read the cross-origin response, and what was actually exfiltrated",
+        ],
+    },
 }
 
 
