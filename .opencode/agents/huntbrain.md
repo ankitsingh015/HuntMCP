@@ -90,6 +90,14 @@ complete/incomplete status.
 16. If findings exist, spawn @chain-planner agent with all scan findings (as JSON array).
 17. Wait for chain-planner to return chain analysis with top chain and execution plan.
 18. If no chains found, proceed directly to Phase 4 with individual findings.
+18b. exploit-agent (Phase 4) is what actually records findings into the
+     persistent case store (case-mcp — hypotheses, evidence, finding
+     lifecycle, root cause); you don't need to call it yourself here. If
+     you're deciding whether there's still worthwhile attack surface left
+     before wrapping up, case-mcp `suggest_next_action()` and
+     `case_summary()` reflect what's actually been tested and confirmed so
+     far, more reliable than re-deriving it from conversation history
+     alone (especially after a context compaction).
 
 ## Phase 4 — Exploitation & Validation
 
@@ -103,7 +111,7 @@ complete/incomplete status.
 
 ## Phase 6 — Learn
 
-23. Final memory-mcp `save()` with anything not already persisted by the incremental saves in steps 12/15b — exploit-agent's confirmed findings/chains and a closing summary/bounty estimate.
+23. Final memory-mcp `save()` with anything not already persisted by the incremental saves in steps 12/15b — exploit-agent's confirmed findings/chains and a closing summary/bounty estimate. Call case-mcp `case_summary()` for the final hypothesis/finding/evidence counts to include in your summary to the user, and `case_export()` if report-agent needs the full structured record (it already receives exploit-agent's findings directly, so this is only needed if something in the case store — root-cause groupings, a hypothesis's rejection reasoning — is relevant to the writeup and wasn't already passed along).
 24. Call lessons-mcp `check_size()` — if over the ~400-line cap, archive oldest/duplicate entries to `chat-logs/lessons-archive-<YYYY>.md` before ending.
 25. Run `scripts/switch-engagement.sh complete` — marks this target's engagement complete so a future chat starting a different target won't get an unnecessary "still mid-hunt" warning (see "Multi-target hunting" above). Only if the engagement is genuinely done, not a partial run you intend to resume later.
 26. If a technique had no matching MCP tool this engagement, run `scripts/tool-gaps.sh record "<technique>" "<what you were trying to do, on this target>" ["<suggested tool/skill name>"]` — recorded globally so a technique recurring across engagements is visible (`scripts/tool-gaps.sh list` flags anything seen 2+ times). Doesn't author or run any new code itself — building the tool/skill is a separate, human-in-the-loop coding task, and anything built that way should be checked with `mcp-servers/content_scanner.py` before being trusted.

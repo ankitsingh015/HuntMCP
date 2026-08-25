@@ -83,6 +83,10 @@
     "burp-import-mcp": {
       "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/burp-import-mcp/server.py"]
+    },
+    "case-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/case-mcp/server.py"]
     }
   }
 }
