@@ -14,6 +14,8 @@ permission:
     "scripts/check-budget.sh": allow
     "scripts/check-work.sh *": allow
     "scripts/switch-engagement.sh *": allow
+    "scripts/tool-gaps.sh *": allow
+    "scripts/check-new-bounty-scope.sh *": allow
     "rm -f budget.json": allow
     "rm -f budget.json work-registry.json": allow
     "rm -f budget.json work-registry.json findings-seen.json": allow
@@ -101,7 +103,8 @@ complete/incomplete status.
 21. Final memory-mcp `save()` with anything not already persisted by the incremental saves in steps 10/13b — exploit-agent's confirmed findings/chains and a closing summary/bounty estimate.
 22. Call lessons-mcp `check_size()` — if over the ~400-line cap, archive oldest/duplicate entries to `chat-logs/lessons-archive-<YYYY>.md` before ending.
 23. Run `scripts/switch-engagement.sh complete` — marks this target's engagement complete so a future chat starting a different target won't get an unnecessary "still mid-hunt" warning (see "Multi-target hunting" above). Only if the engagement is genuinely done, not a partial run you intend to resume later.
-24. Summarize results to the user: what was found, severity, attack chains, and report location.
+24. If a technique had no matching MCP tool this engagement, run `scripts/tool-gaps.sh record "<technique>" "<what you were trying to do, on this target>" ["<suggested tool/skill name>"]` — recorded globally so a technique recurring across engagements is visible (`scripts/tool-gaps.sh list` flags anything seen 2+ times). Doesn't author or run any new code itself — building the tool/skill is a separate, human-in-the-loop coding task, and anything built that way should be checked with `mcp-servers/content_scanner.py` before being trusted.
+25. Summarize results to the user: what was found, severity, attack chains, and report location.
 
 ## Commands
 

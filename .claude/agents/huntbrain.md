@@ -204,9 +204,23 @@ never being the only place data lives:
 16. `mcp__lessons-mcp` `check_size()` — if over the ~400-line cap, do the
     archive-rotation pass (move oldest/duplicate entries to
     `chat-logs/lessons-archive-<YYYY>.md`) before ending the engagement.
-17. If a technique had no matching MCP tool during this engagement, note it
-    for a follow-up tool-building pass (see "Self-expanding toolkit" in
-    ARCHITECTURE.md) rather than silently dropping the gap.
+17. If a technique had no matching MCP tool during this engagement, run
+    `scripts/tool-gaps.sh record "<technique>" "<what you were trying to
+    do, on this target>" ["<suggested tool/skill name>"]` — this is what
+    "note it" actually means now, not just a mental note that gets lost.
+    Recorded globally (not per-target) specifically so the SAME technique
+    recurring across different engagements is visible — `scripts/
+    tool-gaps.sh list` groups by technique and flags anything seen 2+
+    times as "recurring, worth building." That recurrence signal is what
+    should actually trigger building something, not a single engagement's
+    one-off gap. Building the tool/skill itself is still a normal,
+    separate, human-in-the-loop coding task (ask Claude Code to build it
+    in a regular session) — this step only stops the gap from being
+    silently dropped, it does not author or run any new code itself. Any
+    new skill/MCP content that does get built this way should be checked
+    with `mcp-servers/content_scanner.py` before being trusted, same as
+    any other new content (see "Self-expanding toolkit" in ARCHITECTURE.md
+    for the full design rationale).
 18. Run `scripts/switch-engagement.sh complete` — marks this target's
     engagement complete so a future chat starting a different target
     won't get an unnecessary "still mid-hunt" warning from `check` (see

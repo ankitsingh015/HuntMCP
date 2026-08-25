@@ -70,6 +70,25 @@ jobs:
       - name: Run pytest
         run: python3 -m pytest tests/ -v
 
+  scan-agent-content:
+    name: Scan Skill/MCP Content
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Scan skills and MCP servers for OWASP Skill/MCP Top 10 red flags
+        # Advisory, same as Python Lint's ruff check -- surfaces findings in
+        # the log for human review rather than hard-blocking, since a
+        # MEDIUM/HIGH finding on already-reviewed content (e.g. a skill
+        # that legitimately documents prompt-injection payloads for
+        # testing a target's AI features) is expected, not a defect.
+        run: python3 mcp-servers/content_scanner.py "mcp-servers/**/*.py" ".claude/skills/*/SKILL.md" || true
+
   lint-shell:
     name: Shell Lint
     runs-on: ubuntu-latest
@@ -264,7 +283,7 @@ jobs:
 
   summary:
     name: Build Summary
-    needs: [lint-python, unit-tests, lint-shell, validate-config, validate-agent-files, docker-build]
+    needs: [lint-python, unit-tests, scan-agent-content, lint-shell, validate-config, validate-agent-files, docker-build]
     if: always()
     runs-on: ubuntu-latest
     steps:
