@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +27,12 @@ func (h *HuntHandler) Save(c *gin.Context) {
 			Details: err.Error(),
 		})
 		return
+	}
+
+	if uid, ok := c.Get("user_id"); ok {
+		if s, ok := uid.(string); ok {
+			req.UserID = s
+		}
 	}
 
 	hunt, err := h.repo.Save(req)
@@ -125,6 +133,33 @@ func (h *HuntHandler) SearchByTech(c *gin.Context) {
 
 func (h *HuntHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(string)
+
+	hunt, err := h.repo.GetByID(id)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, model.ErrorResponse{
+			Error: "hunt not found",
+		})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.ErrorResponse{
+			Error:   "failed to look up hunt",
+			Details: err.Error(),
+		})
+		return
+	}
+	// Hunts saved before user_id was tracked have no owner -- allow the
+	// authenticated user to clean those up, but block deleting someone
+	// else's owned hunt.
+	if hunt.UserID != "" && hunt.UserID != uid {
+		c.JSON(http.StatusForbidden, model.ErrorResponse{
+			Error: "not authorized to delete this hunt",
+		})
+		return
+	}
+
 	if err := h.repo.Delete(id); err != nil {
 		c.JSON(http.StatusNotFound, model.ErrorResponse{
 			Error: "hunt not found",

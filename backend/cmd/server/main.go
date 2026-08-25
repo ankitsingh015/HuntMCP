@@ -80,7 +80,10 @@ func main() {
 		}
 	}
 
-	router.POST("/mcp", mcpHandler.ServeMCP)
+	// /mcp stays a top-level path (not under /api/v1) per the documented
+	// MCP-protocol bridge contract, but must not be reachable without a
+	// valid token -- it exposes save_hunt/recall_hunt/query_rag directly.
+	router.POST("/mcp", middleware.AuthMiddleware(authService), mcpHandler.ServeMCP)
 
 	port := os.Getenv("PORT")
 	if port == "" {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/ankitsingh015/HuntMCP/backend/internal/model"
 	"github.com/ankitsingh015/HuntMCP/backend/internal/repository"
+	"github.com/ankitsingh015/HuntMCP/backend/internal/service"
 )
 
 type WriteupHandler struct {
@@ -120,7 +121,16 @@ func (h *WriteupHandler) QueryRAG(c *gin.Context) {
 		req.Score = 0.5
 	}
 
-	results, err := h.repo.VectorSearch(nil, req.TopK, req.Score)
+	queryVector, err := service.EmbedQuery(req.Query)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, model.ErrorResponse{
+			Error:   "embedding service unavailable",
+			Details: err.Error(),
+		})
+		return
+	}
+
+	results, err := h.repo.VectorSearch(queryVector, req.TopK, req.Score)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{
 			Error:   "RAG query failed",
