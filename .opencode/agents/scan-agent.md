@@ -29,11 +29,14 @@ never test it anyway.
 4. Discover technique knowledge for this stack/vuln class via the native
    `skill` tool — e.g. `injection-and-rce` for an injectable parameter,
    `cms-and-framework-specific` once a CMS/framework is fingerprinted,
-   `api-security-top10` for an API-only target. `.claude/skills/*/SKILL.md`
-   is discovered natively by OpenCode (same catalog as Claude Code) and
-   was converted from `knowledge/master-pentest-prompt.md`'s own
-   `[PHASE N]` sections — same content, but description-matched loading
-   instead of grepping one large reference file.
+   `api-security-top10` for an API-only target. This reaches the exact
+   same `.claude/skills/*/SKILL.md` content Claude Code uses (via the
+   `.opencode/skills` symlink -- OpenCode's own skill loader only scans
+   `~/.claude/skills/` and `.opencode/skills/`, never a project-local
+   `.claude/skills/` directly, confirmed against the installed binary; see
+   ARCHITECTURE.md), converted from `knowledge/master-pentest-prompt.md`'s
+   own `[PHASE N]` sections — same content, but description-matched
+   loading instead of grepping one large reference file.
 
 ## Phase 1 — Template-Based Scanning
 
