@@ -100,6 +100,54 @@ unexplored.
   exploit-agent's Phase 1.5 rationalizations-to-reject check enforces
   structurally).
 
+## Composing attack chains: proving a dependency, not just co-occurrence
+
+The attack chaining engine above lists example chain shapes (XSS +
+localStorage token -> ATO, CORS + credentials -> exfiltration). The part
+that's easy to get wrong is the step between "I have two findings on the
+same target" and "these actually chain": two low-severity findings sitting
+on the same app are not automatically a chain, and reporting them as one
+without proving the dependency is how a chain claim gets rejected as
+speculative.
+
+Use this procedure whenever two or more verified findings might compose
+into something higher-impact:
+
+1. **Normalize each component finding on its own** -- for each one, record
+   what's actually demonstrated (not a scanner label), the exact
+   output it produces (an identifier, a token, a reachable route, a
+   capability), and its own confirmed impact standing alone.
+2. **Draw the dependency explicitly** -- state what output Finding A
+   produces and what input Finding B consumes. If A and B just happen to
+   exist on the same target with no output/input relationship between
+   them, they're merely co-located, not chained -- document them
+   separately and stop there.
+3. **Test the transition, not just the two endpoints** -- prove that the
+   *exact* output from step A is accepted as input by step B under the
+   same conditions. A source map leaking a hidden API path only chains
+   if that extracted URL actually resolves to the tested API; a leaked
+   username only chains into account takeover if it's actually accepted
+   somewhere as a credential or identity input, not merely displayed.
+4. **Recalculate compound impact from what was proven, not from what
+   seems plausible** -- state what each component demonstrates alone,
+   what new capability the *verified* transition adds, which final
+   impact was actually reproduced, and which downstream consequence is
+   still inferred rather than confirmed. Chain severity cannot exceed the
+   weakest verified link -- a theoretical final step doesn't become
+   confirmed just because the earlier steps worked.
+5. **Common false-chain traps**: co-occurrence is not dependency; a
+   username is not a credential; a valid credential for one service
+   doesn't imply access to another; a file-upload primitive doesn't imply
+   code execution; SSRF reaching an internal host doesn't imply control
+   over what's running there. Several low-confidence steps compound
+   uncertainty, not confidence -- they don't average out to a strong
+   finding.
+
+This is the same discipline `pre-submission-validation` applies at the
+report gate for a single finding, extended to a pair of them: build the
+chain first, prove the transition end-to-end, then report -- never report
+finding A with "this could chain with B."
+
 ## Form handling
 
 Every form is an attack surface. Fully map each one (action, method,

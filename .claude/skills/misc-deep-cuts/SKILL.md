@@ -56,3 +56,40 @@ by vuln class.
 - **API documentation exposure**: `/swagger-ui`, `/redoc`, `/api-docs`,
   a live `/graphql` playground, `/v3/api-docs` -- these map the entire
   API surface for free once found.
+- **Post-removal session/token persistence**: removing a user from an
+  org/tenant often flips an `active=false` flag or deletes a membership
+  row without revoking their live session or issued tokens. Capture a
+  session/PAT before removal, have an admin remove that user through the
+  normal flow, then replay the same API calls with the old
+  credential -- cached permission checks frequently keep passing for
+  days after removal, especially across a company/org boundary rather
+  than a single-resource one.
+- **Token scope checked at issuance, not at use**: an OAuth/PAT scope
+  is validated when the token is created, but individual endpoint
+  handlers don't re-check it. Create a token with a minimal scope (e.g.
+  `read:user` only), then call a write/privileged endpoint directly --
+  middleware that only checks "is authenticated" (not "is this scope
+  sufficient for this handler") lets a read-only token act as
+  write-equivalent. Check collection-level vs. individual sub-resource
+  endpoints and legacy API versions separately -- scope enforcement
+  gaps cluster there.
+- **Blocklist responses mistaken for existence oracles**: when many
+  different paths return the identical response shape/text, that's
+  often a server-side extension/path blocklist, not a real
+  file-or-user-existence oracle. Don't infer "this resource exists"
+  from "this request got blocked" -- confirm with an independent
+  signal (OOB callback, timing differential at scale, or a genuinely
+  distinct response for a request known not to exist) before trusting
+  the pattern. A blanket filter that rejects `.config`/`.ashx`/`.svc`
+  extensions regardless of whether the underlying file exists will
+  otherwise produce a list of "discovered" endpoints that were never
+  real.
+- **Integration config fields as a token-exfil vector**: URL fields in
+  admin/integration settings (error-tracking DSN, webhook URL, outbound
+  proxy URL) are often assumed to be set only by trusted admins, but a
+  lower-privileged role (maintainer, not owner) can frequently edit
+  them too. Repointing one of these at an attacker-controlled listener
+  doesn't just prove SSRF -- the service's own auth token for that
+  integration is often included in the outbound request, so the
+  attacker-controlled endpoint captures a live credential, not just a
+  callback.

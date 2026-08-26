@@ -38,3 +38,37 @@ Most of these are already covered in depth by a dedicated skill
 `request-smuggling`, `open-redirect`, `csrf-cors-origin`, and others) --
 treat this list as the final "did I actually hit every category" check,
 not a first-pass technique reference.
+
+## Triage-time sanity check: always-rejected findings
+
+Before writing up anything from the sweep above, run it past this list.
+These are the finding types bug bounty triagers consistently close as
+informational / N/A regardless of how the checklist item was technically
+"hit" -- submitting them without the extra PoC impact noted burns your
+validity ratio for no payout:
+
+- Missing security headers (CSP, HSTS, X-Frame-Options) with no PoC that
+  actually exploits their absence
+- Self-XSS (only reachable in the reporter's own account, no CSRF/clickjack
+  path to trigger it on a victim)
+- Clickjacking on a page with no sensitive state-changing action framed
+- Verbose error messages / stack traces / banner-version disclosure with
+  no secret, credential, or working exploit in them
+- Missing SPF/DKIM/DMARC records alone (no actual spoofed-mail delivery
+  demonstrated)
+- GraphQL introspection enabled with no auth-bypass mutation or IDOR found
+  through it
+- Open redirect alone, with no OAuth `redirect_uri` token-theft or ATO
+  chain behind it
+- CORS wildcard (`*`) with no credentialed-request PoC exfiltrating actual
+  user data
+- Logout CSRF, or CSRF on a non-sensitive action
+- Rate-limit absence on non-critical forms (search, contact, a
+  Cloudflare-fronted login already rate-limited upstream)
+- Missing `HttpOnly`/`Secure` cookie flags alone, with no session-theft PoC
+- Autocomplete enabled on password fields
+- Mixed content / weak TLS cipher suites with no demonstrated downgrade
+
+If a checklist category above only produces one of these on a given
+target, treat it as covered-but-not-reportable and keep looking for the
+chain that turns it into real impact, rather than filing it as-is.
