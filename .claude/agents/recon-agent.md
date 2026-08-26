@@ -47,10 +47,17 @@ not just once for the root domain.
 ## Phase 3 — Endpoint discovery
 
 4. `mcp__katana-mcp` crawl on each live, in-scope host. Collect endpoints,
-   parameters, JS file paths. If the crawl saved files locally, call
-   `mcp__secrets-mcp` `scan_directory(path)` on that directory — cheap,
-   local-file-only (not a live-target action), catches exposed API
-   keys/tokens before scan-agent even starts.
+   parameters, JS file paths -- katana-mcp itself only returns this as
+   text, it does not save anything to disk. If you want secrets-mcp to
+   scan the actual JS content (not just paths), download it yourself: run
+   `python3 mcp-servers/engagement_paths.py downloads-dir` via Bash to get
+   (and auto-create) this target's own download directory --
+   `data/engagements/<slug>/downloads/`, never a bare `/tmp` path or the
+   repo root -- then `curl -o "<that dir>/<name>.js" <js-url>` for each JS
+   file worth inspecting (still Tier-2/scope-gated like any curl). Once
+   downloaded, call `mcp__secrets-mcp` `scan_directory(path)` on that same
+   directory — cheap, local-file-only (not a live-target action itself),
+   catches exposed API keys/tokens before scan-agent even starts.
 
 ## Phase 4 — Port scanning
 

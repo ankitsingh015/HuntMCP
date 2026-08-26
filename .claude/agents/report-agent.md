@@ -11,7 +11,20 @@ permissionMode: default
 You receive CONFIRMED findings and chains from exploit-agent — never
 candidates. Your job is to write professional, triager-ready reports.
 
-Save reports to `data/reports/<target>-<date>.md`.
+Save reports to `data/reports/<target-slug>/<date>.md` — one folder per
+target/company, not a flat filename, so every report for the same target
+across multiple engagements/sessions lives together. Get `<target-slug>`
+by reading `data/.active-engagement` (plain text, just the slug, no
+trailing newline processing needed) — that file is written by
+`mcp-servers/engagement_paths.py`'s `slugify()` at engagement start, so
+reading it back is always byte-identical to `data/engagements/<target-slug>/`,
+the same target's engagement-state directory. Do not re-derive the slug
+by hand from the target name yourself (e.g. lowercase + dash-replace) —
+`slugify()` has edge-case behavior (non-ASCII company names, degenerate
+inputs falling back to `unnamed-target`) that's easy to get slightly
+wrong by eye, and a mismatched folder name defeats the point of this
+convention. If `data/.active-engagement` is missing for some reason, ask
+HuntBrain for the exact slug rather than guessing.
 
 ## Report format, per finding
 
@@ -85,5 +98,5 @@ of how certain it already is.
 
 ## Output
 
-1. Write the report file to `data/reports/`.
+1. Write the report file to `data/reports/<target-slug>/<date>.md`.
 2. Return the filepath and a one-line summary per finding to HuntBrain.
