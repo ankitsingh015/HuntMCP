@@ -18,6 +18,19 @@ check whether it chains into RCE via this skill's second half.
   (HQL, GraphQL) -- `sqlmap-mcp` covers the automatable cases; see
   `knowledge/payloads/sqli.txt` for curated payloads when it misses
   something.
+  - **NoSQL/ORM-specific, since these bypass "we use an ORM so we're safe"
+    assumptions**: Mongo `$where`/`$regex`/`$ne` operator injection through
+    a raw-object body param (not just string concatenation); an ORM's own
+    convenience methods forwarding attacker JSON into a raw operator
+    (Mongoose `populate({match:{$where:...}})`, CVE-2024-53900); an ORM
+    building an *unquoted column alias* from a user-controlled JSON-field
+    key rather than a value (Django `QuerySet.values()`, CVE-2024-42005,
+    CVSS 9.8); pre-auth NoSQL injection via a raw method-call selector
+    (Rocket.Chat `getPasswordPolicy`, CVE-2021-22911, brute-forced a
+    password-reset token character-by-character via a `$regex` timing/
+    boolean side-channel). Second-order SQLi on an OIDC-proxy backend
+    (Mozilla H1 #2209130) is a reminder to test the auth-adjacent proxy
+    layer, not just the application's own DB queries.
 - **Command injection**: blind, out-of-band (DNS/HTTP callback via
   `oob-mcp`).
 - **OS command chaining**: `;`, `|`, `&&`, `$()`, newlines, encoded

@@ -27,6 +27,32 @@ subdomain-origin trust, regex bypass (e.g. a check that matches
 `evil.com` when it meant to match `not-evil.com`), preflight request
 smuggling.
 
+**Hard rule before claiming anything**: `Access-Control-Allow-Origin: *`
+cannot legally be combined with credentials -- if the server sends `ACAO: *`,
+the browser refuses to expose the response body to a `credentials: include`
+request, full stop. That's Informational/Low, not a finding, regardless of
+what `curl` shows (curl doesn't enforce CORS -- it happily displays a
+reflected header a real browser would block). A High needs: attacker origin
+reflected in `ACAO` + `ACAC: true` + a browser-proven readable body via
+`mcp__browser-mcp` (fetch with `credentials:"include"` from the test page,
+confirm the body actually renders, not just that the header looks
+promising).
+
+**Subdomain-regex bypass -- match the payload to the actual flaw**, don't
+throw one generic bypass at every target:
+
+| Intended regex | Flaw | Bypass that matches |
+|---|---|---|
+| `^https?://.*\.target\.com$` | none (escaped dot + end-anchor) | no simple bypass -- look at subdomain-takeover instead |
+| `^https?://.*target\.com$` | missing dot separator | `https://eviltarget.com` |
+| `^https?://.*\.target\.com` | missing end-anchor `$` | `https://x.target.com.evil.com` |
+| `^https?://target\.com` | prefix-only, no `$` | `https://target.com.evil.com` |
+| `.*.target.com$` (unescaped dot) | `.` matches any char | any origin one char off from `target.com` |
+
+`evil.target.com` reflecting back is not automatically a bug -- it's an
+in-scope subdomain by design unless you actually control it (see
+`subdomain-takeover`).
+
 ## postMessage
 
 Null origin checks, unvalidated `message` event handling, `window.name`
