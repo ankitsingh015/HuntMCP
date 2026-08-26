@@ -14,9 +14,9 @@ structurally enforced for Claude Code, not just documented convention.
 
 Setup: pip install -r requirements.txt gets the playwright Python package.
 No separate `playwright install chromium` needed if an existing system
-Chrome/Chromium is found (see browser_confirm.SYSTEM_BROWSER_CANDIDATES);
-otherwise run `playwright install chromium` once to get Playwright's own
-bundled browser.
+Chrome/Chromium is found (see ../browser_launch.SYSTEM_BROWSER_CANDIDATES,
+shared with playwright-mcp); otherwise run `playwright install chromium`
+once to get Playwright's own bundled browser.
 """
 
 import sys

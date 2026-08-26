@@ -113,6 +113,12 @@
       "command": "./.venv/bin/python",
       "args": ["mcp-servers/browser-mcp/server.py"]
     },
+    "playwright-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "./.venv/bin/python",
+      "args": ["mcp-servers/playwright-mcp/server.py"]
+    },
     "hackerone-mcp": {
       "type": "local",
       "enabled": true,

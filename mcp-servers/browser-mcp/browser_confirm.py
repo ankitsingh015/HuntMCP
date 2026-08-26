@@ -16,11 +16,12 @@ these tools are low-level, deterministic primitives it drives itself
 MCP server in this repo (subprocess/API wrappers, no nested agent loop),
 not a second LLM hidden inside the tool.
 
-Prefers an existing system Chrome/Chromium install (checked via
-_find_browser_executable) over Playwright's own bundled browser download
--- lighter setup, most machines already have one. Falls back to
-Playwright's default (its own installed browser, if `playwright install
-chromium` was run) when no system browser is found.
+Prefers an existing system Chrome/Chromium install (via
+../browser_launch.find_browser_executable, shared with playwright-mcp)
+over Playwright's own bundled browser download -- lighter setup, most
+machines already have one. Falls back to Playwright's default (its own
+installed browser, if `playwright install chromium` was run) when no
+system browser is found.
 
 This is Tier-2 (target-touching, actually loads and executes a live
 target's JS) -- callers MUST run scripts/check-scope.sh <host> first,
@@ -38,34 +39,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from browser_launch import DEFAULT_TIMEOUT_MS
+from browser_launch import launch_kwargs as _launch_kwargs
 from budget_guard import enforce as _enforce_budget
-
-SYSTEM_BROWSER_CANDIDATES = [
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/microsoft-edge",
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-]
-
-DEFAULT_TIMEOUT_MS = 15_000
-
-
-def _find_browser_executable() -> str | None:
-    for path in SYSTEM_BROWSER_CANDIDATES:
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
-    return None
-
-
-def _launch_kwargs() -> dict:
-    executable = _find_browser_executable()
-    kwargs: dict = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
-    if executable:
-        kwargs["executable_path"] = executable
-    return kwargs
 
 
 def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
