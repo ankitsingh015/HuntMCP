@@ -40,6 +40,57 @@ def test_extract_hosts_from_tool_input_ignores_unknown_keys():
     assert hook._extract_hosts_from_tool_input({"keyword": "apache.example.com"}) == []
 
 
+def test_extract_hosts_from_bash_flags_raw_curl():
+    """Regression: curl had no dedicated MCP wrapper, so it was previously
+    invisible to this hook entirely -- the exact bypass path an external
+    curl-heavy skill library's procedures would have exploited by
+    construction (see the recon-skills content review)."""
+    hosts = hook._extract_hosts_from_bash("curl https://realtarget-corp.com/api")
+    assert "realtarget-corp.com" in hosts
+
+
+def test_extract_hosts_from_bash_flags_raw_wget():
+    hosts = hook._extract_hosts_from_bash("wget https://realtarget-corp.com/file")
+    assert "realtarget-corp.com" in hosts
+
+
+def test_extract_hosts_from_bash_curl_exempts_dev_infra():
+    assert hook._extract_hosts_from_bash(
+        "curl -sL https://raw.githubusercontent.com/foo/bar/main/README.md"
+    ) == []
+
+
+def test_extract_hosts_from_bash_curl_does_not_flag_url_path_as_a_second_host():
+    """Regression: a blanket hostname regex over the whole command matches
+    'file.txt' inside a URL path as if it were a second hostname. Real URL
+    parsing (urlsplit) must be used so only the actual host is extracted."""
+    hosts = hook._extract_hosts_from_bash(
+        "curl -sL https://realtarget-corp.com/downloads/wordlist.txt"
+    )
+    assert hosts == ["realtarget-corp.com"]
+
+
+def test_extract_hosts_from_bash_curl_does_not_flag_output_filename():
+    """Regression: curl -o results.json / -d @payload.json are the single
+    most common curl invocation shapes -- the bare-hostname fallback scan
+    must not treat a file argument as a second host to scope-check."""
+    hosts = hook._extract_hosts_from_bash("curl -o results.json https://realtarget-corp.com/data")
+    assert hosts == ["realtarget-corp.com"]
+
+    hosts = hook._extract_hosts_from_bash("curl -d @payload.json https://realtarget-corp.com/submit")
+    assert hosts == ["realtarget-corp.com"]
+
+
+def test_extract_hosts_from_bash_curl_exempts_attacker_origin_placeholder():
+    """Regression: a CORS/CSRF PoC's -H 'Origin: https://evil.com' names the
+    attacker's own probe origin, not a live target -- evil.com must not be
+    treated as a second host requiring engagement.yaml scope."""
+    hosts = hook._extract_hosts_from_bash(
+        'curl https://realtarget-corp.com/api -H "Origin: https://evil.com"'
+    )
+    assert hosts == ["realtarget-corp.com"]
+
+
 def test_mcp_server_name_parses_correctly():
     assert hook._mcp_server_name("mcp__httpx-mcp__screenshot_hosts") == "httpx-mcp"
     assert hook._mcp_server_name("Bash") == ""
@@ -88,6 +139,27 @@ def test_main_blocks_out_of_scope_target(monkeypatch, tmp_path):
     )
     payload = {"tool_name": "Bash", "tool_input": {"command": "nuclei -u someothersite.com"}}
     assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_raw_curl_to_out_of_scope_target(monkeypatch, tmp_path):
+    """End-to-end regression for the curl bypass: previously invisible to
+    this hook entirely (curl was not a Tier-2 binary), a plain curl at an
+    unauthorized host must now be blocked exactly like the wrapped tools."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "curl https://someothersite.com/api"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_allows_raw_curl_to_in_scope_target(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "curl https://realtarget-corp.com/api"}}
+    assert _run_main(monkeypatch, payload) == 0
 
 
 def test_main_exempts_non_tier2_mcp_server(monkeypatch):
