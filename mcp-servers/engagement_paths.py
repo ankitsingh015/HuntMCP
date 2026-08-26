@@ -54,6 +54,14 @@ CLI usage (what HuntBrain runs via Bash at Phase 0):
            name (from engagement.yaml, if present), Tier-2 call count
            (from budget.json, if present), and whether it's marked complete
            -- a quick "what's paused vs. finished" view
+    python3 mcp-servers/engagement_paths.py downloads-dir
+        -> prints (creating if needed) data/engagements/<slug>/downloads/
+           for the active target, or data/downloads (legacy, no active
+           target) otherwise. recon-agent uses this so raw curl/wget JS-
+           bundle/dump downloads land under the current target's own
+           directory instead of an unscoped /tmp path -- see
+           .claude/agents/recon-agent.md and .opencode/agents/
+           recon-agent.md's Phase 3 for the calling convention.
 """
 
 from __future__ import annotations
@@ -113,6 +121,22 @@ def resolve(filename: str, override_env: str | None = None,
     if slug:
         return os.path.join(engagements_root, slug, filename)
     return legacy_default if legacy_default is not None else filename
+
+
+def resolve_dir(dirname: str, override_env: str | None = None,
+                 pointer_path: str = ACTIVE_POINTER,
+                 engagements_root: str = ENGAGEMENTS_ROOT,
+                 legacy_default: str | None = None) -> str:
+    """Like resolve(), but for a subdirectory rather than a single file --
+    e.g. sqlmap-mcp's scratch dir, or recon-agent's JS-download directory.
+    Creates the directory (and any missing parents) if it doesn't exist yet
+    -- resolve() only returns a path string, which is fine for a file a
+    caller is about to open() itself, but a directory needs to actually
+    exist before curl/sqlmap/etc. can write into it."""
+    path = resolve(dirname, override_env=override_env, pointer_path=pointer_path,
+                    engagements_root=engagements_root, legacy_default=legacy_default)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def _complete_marker(slug: str, engagements_root: str = ENGAGEMENTS_ROOT) -> str:
@@ -189,7 +213,7 @@ def list_engagements(engagements_root: str = ENGAGEMENTS_ROOT) -> list[dict]:
 
 def _cli() -> None:
     if len(sys.argv) < 2:
-        print("usage: engagement_paths.py <check|set|complete|current|list> ...", file=sys.stderr)
+        print("usage: engagement_paths.py <check|set|complete|current|list|downloads-dir> ...", file=sys.stderr)
         sys.exit(2)
 
     cmd = sys.argv[1]
@@ -223,6 +247,9 @@ def _cli() -> None:
             print("none")
     elif cmd == "list":
         print(json.dumps(list_engagements(), indent=2))
+    elif cmd == "downloads-dir":
+        print(resolve_dir("downloads", override_env="HUNTMCP_DOWNLOADS_DIR",
+                           legacy_default="data/downloads"))
     else:
         print(f"unknown command {cmd!r}", file=sys.stderr)
         sys.exit(2)

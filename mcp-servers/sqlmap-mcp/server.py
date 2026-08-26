@@ -5,23 +5,28 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from engagement_paths import resolve_dir  # noqa: E402
 from tool_resolver import run_tool  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("sqlmap-mcp")
 
-OUTPUT_DIR = "/tmp/huntmcp-sqlmap"
 
-
-def _ensure_output_dir():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+def _output_dir() -> str:
+    # Resolved fresh per call (not cached at import time) so a mid-session
+    # `switch-engagement.sh` actually takes effect -- sqlmap's scratch dumps
+    # land under the ACTIVE target's own data/engagements/<slug>/tmp-sqlmap/
+    # directory instead of a flat, unscoped /tmp path shared across every
+    # target ever hunted from this machine. Falls back to the old flat /tmp
+    # path only when no engagement is active at all (ad hoc dev/testing).
+    return resolve_dir("tmp-sqlmap", override_env="HUNTMCP_SQLMAP_TMP",
+                        legacy_default="/tmp/huntmcp-sqlmap")
 
 
 @app.tool()
 def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1, risk: int = 1, timeout: int = 300) -> str:
-    _ensure_output_dir()
-    with tempfile.TemporaryDirectory(dir=OUTPUT_DIR) as tmpdir:
+    with tempfile.TemporaryDirectory(dir=_output_dir()) as tmpdir:
         args = [
             "-u", url,
             "--batch",
@@ -71,8 +76,7 @@ def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1
 
 @app.tool()
 def test_with_data(url: str, data: str, method: str = "POST", level: int = 2, timeout: int = 300) -> str:
-    _ensure_output_dir()
-    with tempfile.TemporaryDirectory(dir=OUTPUT_DIR) as tmpdir:
+    with tempfile.TemporaryDirectory(dir=_output_dir()) as tmpdir:
         args = [
             "-u", url,
             "--data", data,

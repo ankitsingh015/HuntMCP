@@ -151,3 +151,41 @@ def test_list_engagements_reports_target_and_calls(tmp_path):
     assert result[0]["slug"] == "example-com"
     assert result[0]["target"] == "example.com"
     assert result[0]["tier2_calls"] == 7
+
+
+def test_resolve_dir_creates_and_scopes_under_active_target(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("example.com", pointer, root)
+
+    downloads = engagement_paths.resolve_dir(
+        "downloads", pointer_path=pointer, engagements_root=root
+    )
+    assert downloads == os.path.join(root, "example-com", "downloads")
+    assert os.path.isdir(downloads)
+
+
+def test_resolve_dir_falls_back_to_legacy_when_no_active_target(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    legacy = str(tmp_path / "legacy-downloads")
+    result = engagement_paths.resolve_dir(
+        "downloads", pointer_path=pointer, legacy_default=legacy
+    )
+    assert result == legacy
+    assert os.path.isdir(legacy)
+
+
+def test_resolve_dir_env_override_wins_over_active_target(tmp_path, monkeypatch):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("example.com", pointer, root)
+
+    override_dir = str(tmp_path / "override-downloads")
+    monkeypatch.setenv("HUNTMCP_TEST_DOWNLOADS_DIR", override_dir)
+    result = engagement_paths.resolve_dir(
+        "downloads", override_env="HUNTMCP_TEST_DOWNLOADS_DIR",
+        pointer_path=pointer, engagements_root=root,
+    )
+    assert result == override_dir
+    assert result != os.path.join(root, "example-com", "downloads")
+    assert os.path.isdir(override_dir)

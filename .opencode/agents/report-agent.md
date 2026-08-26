@@ -13,7 +13,17 @@ permission:
 
 You receive validated findings and chains from the Exploit Agent. Your job is to write professional bug bounty reports.
 
-Reports must be saved to `data/reports/<target>-<date>.md`.
+Reports must be saved to `data/reports/<target-slug>/<date>.md` — one
+folder per target/company, not a flat filename. Get `<target-slug>` by
+reading `data/.active-engagement` (plain text, just the slug) -- that
+file is written by `mcp-servers/engagement_paths.py`'s `slugify()` at
+engagement start, so reading it back is always byte-identical to
+`data/engagements/<target-slug>/`, the same target's engagement-state
+directory. Do not re-derive the slug by hand from the target name -- edge
+cases (non-ASCII company names, degenerate inputs falling back to
+`unnamed-target`) are easy to get slightly wrong by eye, and a mismatched
+folder name defeats the point of this convention. Ask HuntBrain for the
+exact slug if `data/.active-engagement` is missing.
 
 ## Report Format
 
@@ -79,5 +89,5 @@ human attention, not to gate-keep every finding equally.
 
 ## Output
 
-1. Create the report file in `data/reports/`.
+1. Create the report file at `data/reports/<target-slug>/<date>.md`.
 2. Return the report filepath and a one-line summary to HuntBrain.

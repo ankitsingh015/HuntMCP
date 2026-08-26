@@ -13,9 +13,17 @@ You receive a target domain from HuntBrain. Your job is to discover the full att
 
 Available MCPs: subfinder-mcp, httpx-mcp, katana-mcp, nmap-mcp, secrets-mcp,
 burp-import-mcp.
-After katana crawls JS/pages to a local directory, call secrets-mcp
-`scan_directory(path)` on it to catch exposed API keys/tokens before scan
-even starts — cheap, local-file-only, not a live-target action.
+katana-mcp itself only returns discovered JS file paths as text -- it
+does not save anything to disk. If you want secrets-mcp to scan the
+actual JS content (not just paths), download it yourself: run
+`python3 mcp-servers/engagement_paths.py downloads-dir` via bash to get
+(and auto-create) this target's own download directory --
+`data/engagements/<slug>/downloads/`, never a bare `/tmp` path or the
+repo root -- then `curl -o "<that dir>/<name>.js" <js-url>` for each JS
+file worth inspecting (still Tier-2/scope-gated like any curl). Once
+downloaded, call secrets-mcp `scan_directory(path)` on that same
+directory to catch exposed API keys/tokens before scan even starts —
+cheap, local-file-only itself, not a live-target action.
 
 Before touching any host, run `scripts/check-scope.sh <host>` via bash. If it
 exits non-zero, stop on that host and report the block to HuntBrain — never
