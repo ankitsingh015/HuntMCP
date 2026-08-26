@@ -304,6 +304,9 @@ def score_finding_confidence(finding_id: int, signals: dict[str, int],
     """signals is a caller-named {label: points} map, e.g.
     {"endpoint_confirmed": 15, "reproduction": 25, "oob_confirmation": 20} --
     summed and clamped to 0-100, then banded (see CONFIDENCE_BANDS)."""
+    non_numeric = {k: v for k, v in signals.items() if not isinstance(v, (int, float))}
+    if non_numeric:
+        return {"error": f"signals values must be numbers, got {non_numeric!r}"}
     score = max(0, min(100, sum(signals.values())))
     band = _band_for_score(score)
     conn = _get_conn(db_path)

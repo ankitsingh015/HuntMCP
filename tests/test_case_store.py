@@ -139,6 +139,13 @@ def test_score_finding_confidence_clamps_to_100(tmp_path):
     assert result["confidence_band"] == "CONFIRMED"
 
 
+def test_score_finding_confidence_rejects_non_numeric_signal(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    result = case_store.score_finding_confidence(f["id"], {"reproduction": "yes"}, db_path=db)
+    assert "error" in result
+
+
 # ---- Experiments: dedup ---------------------------------------------------------
 
 def test_check_experiment_exists_false_before_logging(tmp_path):
