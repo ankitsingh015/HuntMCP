@@ -158,8 +158,86 @@ def test_main_allows_raw_curl_to_in_scope_target(monkeypatch, tmp_path):
     (tmp_path / "engagement.yaml").write_text(
         "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
     )
+    # audit_log.LOG_PATH's no-active-engagement fallback is anchored to
+    # __file__, not cwd, so it survives monkeypatch.chdir(tmp_path) -- must
+    # be stubbed explicitly here or this test would append a real line to
+    # the repo's own data/audit.jsonl on every test run.
+    monkeypatch.setattr(hook, "_enforce_budget", lambda name: None)
+    monkeypatch.setattr(hook, "_log_call", lambda *a, **k: None)
     payload = {"tool_name": "Bash", "tool_input": {"command": "curl https://realtarget-corp.com/api"}}
     assert _run_main(monkeypatch, payload) == 0
+
+
+def test_main_curl_in_scope_enforces_budget_and_logs_audit(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    budget_calls = []
+    monkeypatch.setattr(hook, "_enforce_budget", lambda name: budget_calls.append(name))
+    audit_calls = []
+    monkeypatch.setattr(
+        hook, "_log_call",
+        lambda tool, args, returncode, duration_ms, block: audit_calls.append(
+            (tool, args, returncode, duration_ms, block)
+        ),
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "curl -s https://realtarget-corp.com/api"}}
+    assert _run_main(monkeypatch, payload) == 0
+    assert budget_calls == ["curl"]
+    assert audit_calls == [("curl", ["-s", "https://realtarget-corp.com/api"], None, 0.0, None)]
+
+
+def test_main_curl_budget_exceeded_blocks(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+
+    def _raise(name):
+        raise hook.BudgetExceeded("500/500 Tier-2 calls used")
+
+    monkeypatch.setattr(hook, "_enforce_budget", _raise)
+    logged = []
+    monkeypatch.setattr(hook, "_log_call", lambda *a, **k: logged.append(a))
+    payload = {"tool_name": "Bash", "tool_input": {"command": "curl https://realtarget-corp.com/api"}}
+    assert _run_main(monkeypatch, payload) == 2
+    assert logged == []  # budget block happens before the audit-log call
+
+
+def test_main_nmap_in_scope_does_not_double_count_budget_or_audit(monkeypatch, tmp_path):
+    """Regression: nmap/nuclei/etc. already get budgeted/audited exactly
+    once via their own MCP server's tool_resolver.run_tool() call -- the
+    hook must not also call budget_guard/audit_log for them, or every raw-
+    Bash invocation of a wrapped tool would double-count against the shared
+    Tier-2 budget."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    called = []
+    monkeypatch.setattr(hook, "_enforce_budget", lambda name: called.append(("budget", name)))
+    monkeypatch.setattr(hook, "_log_call", lambda *a, **k: called.append(("audit", a)))
+    payload = {"tool_name": "Bash", "tool_input": {"command": "nmap -p 80 realtarget-corp.com"}}
+    assert _run_main(monkeypatch, payload) == 0
+    assert called == []
+
+
+def test_main_curl_dev_infra_host_does_not_call_budget_or_audit(monkeypatch, tmp_path):
+    """A curl with no real, non-exempt host (dev-infra allowlist) has empty
+    candidates and returns before ever reaching the budget/audit insertion
+    point -- ordinary package-fetching curls must never count against the
+    Tier-2 budget or appear in the audit trail."""
+    monkeypatch.chdir(tmp_path)
+    called = []
+    monkeypatch.setattr(hook, "_enforce_budget", lambda name: called.append(("budget", name)))
+    monkeypatch.setattr(hook, "_log_call", lambda *a, **k: called.append(("audit", a)))
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "curl -sL https://raw.githubusercontent.com/foo/bar/main/README.md"},
+    }
+    assert _run_main(monkeypatch, payload) == 0
+    assert called == []
 
 
 def test_main_exempts_non_tier2_mcp_server(monkeypatch):
