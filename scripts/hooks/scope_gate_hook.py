@@ -36,11 +36,15 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import shlex
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "mcp-servers"))
+from audit_log import log_call as _log_call  # noqa: E402
+from budget_guard import BudgetExceeded  # noqa: E402
+from budget_guard import enforce as _enforce_budget  # noqa: E402
 from scope_guard import NoEngagementFile, is_in_scope, load_engagement  # noqa: E402
 
 # The exact binaries HuntMCP's MCP servers shell out to (mcp-servers/*/server.py
@@ -195,8 +199,9 @@ def main() -> int:
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {}) or {}
 
+    command = tool_input.get("command", "")
     if tool_name == "Bash":
-        candidates = _extract_hosts_from_bash(tool_input.get("command", ""))
+        candidates = _extract_hosts_from_bash(command)
     elif tool_name.startswith("mcp__"):
         if _mcp_server_name(tool_name) not in TIER2_MCP_SERVERS:
             return 0
@@ -228,6 +233,34 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
+
+    # curl/wget have no dedicated MCP wrapper (see the module docstring/
+    # TIER2_BASH_TOOLS comment above), so nothing else in this codebase ever
+    # routes them through tool_resolver.run_tool() -- meaning nothing else
+    # ever calls budget_guard.enforce()/audit_log.log_call() for them either.
+    # Wire both in here, once scope has genuinely passed for a real in-scope
+    # host (not for the other seven TIER2_BASH_TOOLS -- those already get
+    # budgeted/audited exactly once via their own MCP server's run_tool()
+    # call, so doing it here too would double-count every raw-Bash
+    # nmap/nuclei/etc. invocation that's also MCP-wrapped). This is a
+    # PreToolUse hook -- the command hasn't run yet, so there's no real
+    # returncode/duration/WAF-block classification available the way
+    # run_tool() has after the fact; logged as None/0.0/None. That still
+    # captures the primary audit value (exact command + args + timestamp of
+    # every real Tier-2 curl/wget attempt) without the schema-risk of
+    # correlating a second PostToolUse hook by callID.
+    if tool_name == "Bash" and _first_word(command) in ("curl", "wget"):
+        name = _first_word(command)
+        try:
+            _enforce_budget(name)
+        except BudgetExceeded as e:
+            print(f"BLOCKED by scope gate: Tier-2 budget exceeded ({e}).", file=sys.stderr)
+            return 2
+        try:
+            args = shlex.split(command)[1:]
+        except ValueError:
+            args = []
+        _log_call(name, args, returncode=None, duration_ms=0.0, block=None)
 
     return 0
 
