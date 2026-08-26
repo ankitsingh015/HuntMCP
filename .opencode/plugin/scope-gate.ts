@@ -18,26 +18,41 @@
 // invoke the exact same Python script over the exact same stdin JSON
 // contract Claude Code already uses.
 //
-// Deliberately narrow scope, matching scope_gate_hook.py's own: this only
-// covers the `bash` tool. MCP-server-provided tools (subfinder-mcp,
-// httpx-mcp, nuclei-mcp, etc., called as native OpenCode tools rather than
-// raw Bash) are NOT covered here -- that requires first confirming how
-// OpenCode names MCP-provided tools in `input.tool`, which is a separate,
-// still-open piece of work, not guessed at in this file.
+// Also covers MCP-server-provided tools (subfinder-mcp, httpx-mcp,
+// nuclei-mcp, etc., called as native OpenCode tools rather than raw Bash) --
+// closed 2026-08-26 after confirming, empirically against this exact repo
+// (not guessed), how OpenCode names them. A live `opencode run` against
+// huntbrain, told to call a real MCP tool directly, produced this runtime
+// validation error: `Model tried to call unavailable tool
+// 'case-mcp:case_summary'` -- OpenCode names MCP tools `<server>:<tool>`
+// (colon-separated), a different convention from Claude Code's
+// `mcp__<server>__<tool>` (double-underscore). Translated into that
+// existing double-underscore contract below so scope_gate_hook.py's
+// already-working `mcp__` branch (TIER2_MCP_SERVERS check,
+// _extract_hosts_from_tool_input) handles both harnesses identically with
+// zero Python-side changes.
 import type { Plugin } from "@opencode-ai/plugin"
 
 export const ScopeGate: Plugin = async ({ directory }) => {
   return {
     "tool.execute.before": async (input, output) => {
-      if (input.tool !== "bash") return
+      let payload
 
-      const command = output.args?.command
-      if (typeof command !== "string" || !command.trim()) return
-
-      const payload = JSON.stringify({
-        tool_name: "Bash",
-        tool_input: { command },
-      })
+      if (input.tool === "bash") {
+        const command = output.args?.command
+        if (typeof command !== "string" || !command.trim()) return
+        payload = JSON.stringify({ tool_name: "Bash", tool_input: { command } })
+      } else if (input.tool.includes(":")) {
+        const sepIndex = input.tool.indexOf(":")
+        const server = input.tool.slice(0, sepIndex)
+        const toolName = input.tool.slice(sepIndex + 1)
+        payload = JSON.stringify({
+          tool_name: `mcp__${server}__${toolName}`,
+          tool_input: output.args || {},
+        })
+      } else {
+        return
+      }
 
       // Fail open on anything other than an explicit block (exit 2) --
       // matches scope_gate_hook.py's own "never break the session over a

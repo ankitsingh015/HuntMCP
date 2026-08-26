@@ -64,17 +64,21 @@ async function loadPlugin() {
 }
 
 async function run(ScopeGate, command, cwd) {
+  return runTool(ScopeGate, "bash", { command }, cwd);
+}
+
+async function runTool(ScopeGate, tool, args, cwd) {
   const hooks = await ScopeGate({ directory: REPO_ROOT });
   const before = hooks["tool.execute.before"];
   const originalCwd = process.cwd();
-  process.chdir(cwd);
+  if (cwd) process.chdir(cwd);
   try {
-    await before({ tool: "bash", sessionID: "s1", callID: "c1" }, { args: { command } });
+    await before({ tool, sessionID: "s1", callID: "c1" }, { args });
     return { blocked: false };
   } catch (e) {
     return { blocked: true, message: e.message };
   } finally {
-    process.chdir(originalCwd);
+    if (cwd) process.chdir(originalCwd);
   }
 }
 
@@ -101,6 +105,39 @@ async function main() {
       { label: "out-of-scope curl is blocked", command: "curl https://someothersite.com/api", expectBlocked: true },
       { label: "non-tier2 command ignored", command: "git status", expectBlocked: false },
       { label: "non-bash tool call ignored", tool: "read", expectBlocked: false },
+      {
+        // OpenCode names MCP-provided tools "<server>:<tool>" (colon-
+        // separated, confirmed empirically via a live "Invalid Tool"
+        // runtime error against this exact repo -- see scope-gate.ts's own
+        // comment). This regression covers the translation into
+        // scope_gate_hook.py's existing mcp__<server>__<tool> contract.
+        label: "in-scope Tier-2 MCP tool call is allowed",
+        tool: "httpx-mcp:probe_hosts",
+        args: { domains: "realtarget-corp.com" },
+        expectBlocked: false,
+      },
+      {
+        label: "out-of-scope Tier-2 MCP tool call is blocked",
+        tool: "httpx-mcp:probe_hosts",
+        args: { domains: "someothersite.com" },
+        expectBlocked: true,
+      },
+      {
+        label: "non-tier2 MCP server exempt (writeup-mcp is knowledge-layer)",
+        tool: "writeup-mcp:fetch_cves",
+        args: { keyword: "apache" },
+        expectBlocked: false,
+      },
+      {
+        // No HOST_ARG_KEYS-matching argument -> candidates stays empty ->
+        // scope_gate_hook.py's early-return at line ~212 -- must pass
+        // through unblocked, not fail loud on a Tier-2 server with no
+        // host-bearing arg in this particular call.
+        label: "Tier-2 MCP tool call with no host-bearing arg passes through",
+        tool: "nuclei-mcp:list_templates",
+        args: { severity: "critical" },
+        expectBlocked: false,
+      },
     ];
 
     // Regression: Bun.spawn throws synchronously when the target binary
@@ -134,14 +171,10 @@ async function main() {
     allPass = failOpenOk;
     for (const c of cases) {
       let result;
-      if (c.tool) {
-        const hooks = await ScopeGate({ directory: REPO_ROOT });
-        try {
-          await hooks["tool.execute.before"]({ tool: c.tool, sessionID: "s1", callID: "c1" }, { args: {} });
-          result = { blocked: false };
-        } catch (e) {
-          result = { blocked: true, message: e.message };
-        }
+      if (c.tool && c.args) {
+        result = await runTool(ScopeGate, c.tool, c.args, tmp);
+      } else if (c.tool) {
+        result = await runTool(ScopeGate, c.tool, {});
       } else {
         result = await run(ScopeGate, c.command, tmp);
       }
