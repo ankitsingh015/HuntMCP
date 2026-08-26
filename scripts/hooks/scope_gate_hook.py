@@ -81,7 +81,7 @@ DEV_INFRA_HOSTS = {
 TIER2_MCP_SERVERS = {
     "subfinder-mcp", "httpx-mcp", "katana-mcp", "nmap-mcp",
     "nuclei-mcp", "sqlmap-mcp", "dalfox-mcp", "ffuf-mcp", "watch-mcp",
-    "waf-bypass-mcp", "browser-mcp",
+    "waf-bypass-mcp", "browser-mcp", "playwright-mcp",
 }
 
 SAFE_TEST_HOSTS = {

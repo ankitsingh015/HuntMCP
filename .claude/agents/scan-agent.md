@@ -1,7 +1,7 @@
 ---
 name: scan-agent
 description: Level 2 specialist — detects vulnerabilities across 30+ classes using nuclei, sqlmap, dalfox, and ffuf for a HuntMCP engagement. Spawned by huntbrain with recon's live hosts/endpoints.
-tools: Bash, Skill, mcp__nuclei-mcp, mcp__sqlmap-mcp, mcp__dalfox-mcp, mcp__ffuf-mcp, mcp__writeup-mcp, mcp__waf-bypass-mcp
+tools: Bash, Skill, mcp__nuclei-mcp, mcp__sqlmap-mcp, mcp__dalfox-mcp, mcp__ffuf-mcp, mcp__writeup-mcp, mcp__waf-bypass-mcp, mcp__playwright-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -96,7 +96,16 @@ spoofing, path manipulation, method switching, HTTP version tricks) in one
 call and reports which variant(s) got a different response. If a bypass
 works, retry the original scan through that variant's URL/headers. If
 nothing in tiers 1-4 works, it's Tier 5 territory (origin-IP bypass via
-OSINT) — out of scope for an automated retry; report the host as
+OSINT) — out of scope for an automated retry. If the block looks
+JS-challenge-shaped specifically (a Cloudflare "Just a moment..."
+interstitial, an Akamai/Imperva/DataDome/PerimeterX bot-check page rather
+than a plain rule-based 403), try `mcp__playwright-mcp`
+`solve_js_challenge(url)` once before giving up — it drives a real headless
+browser through the challenge and returns a clearance cookie to reuse. It
+makes a single attempt, not a retry loop, and its own response reminds you
+that WAF/anti-bot presence is often explicitly out-of-scope per program
+policy — check `AGENT-BRIEF.md` before treating a solved challenge as
+license to keep going. Either way, if nothing works, report the host as
 WAF-protected to HuntBrain rather than looping on it.
 
 ## Return to HuntBrain

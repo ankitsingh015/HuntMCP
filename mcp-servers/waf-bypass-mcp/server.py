@@ -346,7 +346,12 @@ def attempt_bypass(url: str, baseline_status: int = 403, tiers: str = "1,2,3,4",
     else:
         footer = (
             "\n\nNo variant changed the response status. Still WAF-protected "
-            "after tiers 1-4 -- consider Tier 5 (find the origin IP via "
+            "after tiers 1-4. If this looks JS-challenge-shaped specifically "
+            "(a Cloudflare/Akamai/Imperva/DataDome/PerimeterX interstitial or "
+            "bot-check page rather than a plain rule-based block), try "
+            "playwright-mcp's solve_js_challenge(url) once -- a real headless "
+            "browser can clear a JS challenge that these curl-based tiers "
+            "cannot. Otherwise consider Tier 5 (find the origin IP via "
             "SecurityTrails/Shodan/Censys/CT logs and connect directly) or "
             "document as WAF-protected and move on, per the master prompt's "
             "Phase 0.6 decision logic."
