@@ -40,6 +40,26 @@ URL-based out-of-band detection (`oob-mcp`'s `generate_payload_url()` /
 `check_interactions()`) plus time-based SSRF detection when no OOB
 channel is reachable.
 
+### What is NOT confirmation (the traps that produce a false SSRF claim)
+
+- The server **echoing your URL back in an error message** ("The Web
+  application at http://evil.example.com could not be found") -- that's
+  string formatting the input into an error, not an outbound fetch.
+- A **different status code** for an external URL vs. `localhost` -- can
+  come from a URL-scheme validator rejecting the input, not from a fetch
+  attempt.
+- **Response delay** when the URL is sent -- can be DNS resolution inside a
+  parser/validator, not a completed HTTP fetch.
+
+Confirmation is a DNS lookup or HTTP hit on your `oob-mcp` callback URL, with
+the target's own source IP/User-Agent, not a browser's. Sub-tag the callback
+per sink (`dlsrcurl.<id>`, `import.<id>`) when testing multiple URL-accepting
+parameters at once so a hit tells you which one fired. If a plausible-looking
+"SSRF" produces zero callbacks after trying every sub-tagged sink, retract
+the claim -- an internal resolver (e.g. SharePoint's `SPFile`/
+`SPWebApplication` path handler) can format an error around a URL string
+without ever making a network request with it.
+
 ## Where to look for it
 
 URL fetchers, image proxies, PDF generators, webhooks, server-side

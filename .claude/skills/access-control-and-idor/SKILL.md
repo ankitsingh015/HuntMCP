@@ -138,3 +138,30 @@ lives in the request body (GraphQL variables, JSON fields), not the URL
    it was specific (card digits, address), while some criticals in the
    same disclosed-report survey carried no public bounty at all. Climb
    one level before writing up severity.
+
+## Standalone read-IDOR pays Low-Medium -- chase the paired write
+
+A read-IDOR alone ("I can see victim's data") is worth far less than the
+same reference swapped against a state-changing endpoint ("I own victim's
+account"). When a read-IDOR confirms, immediately check whether the same ID
+is also accepted by:
+
+1. **Email/password-reset endpoints** -- `PUT /api/users/{victim_id}/email`
+   with no ownership check, then trigger password reset -> reset link lands
+   on the attacker's new email -> silent ATO with no email-change
+   notification (the API path skips the UI's own audit log).
+2. **Refund/withdraw/transfer endpoints** -- pair a first IDOR that leaks
+   `order_id`/`account_id` values with a second IDOR on the money-movement
+   endpoint itself; direct financial impact, not just a data read.
+3. **Team/role-membership endpoints, combined with mass assignment** -- an
+   IDOR'd `POST /api/teams/{victim_team}/members` that also accepts an
+   unfiltered `role` field in the body escalates a horizontal IDOR straight
+   to admin on the victim's team.
+4. **Soft-delete without session invalidation** -- if "remove member" flips
+   an `active=false` flag but doesn't revoke the session/PAT, a token
+   captured before removal keeps working after -- a *temporal* IDOR the
+   access-control policy table doesn't catch.
+
+Hunt for both halves of the pair -- the write half usually shares the exact
+same missing-ownership-check root cause as the read half you already found,
+so it's often faster to find than the first one was.
