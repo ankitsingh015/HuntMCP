@@ -426,7 +426,7 @@ What HuntMCP borrows from each project researched, and current status:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                     USER INTERFACE                                │
+│                     USER INTERFACE                               │
 │  "/audit example.com"  "/ingest https://..."  "/watch example"   │
 └────────────────────────────┬─────────────────────────────────────┘
                              │
@@ -434,15 +434,15 @@ What HuntMCP borrows from each project researched, and current status:
 ┌──────────────────────────────────────────────────────────────────┐
 │  LEVEL 1: HUNTBRAIN ORCHESTRATOR AGENT                           │
 │  ─────────────────────────────────────                           │
-│                                                                   │
-│  1. Receive user goal → parse target                              │
-│  2. Query MEMORY MCP → "What do we know about this target?"       │
-│  3. Query WRITEUP RAG → "What techniques work for this tech?"     │
+│                                                                  │
+│  1. Receive user goal → parse target                             │
+│  2. Query MEMORY MCP → "What do we know about this target?"      │
+│  3. Query WRITEUP RAG → "What techniques work for this tech?"    │
 │  4. Decide strategy → spawn appropriate Level 2 agents           │
-│  5. Read results → decide next phase                              │
-│  6. Loop until no more attack surface                             │
-│  7. Spawn Report Agent → generate submission                      │
-│  8. Save findings to MEMORY MCP → "learn for next time"           │
+│  5. Read results → decide next phase                             │
+│  6. Loop until no more attack surface                            │
+│  7. Spawn Report Agent → generate submission                     │
+│  8. Save findings to MEMORY MCP → "learn for next time"          │
 └──────┬───────────────────────────────────────────────────────────┘
        │                    │                    │
        ▼                    ▼                    ▼
@@ -475,7 +475,7 @@ What HuntMCP borrows from each project researched, and current status:
                         ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  KNOWLEDGE LAYER (available to ALL agents at ALL levels)         │
-│                                                                   │
+│                                                                  │
 │  ┌──────────────────────┐    ┌──────────────────────────────┐    │
 │  │  WRITEUP RAG MCP     │    │  MEMORY MCP                  │    │
 │  │  ───────────────     │    │  ──────────                  │    │
@@ -489,10 +489,10 @@ What HuntMCP borrows from each project researched, and current status:
 │  │                      │    │  Backend: SQLite             │    │
 │  └──────────┬───────────┘    └──────────────┬───────────────┘    │
 │             │                               │                    │
-│             │    INGESTION PIPELINE          │                    │
-│             │    ─────────────────           │                    │
+│             │    INGESTION PIPELINE         │                    │
+│             │    ─────────────────          │                    │
 │             │                               │                    │
-│             │  Manual: ./ingest-writeup.sh   │  Auto: each hunt  │
+│             │  Manual: ./ingest-writeup.sh  │  Auto: each hunt   │
 │             │  "I found a great writeup!"   │  saves results     │
 │             │                               │                    │
 │             │  Automated (cron):            │                    │
@@ -509,7 +509,7 @@ What HuntMCP borrows from each project researched, and current status:
 
 ```
                           ┌──────────────────────────────┐
-                          │    CHROMADB (vector store)    │
+                          │    CHROMADB (vector store)   │
                           │                              │
                           │  Embedding 1 → writeup-1.md  │
                           │  Embedding 2 → writeup-2.md  │
@@ -522,14 +522,14 @@ What HuntMCP borrows from each project researched, and current status:
                     │                                 │
                     ▼                                 ▼
             ┌──────────────┐              ┌────────────────────┐
-            │  MANUAL       │              │  AUTOMATED (CRON)  │
-            │  INGESTION    │              │  INGESTION         │
-            │               │              │                    │
-            │  You find a   │              │  Every day at 6AM: │
-            │  writeup →    │              │  ├─ Check H1 feed  │
-            │  run script   │              │  ├─ Check RSS      │
-            │  with URL     │              │  ├─ Fetch new docs │
-            │               │              │  └─ Embed + store  │
+            │  MANUAL      │              │  AUTOMATED (CRON)  │
+            │  INGESTION   │              │  INGESTION         │
+            │              │              │                    │
+            │  You find a  │              │  Every day at 6AM: │
+            │  writeup →   │              │  ├─ Check H1 feed  │
+            │  run script  │              │  ├─ Check RSS      │
+            │  with URL    │              │  ├─ Fetch new docs │
+            │              │              │  └─ Embed + store  │
             └──────────────┘              └────────────────────┘
 ```
 
