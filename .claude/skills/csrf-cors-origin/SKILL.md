@@ -20,6 +20,35 @@ maze parameters, JSON content-type tricks (legacy old-browser CSRF via
 form-encoded JSON), multipart/form-data bypass, GET-to-POST method
 switching, Referer regex bypass.
 
+**Duende BFF (ASP.NET Core) non-user-bound header**: Duende BFF's
+antiforgery primitive is not a per-session/per-user token -- it's a
+static, identical-for-everyone header `X-CSRF: 1` whose only job is to
+force a CORS preflight on cross-origin calls. It doesn't bind to
+identity, so on a BFF serving multiple privilege partitions (e.g.
+`/admin/*` and `/user/*` behind one session cookie), any same-origin
+script that can attach `X-CSRF: 1` plus the ambient session cookie
+reaches admin endpoints if that session happens to hold the admin role --
+stock ASP.NET Core antiforgery rejects on identity mismatch; Duende BFF's
+does not.
+
+**SignalR antiforgery carve-out**: browser WebSockets can't send custom
+headers, so `X-CSRF: 1` can't be enforced on the upgrade -- developers
+routinely work around this by excluding SignalR hub paths from BFF
+antiforgery entirely (`.DisableAntiforgery()` or registering the hub as a
+non-BFF endpoint). Once excluded, any same-site origin -- a taken-over
+sibling subdomain, a stored-XSS page -- can open the WS with the ambient
+session cookie and invoke hub methods with no CSRF check at all.
+
+**Cookie-domain-wildcard CSRF chain**: a session cookie scoped with
+`Domain=.example.com` (rather than host-only or `__Host-`-prefixed) is
+readable by every subdomain, which turns any subdomain takeover or
+stored-XSS-on-a-subdomain into CSRF against the whole parent domain --
+host a CSRF PoC on the compromised `*.example.com` subdomain and it
+forges requests (and, if the takeover can set cookies, can fixate a
+session) against the main app. Check the `Domain=` attribute on
+`Set-Cookie` for exactly this before ruling a subdomain-scoped issue
+low-impact.
+
 ## CORS
 
 Null origin, arbitrary origin reflected with `credentials: true`,
@@ -70,3 +99,30 @@ being interactable in an exploitable way).
 
 Cross-origin WebSocket hijack, missing `Origin` header validation on the
 WS upgrade request.
+
+**socket.io/Engine.IO namespace-authorization bypass**: namespace
+selection is a protocol-level frame, not a URL param -- a `?nsp=/admin`
+query string is silently ignored and just connects to the root namespace
+`/`, giving a false sense of having tested `/admin`. The actual bypass:
+open the raw Engine.IO WebSocket
+(`wss://target/socket.io/?EIO=4&transport=websocket`), then send the
+socket.io CONNECT packet `40/admin,` directly -- `4` = Engine.IO MESSAGE,
+`0` = socket.io CONNECT, `/admin,` = target namespace. A
+`40/admin,{"sid":...}` success reply as a low/no-priv user means the app
+never checked namespace authorization at the protocol layer. Only counts
+as a finding once a subsequent `42` EVENT frame in that namespace
+actually carries another tenant's data -- a bare `40` ack on an
+otherwise-empty namespace is not proof.
+
+**Handshake-layer Upgrade smuggling**: distinct from CSWSH -- once a
+socket is open, bytes sent through it are wrapped in WS frames and never
+re-parsed as HTTP by the proxy. The real technique lives at the handshake
+itself: send an Upgrade request the front proxy and origin disagree on
+(e.g. an unsupported `Sec-WebSocket-Version` that makes the origin reply
+`426`/`400` while the proxy has already committed to treating the
+connection as upgraded and stops parsing HTTP on it). The proxy then
+tunnels subsequent bytes straight to the origin as an opaque stream --
+smuggling arbitrary HTTP requests past front-end WAF/authz. Confirm with
+a timing/differential probe plus real impact (reach an internal path,
+poison a cache, capture another user's request), same bar as the
+`request-smuggling` skill.

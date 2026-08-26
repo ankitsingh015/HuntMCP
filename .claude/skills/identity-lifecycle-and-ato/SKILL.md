@@ -46,6 +46,52 @@ they're worth deliberate attention.
   account can be reactivated by an attacker who knows (or brute-forces)
   its identifier.
 
+## PKCE downgrade / bypass chain
+
+PKCE (RFC 7636) protects the authorization-code flow for public clients,
+but many implementations only *support* it rather than *enforce* it. Four
+named variants, roughly in order of how often they show up:
+
+- **No enforcement at all**: request the auth code without `code_challenge`,
+  then exchange it without `code_verifier`. If the server issues a token
+  anyway, PKCE is decorative and the flow degrades to the traditional
+  authorization-code interception attack it was meant to close.
+- **`code_challenge_method=plain` accepted**: the challenge should be a
+  SHA-256 hash (`S256`); if `plain` is also accepted, the "hash" is just the
+  verifier in cleartext on the authorize request, giving an on-path
+  attacker everything needed to complete the exchange.
+- **`code_verifier` sent but not actually validated**: the auth request
+  carries a real `S256` challenge, but the token endpoint issues a token
+  even when the exchange omits `code_verifier` or sends the wrong one --
+  the challenge was stored but never checked against the exchange.
+- **Authorization code replay after a successful PKCE exchange**: some
+  servers expire the code on time but not on use, so the same code +
+  verifier pair succeeds a second time.
+
+Test with the auth-code/verifier pair blank, swapped, and mismatched in
+turn; the finding is confirmed when a token comes back on a request that
+should have been rejected for a missing or wrong verifier.
+
+## Azure AD cross-tenant ATO
+
+Two chained techniques against multi-tenant Azure AD / Entra ID apps:
+
+- **`prompt=none` as an existence oracle**: `GET
+  /oauth/authorize?...&prompt=none&login_hint=victim@victim-tenant.com`
+  skips the interactive login UI. If the victim has an existing session,
+  the app silently receives a code; if not, the authorization server
+  returns `error=login_required` rather than a generic failure -- either
+  response confirms the email exists in the target tenant, giving a
+  silent, unauthenticated user-enumeration oracle with no interaction from
+  the victim.
+- **Tenant-replay to complete takeover**: register the same `client_id` in
+  an attacker-controlled tenant, authenticate as an attacker-owned user
+  there to obtain a valid access token, then replay that token against the
+  victim tenant's API. If the app validates the token's signature and
+  audience but not its `tid` (tenant ID) claim, the token is accepted as
+  if it belonged to a victim-tenant user -- completing the takeover once
+  the oracle step has confirmed a target account exists.
+
 ## Session hygiene across identity changes
 
 Explicitly check whether existing sessions are killed on: email change,

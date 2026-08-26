@@ -29,6 +29,53 @@ DNS rebinding, the public-suffix trick, redirect chains.
 
 `gopher://`, `dict://`, `file://`, `ftp://`.
 
+## Host-header-driven SSRF
+
+A different mechanism from the URL-accepting injection points above: here
+the app trusts the `Host` header itself for internal routing or URL
+construction, not a URL-shaped parameter.
+
+- **Password-reset / URL-construction poisoning** -- the server builds an
+  absolute URL (reset link, invite link, webhook callback) from the
+  request `Host` with no allowlist. Set `Host: evil.com` (or
+  `X-Forwarded-Host`, `X-Host`, `X-Forwarded-Server`) and confirm in the
+  actual email/response body that the link points at the attacker host --
+  a Host reflected in the HTTP response is not proof; some mailers
+  rewrite links to a fixed `SITE_URL` regardless of Host.
+- **Routing-based SSRF** -- the front-end/proxy uses the Host header
+  itself (not the path) to pick the upstream. `Host: 169.254.169.254` or
+  `Host: internal-admin.svc.cluster.local`, with the path kept on the
+  request line as normal, routes the request to that internal target --
+  cloud metadata, internal admin panels, Redis. This never composes with
+  the path-override technique below; the two headers act at different
+  layers.
+- **Cache poisoning via unkeyed Host** -- if `X-Forwarded-Host` is
+  reflected into an absolute URL in the response body (script `src`,
+  `<base href>`, canonical link) and the response is cached on a key that
+  doesn't include that header (check `Vary`), poisoning one request
+  poisons the cached response for every later visitor.
+
+Confirm with a Collaborator/OOB host as the injected value, not curl
+status codes alone -- same false-positive discipline as Blind SSRF below.
+
+## Path-override ACL bypass
+
+A separate, adjacent technique: `X-Original-URL` / `X-Rewrite-URL`
+(IIS/ASP.NET/Spring Cloud Gateway) let the app override the *routed path*
+while the real `Host` and request line stay untouched -- this bypasses a
+reverse-proxy's path-based access control, not an upstream selection.
+
+```bash
+curl -s "https://$TARGET/" -H "Host: $TARGET" -H "X-Original-URL: /admin"
+curl -s "https://$TARGET/" -H "Host: $TARGET" -H "X-Rewrite-URL: /internal/metrics"
+```
+
+Diff against a direct `GET /admin` that the edge blocks -- a different
+status/body proves the override took. Don't combine this with the
+routing-based Host trick above (e.g. `Host: 169.254.169.254` +
+`X-Original-URL: /latest/meta-data/`) -- that combination doesn't work;
+the metadata service never sees `X-Original-URL`.
+
 ## Escalation targets
 
 SSRF into internal panels (Kibana, Jenkins, Redis for a webshell) -- see

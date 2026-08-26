@@ -34,6 +34,25 @@ outright grant control.
   definition), proto file leaks, an unauthenticated unary API method.
 - **HTTP/2 prior-knowledge**: can sometimes bypass controls that were
   only ever enforced on the TLS-negotiated HTTP/2 path.
+- **HTTP/2 Rapid Reset on gRPC (CVE-2023-44487-class)**: gRPC runs over
+  HTTP/2, so a server that interleaves HEADERS with an immediate
+  RST_STREAM per stream races ahead of `MAX_CONCURRENT_STREAMS`
+  accounting and exhausts backend resources -- the gRPC transport doesn't
+  add its own mitigation beyond whatever the underlying HTTP/2 stack
+  patched. DoS is out of scope on almost every program: prefer
+  version-matching the `server:` banner / gRPC library version against
+  the known-patched list over actually flooding, and only run a live
+  reset-flood PoC under explicit written authorization.
+- **gRPC-Web / gRPC-JSON transcoding injection**: a gateway
+  (Envoy `grpc_json_transcoder`, grpc-gateway, Connect) that translates
+  REST/JSON requests into native gRPC calls can apply different -- often
+  weaker -- validation on the JSON side than the gRPC-native handler
+  does. Smuggle a field or value through the transcoded REST/JSON route
+  that the gRPC-native path would have rejected (an admin flag, an
+  out-of-range enum, a type the JSON decoder coerces differently than the
+  protobuf decoder would). Confirm by sending the same logical request
+  both ways -- native `grpcurl` call vs. transcoded JSON POST -- and
+  diffing whether one is accepted and the other rejected.
 
 ## API gateway bypasses
 

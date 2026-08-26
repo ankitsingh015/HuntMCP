@@ -92,3 +92,39 @@ new endpoint, 3) include every new param in injection tests (see
 (`secrets-mcp` finds candidates; using them against the target's APIs is
 still a manual step), 5) build a PoC for every DOM XSS chain, 6) document
 each postMessage handler and its reachable action.
+
+## Re-checking a target over time: JS-bundle diffing
+
+A target isn't done once the first pass of JS-mining above is complete --
+frontend deploys ship new JS bundles constantly, and each one is a fresh
+shot at the same 8 categories. `watch-mcp` (HuntMCP's continuous-recon
+server, driven by `huntbrain.md`'s `watch <target>` mode) already
+automates the subdomain/endpoint side of this: it snapshots
+subfinder/httpx/katana output on an interval and diffs it against the
+last run. It does not diff JS *content* -- a bundle can redeploy at the
+same URL with materially different code and `watch-mcp` won't flag it.
+That gap is what this technique covers manually:
+
+1. From the attack-surface map, keep a list of key JS bundle URLs (main
+   app bundle, chunked/lazy-loaded bundles hit during the first mining
+   pass, any bundle that previously contained endpoints/secrets/DOM-XSS
+   sinks worth re-checking).
+2. On each re-check pass, re-fetch each bundle and hash it:
+   ```bash
+   curl -s "$BUNDLE_URL" | sha256sum
+   ```
+3. Diff the hash against the last-known value for that URL. A changed
+   hash means the bundle was redeployed -- re-run the full 8-category
+   JavaScript intelligence mining checklist above against the new
+   content. A same-hash bundle needs no re-work.
+4. Where the deployment pipeline allows it, diffing the actual content
+   (not just the hash) surfaces exactly what changed -- new
+   `fetch()`/axios calls, new hidden fields, a newly-added feature flag,
+   a secret that wasn't there last time -- which is higher-signal than
+   "something changed, start over."
+
+Treat this as the conceptual technique underneath continuous monitoring,
+not a replacement for `watch-mcp` -- run it as a periodic manual/scripted
+pass on the specific bundles the first mining pass flagged as
+interesting, while `watch-mcp` handles the broader subdomain/endpoint
+surface automatically.
