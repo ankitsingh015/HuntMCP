@@ -5,7 +5,7 @@
 [![CI](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![Harness](https://img.shields.io/badge/harness-OpenCode%20%2B%20Claude%20Code-purple)
-![MCP Count](https://img.shields.io/badge/MCP-20%20servers-orange)
+![MCP Count](https://img.shields.io/badge/MCP-22%20servers-orange)
 ![Model Providers](https://img.shields.io/badge/models-no%20lock--in-yellow)
 ![Last Commit](https://img.shields.io/github/last-commit/ankitsingh015/HuntMCP?color=blue)
 ![Top Language](https://img.shields.io/github/languages/top/ankitsingh015/HuntMCP)
@@ -301,7 +301,7 @@ methodology:
 
 ```
 HuntMCP/
-├── mcp-servers/               20 FastMCP servers (one per tool) + shared libs:
+├── mcp-servers/               22 FastMCP servers (one per tool) + shared libs:
 │   ├── tool_resolver.py         binary resolution + reactive rate-limit/WAF handling
 │   ├── scope_guard.py           engagement.yaml scope checks
 │   ├── budget_guard.py          Tier-2 tool-call budget circuit-breaker
@@ -309,6 +309,7 @@ HuntMCP/
 │   ├── model_gateway.py         multi-provider model selection
 │   ├── audit_log.py             per-call JSON audit trail
 │   ├── dedupe_check.py          duplicate-finding check
+│   ├── case_store.py            persistent case state -- hypotheses, evidence, finding lifecycle, root cause
 │   ├── bounty_scope.py          aggregated bounty-program scope cache/lookup/diff
 │   ├── disclosed_reports.py     disclosed-vulnerability-report cache/search
 │   ├── tool_gaps.py             global tool-gap capture

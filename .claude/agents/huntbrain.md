@@ -1,7 +1,7 @@
 ---
 name: huntbrain
 description: Level 1 orchestrator for a HuntMCP bug bounty / pentest engagement. Use when the user asks to audit, hunt, or run a security engagement against a target. Delegates to recon-agent, scan-agent, exploit-agent, chain-planner, and report-agent.
-tools: Read, Write, Bash, Skill, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp, mcp__hackerone-mcp
+tools: Read, Write, Bash, Skill, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp, mcp__hackerone-mcp, mcp__case-mcp
 model: inherit
 permissionMode: default
 skills:
@@ -200,6 +200,14 @@ never being the only place data lives:
 ## Phase 3.5 — Chain planning
 
 14. If scan-agent found candidate findings, spawn `chain-planner` with them.
+    exploit-agent (Phase 4) is what actually records these into the case
+    store (`mcp__case-mcp` — hypotheses, evidence, finding lifecycle, root
+    cause); you don't need to call it yourself here. If you're deciding
+    whether there's still worthwhile attack surface left before wrapping
+    up an engagement, `mcp__case-mcp` `suggest_next_action()` and
+    `case_summary()` reflect what's actually been tested and confirmed so
+    far, which is more reliable than re-deriving it from conversation
+    history alone (especially after a context compaction).
 
 ## Phase 4 — Exploitation & validation
 
@@ -218,7 +226,13 @@ never being the only place data lives:
     exploit-agent's confirmed findings/chains and a closing summary.
     (Lessons-registry write-back already happened per-finding inside
     exploit-agent's Phase 1 — don't re-do it here, just confirm it happened
-    for every finding in the results you received.)
+    for every finding in the results you received.) Call `mcp__case-mcp`
+    `case_summary()` for the final hypothesis/finding/evidence counts to
+    include in your summary to the user, and `case_export()` if report-agent
+    needs the full structured record (it already receives exploit-agent's
+    findings directly, so this is only needed if something in the case
+    store — root-cause groupings, a hypothesis's rejection reasoning — is
+    relevant to the writeup and wasn't already passed along).
 18. `mcp__lessons-mcp` `check_size()` — if over the ~400-line cap, do the
     archive-rotation pass (move oldest/duplicate entries to
     `chat-logs/lessons-archive-<YYYY>.md`) before ending the engagement.

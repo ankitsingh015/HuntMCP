@@ -142,6 +142,12 @@
       "enabled": true,
       "command": "./.venv/bin/python",
       "args": ["mcp-servers/burp-import-mcp/server.py"]
+    },
+    "case-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": "./.venv/bin/python",
+      "args": ["mcp-servers/case-mcp/server.py"]
     }
   },
   "autoupdate": "notify"
