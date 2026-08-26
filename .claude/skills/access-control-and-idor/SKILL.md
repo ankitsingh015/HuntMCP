@@ -165,3 +165,136 @@ is also accepted by:
 Hunt for both halves of the pair -- the write half usually shares the exact
 same missing-ownership-check root cause as the read half you already found,
 so it's often faster to find than the first one was.
+
+## Mass assignment -- encodings that slip past field-name filters
+
+Many mass-assignment defenses only block the literal field name at the
+top level of the JSON body -- they miss the same field reachable through a
+different encoding. Test every sensitive field (`role`, `isAdmin`,
+`verified`, `balance`, `tier`) through each of these shapes before
+concluding a field is actually filtered:
+
+- **Dot-path notation**: `{"profile.is_admin":true}`, or form-encoded
+  `user.role=admin` -- ORMs that flatten dotted keys into nested updates
+  (Mongoose especially) bind straight through a filter that only inspects
+  the top-level key.
+- **Bracket notation**: `user[role]=admin` / `user[is_admin]=1` in a
+  form-urlencoded body -- common PHP-framework parsing turns this into a
+  nested array the allowlist never inspects.
+- **Array/object wrapper**: `{"user":{"name":"test","admin":true}}` --
+  wrapping the sensitive field inside a nested object the endpoint also
+  accepts (Rails `params.permit`, Laravel `$request->all()`) skips a
+  filter written only for flat top-level keys.
+- **JSON Patch / JSON Merge Patch**: `[{"op":"replace","path":"/role",
+  "value":"admin"}]` against `Content-Type: application/json-patch+json`,
+  or `{"role":"admin"}` against `application/merge-patch+json` -- patch-
+  format endpoints frequently run a different (weaker) deserializer than
+  the main create/update handler, so a field blocked on `POST` can go
+  straight through on `PATCH` once the content-type switches to a patch
+  format.
+- **Batch/array endpoints**: submit an array of objects to a bulk-update
+  endpoint (`PUT /api/users/batch {"users":[{"id":"me","name":"test"},
+  {"id":"VICTIM_ID","role":"admin"}]}`) -- per-item authorization is
+  commonly skipped when the framework only authorizes the batch request as
+  a whole, not each element inside it.
+- **Duplicate keys**: `{"name":"test","role":"user","role":"admin"}` --
+  parser differentials between a WAF/proxy (which may read the first
+  occurrence) and the application (which may read the last) let a blocked
+  value through.
+
+Test every naming convention (`is_admin`/`isAdmin`/`IsAdmin`) against every
+shape above -- a framework that rejects one combination often accepts
+another because the allowlist and the parser were written by different
+people at different times.
+
+## Named IDOR composition chains -- more disclosed-report precedents
+
+Two further compositions, beyond the paired-write patterns above, turn a
+single IDOR into a materially bigger finding:
+
+- **IDOR download + filename-controlled response header -> stored XSS ->
+  session theft**: a file/document download endpoint is IDOR'd (any
+  user's file given its ID), and the same endpoint reflects the
+  uploader-controlled filename into `Content-Disposition: attachment;
+  filename="..."` without stripping quotes or newlines. An attacker
+  uploads a file with a filename crafted to break out of the header and
+  inject a script tag; when the victim (or an admin reviewing the file)
+  opens the download link, the injected script runs in the response
+  context and exfiltrates the session. Neither the IDOR nor the header
+  injection is critical alone -- the chain is. Seen across disclosed
+  SharePoint, GitLab attachment, and SaaS-export download endpoints.
+- **IDOR via GraphQL Relay global ID + nested-relation traversal -> mass
+  cross-tenant extraction**: the top-level `node(id:)` resolver correctly
+  authenticates and authorizes the requester for the object it directly
+  resolves, but nested relations hanging off that object (`orders`,
+  `paymentMethods`, `invoices`) don't re-check ownership against the
+  resolved parent. Decode the base64 global ID (`gid://shopify/Customer/
+  <n>` or a similar `type:id` pattern) to recover the numeric ID, then
+  walk it: `node(id:"<victim_gid>") { ... on Customer { email orders {
+  totalPrice paymentMethods { cardLast4 } } } }`. Iterating the decoded ID
+  turns one authorized query into a walk of the entire customer base.
+  Real precedent: Shopify Billing IDOR (HackerOne #2207248, $5,000);
+  HackerOne's own PolicyPageAssetGroup IDOR (HackerOne #1618347,
+  $25,000).
+- The team-membership + mass-assignment role-escalation chain above has
+  real bounty precedent too: Shopify's undocumented `fileCopy` mutation
+  (HackerOne #981472, $2,000, 2020) and Stripe's
+  `UpdateAtlasApplicationPerson` cross-tenant mutation (HackerOne
+  #1066203, 2020) both reduce to the exact same root cause -- an IDOR'd
+  membership/person-update endpoint that also accepts an unfiltered role
+  field in the body.
+
+## Business logic: disclosed price-tampering and coupon-race precedents
+
+Real bounty precedent for the money-manipulation bullet above, each with
+measurable financial impact:
+
+- **Stripe -- fee-discount race redemption** (HackerOne #1849626, $5,000,
+  2023): Stripe Support applied a one-time $20,000 fee-credit; the
+  researcher captured the "accept-discount" POST and replayed it 30x in
+  parallel via Turbo Intruder, each parallel acceptance crediting the
+  account again. Root cause: no idempotency key and no unique constraint
+  on `(account_id, discount_id)` -- $600,000 of fee-free transactions
+  accrued before the fix.
+- **Upserve/OLO -- negative-quantity price manipulation** (HackerOne
+  #364843, 2018): `POST /api/order {"items":[{"id":1,"qty":1,"price":50},
+  {"id":2,"qty":-3,"price":50}]}` computes a negative order total that
+  floors to ~$0 at payment capture while the food still fulfills. Root
+  cause: server multiplies `qty * price` with no `qty >= 1` guard.
+- **Krisp -- pay-less-per-seat via PUT tampering** (HackerOne #1446090,
+  2021): `PUT /v2/seats` reads a client-supplied `price` field instead of
+  looking the price up by `plan_id` -- setting `price=1` drops a
+  100-seat, $60/seat subscription to $1/seat. Same root cause as generic
+  mass assignment, just landing on a billing field instead of a role
+  field.
+
+**Phone-ownership verification bypass**: when a flow accepts a phone
+number and "verifies" it by sending an OTP, check whether the platform
+grants trust the moment the number is *submitted* rather than waiting for
+OTP *confirmation* -- e.g. a callback-number field that's immediately
+treated as verified in downstream logic (fraud scoring, 2FA fallback,
+contact display) before the OTP round-trip ever completes. Submitting a
+victim's real phone number lets an attacker borrow their verified status
+without ever proving control of the phone.
+
+## Read-protected, write-open: an access-control pattern to check on every endpoint
+
+Don't assume that because `GET /resource` correctly scopes results to the
+caller, the write verbs on the *same* resource do too. A common asymmetry:
+authorization gets implemented once for reads (a `WHERE user_id = ?`
+clause, an RLS policy, a resolver check) and never mirrored onto
+`PATCH`/`PUT`/`POST`/`DELETE` on the same object -- because the write path
+was added later, by a different developer, or reaches the data through a
+different code path (a raw ORM update vs. a scoped query builder).
+Concretely: confirm you can only read your own record, then try the exact
+same object reference against every write verb the endpoint accepts; a 200
+with your data changed -- or worse, a filter like `?user_id=neq.<self>`
+returning other users' rows -- means the read-side check was never ported
+to the write side. This is a distinct failure from the mass-assignment and
+IDOR patterns above: the object reference can be entirely correct (it's
+your own object) and the vulnerability is still there, in the missing
+write-side authorization gate itself. BaaS platforms (Supabase/PostgREST
+row-level security, Firebase security rules) are an especially common
+place this shows up, since read and write authorization are configured as
+separate rule sets that are easy to leave out of sync -- see the dedicated
+`baas-security` skill for that platform-specific depth.
