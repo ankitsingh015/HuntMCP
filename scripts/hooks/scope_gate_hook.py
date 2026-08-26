@@ -16,14 +16,19 @@ pip install, editing files, curl-ing a package registry) never trips this:
 
 - Bash commands only trigger a check when the invoked binary is one of the
   actual Tier-2 tools HuntMCP's own MCP servers shell out to (see
-  mcp-servers/*/server.py's run_tool() calls) -- not any command that merely
-  contains a domain-looking string.
+  mcp-servers/*/server.py's run_tool() calls), plus curl/wget -- not any
+  command that merely contains a domain-looking string. curl/wget are
+  included even though no dedicated MCP server wraps them, because they are
+  the most direct unguarded path to a live target -- a raw `curl
+  https://target.com/...` was previously invisible to this hook entirely.
 - MCP tool calls only trigger a check for the Tier-2 (target-touching)
   servers -- writeup-mcp/memory-mcp/lessons-mcp/chainer-mcp operate on local
   knowledge, not a live target, and are exempt.
-- example.com/example.org/example.net/localhost/loopback/RFC1918 hosts are
-  always allowed with no engagement.yaml required -- that's normal MCP
-  server development/testing, not a live engagement.
+- example.com/example.org/example.net/localhost/loopback/RFC1918 hosts, plus
+  a small allowlist of known dev infrastructure (GitHub, PyPI, npm, Go
+  module proxy, Debian/Ubuntu package mirrors -- see DEV_INFRA_HOSTS), are
+  always allowed with no engagement.yaml required -- that's normal
+  development/testing, not a live engagement.
 """
 
 from __future__ import annotations
@@ -33,14 +38,39 @@ import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "mcp-servers"))
 from scope_guard import NoEngagementFile, is_in_scope, load_engagement  # noqa: E402
 
 # The exact binaries HuntMCP's MCP servers shell out to (mcp-servers/*/server.py
-# run_tool() calls) -- the real Tier-2 boundary, not a guess.
+# run_tool() calls) -- the real Tier-2 boundary, not a guess. curl/wget are
+# added separately below: unlike the others, they're not wrapped by any
+# dedicated MCP server today, so a raw `curl https://target.com/...` was a
+# genuine unguarded path to a live target, not just a defense-in-depth
+# duplicate of an MCP wrapper. Found 2026-08-26 while reviewing an external
+# skill library (uphiago/recon-skills) whose procedures are curl-heavy --
+# adopting that style of content without this fix would have made scope
+# enforcement bypassable by construction.
 TIER2_BASH_TOOLS = {
     "subfinder", "httpx", "katana", "nmap", "nuclei", "sqlmap", "dalfox", "ffuf",
+    "curl", "wget",
+}
+
+# curl/wget also legitimately touch non-target infrastructure during ordinary
+# MCP-server development -- package registries, source hosting, docs -- which
+# must stay exempt the same way SAFE_TEST_HOSTS exempts example.com/localhost.
+# Kept separate from content_scanner.py's KNOWN_GOOD_HOSTS (that allowlist is
+# for outbound calls made BY this repo's own Python code to known service
+# integrations; this one is for a human/agent curl-ing the open internet
+# during development -- different concern, deliberately not shared).
+DEV_INFRA_HOSTS = {
+    "github.com", "raw.githubusercontent.com", "objects.githubusercontent.com",
+    "api.github.com", "codeload.github.com",
+    "pypi.org", "files.pythonhosted.org",
+    "registry.npmjs.org", "nodejs.org",
+    "golang.org", "proxy.golang.org", "go.dev",
+    "deb.debian.org", "archive.ubuntu.com", "security.ubuntu.com",
 }
 
 # MCP servers that actually touch a live target vs. operate on local knowledge only.
@@ -50,7 +80,20 @@ TIER2_MCP_SERVERS = {
     "waf-bypass-mcp", "browser-mcp",
 }
 
-SAFE_TEST_HOSTS = {"example.com", "example.org", "example.net", "localhost", "0.0.0.0"}
+SAFE_TEST_HOSTS = {
+    "example.com", "example.org", "example.net", "localhost", "0.0.0.0",
+    # Universally-recognized attacker-origin placeholders (RFC-2606-adjacent
+    # community convention, same status as example.com) -- needed once
+    # curl/wget are Tier-2-checked: a CORS/CSRF PoC's `-H "Origin:
+    # https://evil.com"` is a header VALUE describing the attacker's origin,
+    # not a live target being contacted, but this hook's host-extraction is
+    # a blanket regex over the whole command line (deliberately -- stripping
+    # quoted substrings to distinguish "target" from "header value" risks
+    # also stripping a legitimately-quoted target URL, which fails open
+    # instead of just over-blocking; a false-positive block is the safe
+    # failure mode here, a false-negative allow is not).
+    "evil.com", "attacker.com", "malicious.com",
+}
 
 HOST_ARG_KEYS = ("domains", "domain", "target", "targets", "url", "host", "hosts")
 
@@ -58,10 +101,29 @@ HOSTNAME_RE = re.compile(
     r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b"
 )
 
+URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+
+# HOSTNAME_RE matches any "word.word" pattern -- it cannot distinguish a real
+# domain from a filename with an extension (results.json, wordlist.txt,
+# payload.py) on pattern shape alone, since e.g. "co"/"io"/"me" are real
+# TLDs but structurally identical to a two-letter... this is the inverse
+# problem: common non-TLD file extensions that would otherwise false-positive
+# as a "hostname" once curl/wget are Tier-2-checked (curl -o results.json,
+# -d @payload.json are the single most common curl invocation shapes there
+# are). Not exhaustive -- a curated denylist of what's actually been seen to
+# collide, not a claim of covering every possible extension.
+NON_TLD_FILE_EXTENSIONS = {
+    "txt", "json", "py", "md", "yaml", "yml", "csv", "html", "htm", "xml",
+    "sh", "js", "ts", "log", "pdf", "zip", "tar", "gz", "cfg", "conf", "ini",
+    "png", "jpg", "jpeg", "gif", "svg", "css", "sql", "db", "bak", "out",
+}
+
 
 def _is_safe_test_host(host: str) -> bool:
     host = host.lower().strip(".")
-    if host in SAFE_TEST_HOSTS:
+    if host in SAFE_TEST_HOSTS or host in DEV_INFRA_HOSTS:
+        return True
+    if host.rsplit(".", 1)[-1] in NON_TLD_FILE_EXTENSIONS:
         return True
     try:
         ip = ipaddress.ip_address(host)
@@ -78,7 +140,27 @@ def _first_word(command: str) -> str:
 def _extract_hosts_from_bash(command: str) -> list[str]:
     if _first_word(command) not in TIER2_BASH_TOOLS:
         return []
-    return [h for h in HOSTNAME_RE.findall(command) if not _is_safe_test_host(h)]
+
+    # Prefer real URL parsing over blanket regex where a scheme is present --
+    # this is what actually distinguishes "the host curl is contacting" from
+    # a same-looking substring in the URL's own path (curl .../main/file.txt
+    # regex-matches "file.txt" as if it were a second hostname otherwise).
+    hosts: list[str] = []
+    seen_spans: list[tuple[int, int]] = []
+    for m in URL_RE.finditer(command):
+        seen_spans.append(m.span())
+        host = urlsplit(m.group(0)).hostname
+        if host:
+            hosts.append(host)
+
+    # Remove matched URL spans before the fallback bare-hostname scan, so a
+    # URL's own path/query never gets double-scanned by HOSTNAME_RE.
+    remainder = command
+    for start, end in sorted(seen_spans, reverse=True):
+        remainder = remainder[:start] + " " + remainder[end:]
+
+    hosts.extend(HOSTNAME_RE.findall(remainder))
+    return [h for h in hosts if not _is_safe_test_host(h)]
 
 
 def _extract_hosts_from_tool_input(tool_input: dict) -> list[str]:
