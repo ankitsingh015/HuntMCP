@@ -99,3 +99,11 @@ scripts/huntmcp-bounty-scope-cron.sh
 # OS files
 .DS_Store
 Thumbs.db
+
+# Real hunt findings/reports — client names, vulnerability details, never
+# for git. This top-level reports/ was NOT covered by any existing rule
+# (only data/reports/ was, and this checkout was 6+ commits behind and
+# missing even that) -- added urgently 2026-08-26 after discovering real,
+# untracked-but-not-ignored findings sitting here (reports/arkose-2026-08/,
+# reports/wibmo-2026-08-26/).
+reports/
