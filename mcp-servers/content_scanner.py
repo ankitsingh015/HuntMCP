@@ -140,21 +140,33 @@ def scan_skill_file(path: str) -> list[dict]:
             "before trusting; may be a legitimate example payload/token",
         ))
 
-    fm_match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
-    if not fm_match:
-        findings.append(_finding("HIGH", path, "no YAML frontmatter found"))
-    else:
-        fm_text = fm_match.group(1)
-        if "description:" not in fm_text:
-            findings.append(_finding("HIGH", path, "frontmatter missing required 'description' field"))
-        name_match = re.search(r"^name:\s*(\S+)", fm_text, re.MULTILINE)
-        if name_match:
-            dirname = os.path.basename(os.path.dirname(os.path.abspath(path)))
-            if name_match.group(1).strip("'\"") != dirname:
-                findings.append(_finding(
-                    "MEDIUM", path,
-                    f"frontmatter name {name_match.group(1)!r} does not match directory name {dirname!r}",
-                ))
+    # Frontmatter is only a contract for the actual SKILL.md entry point --
+    # supporting material next to it (references/*.md, a skill's own
+    # README.md) legitimately has none, per this repo's own convention
+    # (.claude/skills/<name>/{SKILL.md, references/}) and the same
+    # convention observed in every other SKILL.md-based skill library
+    # reviewed so far. Checking every *.md for frontmatter produced 27
+    # false positives out of 33 findings when this scanner was first
+    # pointed at an external repo with a references/ subdirectory
+    # (2026-08-26) -- real signal (prompt-injection phrasing, hidden
+    # Unicode, base64 blobs) still applies to those files above; only the
+    # frontmatter-specific checks are scoped to SKILL.md itself.
+    if os.path.basename(path) == "SKILL.md":
+        fm_match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+        if not fm_match:
+            findings.append(_finding("HIGH", path, "no YAML frontmatter found"))
+        else:
+            fm_text = fm_match.group(1)
+            if "description:" not in fm_text:
+                findings.append(_finding("HIGH", path, "frontmatter missing required 'description' field"))
+            name_match = re.search(r"^name:\s*(\S+)", fm_text, re.MULTILINE)
+            if name_match:
+                dirname = os.path.basename(os.path.dirname(os.path.abspath(path)))
+                if name_match.group(1).strip("'\"") != dirname:
+                    findings.append(_finding(
+                        "MEDIUM", path,
+                        f"frontmatter name {name_match.group(1)!r} does not match directory name {dirname!r}",
+                    ))
 
     return findings
 
