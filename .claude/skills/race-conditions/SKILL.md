@@ -26,6 +26,35 @@ race windows — see PortSwigger's race-condition research for the
 reference implementation via Burp's Turbo Intruder. Reach for this when
 naive parallel requests fail to reproduce a suspected race.
 
+**The mechanism, not just the technique name**: HTTP/2 multiplexes many
+requests over one TCP connection as HEADERS/DATA frames per stream.
+Pre-stage N requests by sending each one's HEADERS frame plus all but the
+final byte of its DATA frame — withholding `END_STREAM` so the server
+can't dispatch yet. Then release all N final bytes (each carrying
+`END_STREAM`) in a single TCP write; TCP coalesces them into one IP
+packet, so the server's HTTP/2 parser sees all N streams complete in the
+same scheduler tick. This collapses the race window from network jitter
+(0.5–5 ms over a real connection) down to the application's own
+atomicity gap — often sub-millisecond. Confirm true single-packet
+delivery with a packet capture (`tcpdump`/Wireshark): all N
+`END_STREAM`-bearing DATA frames should land in one TLS record/TCP
+segment, not spread across several — Turbo Intruder's `engine=Engine.BURP2`
+is the reference implementation. Estimate the race window first (compare
+single-request timing against two-concurrent timing) before committing to
+a full attack — an endpoint with genuine row-level locking won't race no
+matter how tight the delivery.
+
+Kettle's single-packet attack caps around N=30 concurrent requests per
+connection (MTU + TLS record limits on one TCP stream). Flatt Security's
+2024 "first-sequence-sync" extension lifts this ceiling by opening
+multiple TCP connections and synchronizing their TCP sequence numbers so
+IP fragments from all connections land at the server in the same
+processing window — demonstrated at 10,000 concurrent requests delivered
+in 166 ms. Reach for this specifically when the race needs N > 30, such
+as brute-forcing a short numeric PIN/OTP within a tight per-window
+attempt cap (e.g. a 6-digit PIN against a 5-attempt rate limit), where 30
+concurrent guesses isn't enough coverage per window.
+
 ## Classic parallel-request race
 
 20-50 concurrent identical requests against the same endpoint — coupon
@@ -58,6 +87,18 @@ state transitions simultaneously — both attempting to claim the "last"
 seat/item, both attempting to redeem the same one-time link. Look for
 the resource ending up in an impossible or double-allocated state as the
 tell.
+
+## Precedent
+
+- **GitLab CVE-2022-4037** — concurrent email-change requests raced
+  Devise's (Rails) confirmation-token generation against email
+  persistence; the token sent to address A became valid for address B
+  because the state transition wasn't atomic. This is Kettle's flagship
+  "Smashing the State Machine" case study for single-packet exploitation.
+- **nopCommerce CVE-2024-58248** — two parallel `PlaceOrder` requests both
+  applying the same gift card completed as separate orders while the gift
+  card balance was debited only once; checkout's gift-card balance
+  check-then-debit had no row-level lock.
 
 ## Evidence to capture
 

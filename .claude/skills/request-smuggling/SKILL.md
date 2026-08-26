@@ -54,6 +54,60 @@ whenever `httpx-mcp`'s recon shows a CDN/proxy signature (`CF-RAY`,
 - **Automated discovery**: HTTP Request Smuggler v3.0 / HTTP Terminator
   (Kettle/PortSwigger) for novel-class discovery on any target.
 
+## Front-end viability matrix
+
+Fingerprint the front-end before choosing a variant -- classic CL.TE/TE.CL
+payloads are dead against RFC 9112-strict proxies. Match effort to what the
+detected stack can actually desync:
+
+| Front-end | CL.TE | TE.CL | H2.CL | H2.TE | Notes |
+|---|---|---|---|---|---|
+| Nginx >= 1.21 | dead | dead | partial | partial | rejects ambiguous CL+TE by default; pivot to H2 downgrade if the front speaks HTTP/2 |
+| HAProxy <= 2.4 | vulnerable | vulnerable | -- | -- | CVE-2021-40346 |
+| AWS ALB (HTTP/2 listener -> HTTP/1.1 target group) | partial | partial | vulnerable | vulnerable | ALB forwarded `content-length`/`transfer-encoding` through the downgrade before patching |
+| Cloudflare -> S3/Lambda origin chains | dead | dead | vulnerable | vulnerable | edge is RFC-strict on CL.TE/TE.CL; H2-downgrade-to-origin remains the live vector |
+| Tomcat behind a proxy | dead | rejects TE outright | -- | primary vector | test H2.TE at the front proxy, not TE.CL against Tomcat itself -- Tomcat won't play TE.CL's game |
+
+Working order per stack: fingerprint (`Server`/`Via`/`X-Powered-By`
+headers, `httpx -td -sc -server`), pick the row above, and run only that
+stack's primary test first -- firing the full payload matrix at an
+already-fingerprinted target burns recon time for no new signal.
+
+## HA-Rank: prioritizing which variant to try first
+
+A 0-5 score for how far to push a given target, cheapest signal first:
+
+| Score | Label | Signal | Action |
+|---|---|---|---|
+| 0 | Immune | 400 on any CL+TE combo; H2->H1.1 strips body headers | move on |
+| 1 | Low | 200 on CL+TE, no desync; H2 downgrade negative | note and skip |
+| 2 | Moderate | CL+TE accepted, slight timing stutter | run automated scanner |
+| 3 | High | CL.0/TE obfuscation confirmed by timing probe, or partial H2.CL/H2.TE | full manual exploit chain |
+| 4 | Critical | desync confirmed with follow-up response capture on a second request | drop everything, full chain PoC |
+| 5 | Emergency | verified cache poisoning or credential theft on a production keep-alive pool | immediate disclosure |
+
+Run the cheap tests first (CL+TE 400 check, one timing probe) before ever
+touching h2csmuggler/Turbo Intruder -- HA-Rank >= 3 is the threshold that
+justifies the manual exploit-chain investment.
+
+## Case-study precedents
+
+- **Netflix (H2.CL, HackerOne, $20k)**: the HTTP/2 termination layer
+  forwarded a client-supplied `content-length` header into the HTTP/1.1
+  upstream even though the H2 frame length was 0 -- the backend used the
+  injected CL to delimit the "body," so the front-end's next-request bytes
+  got consumed as that body. Chained to cache poisoning and session
+  hijacking on shared upstream connections. Fixed by stripping
+  `content-length` from all H2->H1.1 downgraded requests.
+- **AWS ALB (H2.TE)**: an ALB configured with an HTTP/2 listener in front
+  of HTTP/1.1 target groups passed `transfer-encoding` through the
+  downgrade. ALB itself terminated H2 correctly via frame-length, but the
+  Nginx/HTTPD origin then honored `TE: chunked` on the forwarded request,
+  letting a trailing `0\r\n\r\n` end the chunk early and turn the rest of
+  the stream into a smuggled request. Impact: cache poisoning across
+  ALB-connected microservices. AWS patched ALB to strip TE headers on
+  downgrade.
+
 ## Working order
 
 Start with single-request variants (no race needed), then move to RQP

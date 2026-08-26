@@ -1,6 +1,6 @@
 ---
 name: deep-cut-surfaces
-description: HackTricks-level deep-cut techniques not covered by the mainstream vuln-class skills -- ESI/SSI injection, NTLM relay/coercion, SMTP header injection, JSONP hijacking, XS-Leak timing oracles, tabnabbing, DNS rebinding, exposed management interfaces (JMX/Druid/Kafka admin), ORM error leaks, PHP type juggling, insecure randomness, GWT RPC, Java RMI, and deeper GraphQL/WebSocket issues. Converted from master-pentest-prompt.md Phase 23. Use as a secondary pass after the mainstream vuln classes are covered, or when the target's stack specifically suggests one of these (e.g. a CDN in front suggests checking ESI).
+description: HackTricks-level deep-cut techniques not covered by the mainstream vuln-class skills -- ESI/SSI injection, NTLM relay/coercion, SMTP header injection, JSONP hijacking, XS-Leak timing oracles, tabnabbing, DNS rebinding, exposed management interfaces (JMX/Druid/Kafka admin), ORM error leaks, API schema enumeration via error hints (PostgREST/Supabase, Zod/FastAPI), PHP type juggling, insecure randomness, GWT RPC, Java RMI, and deeper GraphQL/WebSocket issues. Converted from master-pentest-prompt.md Phase 23. Use as a secondary pass after the mainstream vuln classes are covered, or when the target's stack specifically suggests one of these (e.g. a CDN in front suggests checking ESI).
 ---
 
 # Missing deep-cut surfaces (HackTricks-level)
@@ -68,6 +68,21 @@ NTLM, a contact form suggests SMTP header injection.
 - **Insecure randomness**: predictable tokens/OTPs/secrets from a
   time-based or otherwise guessable seed, weak UUIDv1 (embeds a MAC
   address), poor PRNG seeding generally.
+
+## API schema enumeration via error messages
+
+- **PostgREST/Supabase error-hint enumeration**: querying a non-existent
+  table on a PostgREST-backed API (Supabase's `/rest/v1/<table>`) returns a
+  `hint` field naming the real table -- `{"hint":"Perhaps you meant the
+  table 'public.user_sessions'"}` -- turning a single fuzzed request per
+  guess into full schema disclosure, no valid auth or successful query
+  needed.
+- **Zod/FastAPI validation-error schema mining**: POSTing an empty or
+  malformed body to a typed API and reading the validation error response
+  reconstructs the entire expected request schema, including fields never
+  shown in documented examples -- FastAPI's `422` `detail` array lists
+  every missing/invalid field by name and type, and a Zod-backed
+  Next.js/Node route's `ZodError` message embeds the same for each `path`.
 
 ## Less-common RPC/API surfaces
 

