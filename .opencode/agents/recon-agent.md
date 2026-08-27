@@ -4,7 +4,13 @@ mode: subagent
 permission:
   edit: deny
   webfetch: deny
-  bash: allow
+  # rm **/rm deny below is defense-in-depth, not the real enforcement --
+  # see opencode.jsonc's permission.bash comment. Real block is
+  # .opencode/plugin/scope-gate.ts -> scripts/hooks/scope_gate_hook.py.
+  bash:
+    "*": allow
+    "rm **": deny
+    "rm": deny
 ---
 
 # Recon Agent — Level 2 Specialist
