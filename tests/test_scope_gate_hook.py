@@ -96,6 +96,49 @@ def test_mcp_server_name_parses_correctly():
     assert hook._mcp_server_name("Bash") == ""
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -rf scratch-test-dir/foo.txt",
+        "rm foo",
+        "rm",
+        "/bin/rm -f x",
+        "sudo rm -rf /tmp/x",
+        "curl https://example.com && rm -rf data/",
+        "rm -rf x; ls",
+        "echo hi | rm -f x",
+        "$(rm -rf x)",
+    ],
+)
+def test_is_rm_command_detects_rm(command):
+    assert hook._is_rm_command(command) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat rm.log",
+        "rmdir foo",
+        "ls -la",
+        "mv foo bar",
+        'echo "do not rm this"',
+        # Regression: a bare ')' from unrelated command text (e.g. a Python
+        # tuple literal passed via python3 -c) must not be treated as a
+        # sub-command boundary -- that would put whatever follows it into
+        # its own piece and false-positive-block on an unrelated later "rm".
+        "python3 -c \"print(('rm -rf x', True))\"",
+        # Regression: a lone backtick from markdown inline code in a PR
+        # body/commit message (e.g. `gh pr create --body "$(cat <<'EOF'
+        # ... `rm -f file.txt` ... EOF)"`) must not be treated as opening a
+        # command substitution -- caught this live 2026-08-26 writing this
+        # very PR's own body text.
+        "gh pr create --body \"See `rm -f scratch-file.txt` in the docs\"",
+    ],
+)
+def test_is_rm_command_ignores_non_rm(command):
+    assert hook._is_rm_command(command) is False
+
+
 def _run_main(monkeypatch, payload):
     # scope_guard.DEFAULT_PATH is bound from HUNTMCP_ENGAGEMENT_PATH once at
     # import time (same pattern as budget_guard.MAX_CALLS), so it can't be
@@ -104,6 +147,25 @@ def _run_main(monkeypatch, payload):
     # the literal default relative name, which open() resolves at call time.
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     return hook.main()
+
+
+def test_main_blocks_rm_with_no_engagement_and_no_scope_check(monkeypatch, tmp_path):
+    """rm is a blanket "never run, never ask" rule, not a scope rule -- must
+    block even with no engagement.yaml and no in-scope host anywhere in the
+    command, unlike every other Tier-2 check in this file which requires a
+    real-looking target host to trigger at all."""
+    monkeypatch.chdir(tmp_path)
+    payload = {"tool_name": "Bash", "tool_input": {"command": "rm -rf scratch-test-dir/foo.txt"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_rm_even_with_in_scope_engagement(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "rm -rf data/engagements/realtarget-corp"}}
+    assert _run_main(monkeypatch, payload) == 2
 
 
 def test_main_allows_plain_bash(monkeypatch, tmp_path):

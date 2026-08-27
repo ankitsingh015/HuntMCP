@@ -141,6 +141,46 @@ def _first_word(command: str) -> str:
     return stripped.split()[0].rsplit("/", 1)[-1] if stripped else ""
 
 
+# Splits a bash command on the shell operators that start a new sub-command
+# (chaining, piping, subshells, newlines) so a blocked command can't be
+# smuggled in as the second half of `curl ... && rm -rf data/`. Deliberately
+# NOT a blanket `\brm\b` substring scan -- that would also flag an unrelated
+# file literally named `rm.log` in a redirect. Matching Bash(rm *)/Bash(rm)
+# prefix semantics per sub-command is the same rule .claude/settings.json
+# already enforces, just extended across `;`/`&&`/`|`/`$(`.
+#
+# Deliberately excludes a bare `)` as a split point -- regex can't balance
+# parens, so treating every `)` as "end of a $(...) subshell" would also
+# split on a stray `)` from unrelated command text (e.g. a Python literal
+# passed via `python3 -c "..."`), putting whatever text follows it into its
+# own piece and false-positive-blocking on an unrelated "rm" that appears
+# later in the same command line, not at a real sub-command boundary.
+#
+# Also deliberately excludes a bare backtick -- confirmed live 2026-08-26:
+# writing a PR body via `gh pr create --body "$(cat <<'EOF' ... EOF)"` with
+# markdown inline code like `` `rm -f scratch-file.txt` `` in the body text
+# tripped this exact check, because a lone backtick was treated as opening a
+# command substitution and everything after it (starting with "rm") became
+# its own piece. Backtick substitution is legacy syntax modern agents rarely
+# use for real chaining, and this codebase writes a lot of markdown-heavy
+# commit/PR-body text through Bash -- the false-positive cost of keeping it
+# outweighs the real-smuggling coverage it would add on top of `$(`.
+_CHAIN_SPLIT_RE = re.compile(r"&&|\|\||[;&|\n]|\$\(")
+
+
+def _is_rm_command(command: str) -> bool:
+    for piece in _CHAIN_SPLIT_RE.split(command):
+        words = piece.split()
+        if not words:
+            continue
+        first = words[0].rsplit("/", 1)[-1]
+        if first in ("sudo", "env") and len(words) > 1:
+            first = words[1].rsplit("/", 1)[-1]
+        if first == "rm":
+            return True
+    return False
+
+
 def _extract_hosts_from_bash(command: str) -> list[str]:
     if _first_word(command) not in TIER2_BASH_TOOLS:
         return []
@@ -198,8 +238,28 @@ def main() -> int:
 
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {}) or {}
-
     command = tool_input.get("command", "")
+
+    # Blanket rm block -- unconditional, independent of scope/engagement
+    # state entirely (this is a "never run rm, never ask" rule, not a
+    # target-scope rule). .claude/settings.json's `Bash(rm *)`/`Bash(rm)`
+    # permissions.deny already enforces this for Claude Code before the
+    # call even reaches this hook; this check is what makes it real for
+    # OpenCode too (via .opencode/plugin/scope-gate.ts, which invokes this
+    # same script for every Bash call) -- opencode.jsonc's declarative
+    # `permission.bash` glob deny (`"rm **": "deny"` alongside `"*":
+    # "allow"`) was tested live and did not actually block rm across
+    # several pattern/ordering attempts, so this hook is the real
+    # enforcement point on that harness, same as it already is for scope.
+    if tool_name == "Bash" and _is_rm_command(command):
+        print(
+            "BLOCKED: rm is disabled by default in this repo (both Claude "
+            "Code and OpenCode) -- ask the user to delete the file "
+            "themselves, or move it aside instead of removing it.",
+            file=sys.stderr,
+        )
+        return 2
+
     if tool_name == "Bash":
         candidates = _extract_hosts_from_bash(command)
     elif tool_name.startswith("mcp__"):

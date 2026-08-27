@@ -1,15 +1,21 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "default_agent": "huntbrain",
+  // "rm **"/"rm": "deny" kept below as defense-in-depth even though it's
+  // NOT the real enforcement point -- empirically, this glob-based deny did
+  // not actually block `rm` in live testing (verified 2026-08-26, several
+  // pattern/ordering attempts). The real "never rm, never ask" rule is
+  // .opencode/plugin/scope-gate.ts's tool.execute.before hook, which shells
+  // out to scripts/hooks/scope_gate_hook.py's unconditional _is_rm_command()
+  // check on every Bash call -- confirmed live to block rm even under
+  // `opencode run --auto`, which bypasses this declarative permission block
+  // entirely. Mirrors .claude/settings.json's Bash(rm *)/Bash(rm) deny.
   "permission": {
     "edit": "ask",
     "bash": {
-      "*": "ask",
-      "grep *": "allow",
-      "cat *": "allow",
-      "ls *": "allow",
-      "echo *": "allow",
-      "which *": "allow"
+      "*": "allow",
+      "rm **": "deny",
+      "rm": "deny"
     },
     "skill": {
       "*": "allow"
