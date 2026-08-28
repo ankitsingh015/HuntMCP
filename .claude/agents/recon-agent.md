@@ -1,7 +1,7 @@
 ---
 name: recon-agent
 description: Level 2 specialist — discovers attack surface (subdomains, live hosts, endpoints, ports) for a HuntMCP engagement. Spawned by huntbrain, never invoked directly against an unconfirmed target.
-tools: Bash, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp
+tools: Bash, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp, mcp__browser-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -58,6 +58,14 @@ not just once for the root domain.
    downloaded, call `mcp__secrets-mcp` `scan_directory(path)` on that same
    directory — cheap, local-file-only (not a live-target action itself),
    catches exposed API keys/tokens before scan-agent even starts.
+
+   katana's crawl gives you URLs/params, not what's actually on a page --
+   for a specific page worth reading in full (a listing/directory page, an
+   API-docs page, anything JS-rendered where a static fetch would come back
+   empty), call `mcp__browser-mcp` `extract_page_content(url)` to get the
+   rendered text plus every link on it. Don't call this for every URL
+   katana finds -- it's for the handful of pages where actual content
+   matters, not a bulk-crawl substitute.
 
 ## Phase 4 — Port scanning
 

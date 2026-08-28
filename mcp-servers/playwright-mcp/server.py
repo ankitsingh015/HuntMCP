@@ -42,7 +42,7 @@ _SCOPE_REMINDER = (
 
 
 @app.tool()
-def solve_js_challenge(url: str) -> str:
+async def solve_js_challenge(url: str) -> str:
     """Navigate to url in a real headless browser and check for a JS-based
     bot-detection challenge (Cloudflare, Akamai, Imperva, DataDome,
     PerimeterX) that waf-bypass-mcp's curl-based Tier 1-4 can't beat.
@@ -54,7 +54,7 @@ def solve_js_challenge(url: str) -> str:
     waf-bypass-mcp's attempt_bypass() reports "still WAF-protected" and
     the block looks JS-challenge-shaped, not for a generic 403/rate-limit
     block that the curl-based tiers should handle first."""
-    r = challenge_solver.solve_js_challenge(url)
+    r = await challenge_solver.solve_js_challenge(url)
 
     if r["error"]:
         return f"Browser error: {r['error']}"
