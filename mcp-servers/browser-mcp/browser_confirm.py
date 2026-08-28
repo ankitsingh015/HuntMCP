@@ -30,6 +30,19 @@ this module itself (consistent with how other MCP servers work -- the
 calling agent enforces scope, tool_resolver.run_tool()'s subprocess
 callers enforce budget); budget IS enforced here directly since these
 calls don't go through run_tool()'s subprocess chokepoint.
+
+Uses Playwright's ASYNC API (async_playwright), not sync_playwright --
+deliberately, and not optional. FastMCP dispatches tool handlers on the
+already-running asyncio event loop (this server's own `app.run(...)`);
+sync_playwright() tries to start/manage its own event loop internally and
+raises "It looks like you are using Playwright Sync API inside the
+asyncio loop. Please use the Async API instead." the moment it's actually
+invoked through a live MCP tool call -- confirmed live 2026-08-28 (every
+tool in this file, not just a new one, failed identically). This bug was
+invisible to `tests/test_playwright_mcp.py`'s pure-logic unit tests
+because they never actually invoke Playwright at all, only the
+`_detect_challenge_type`/`_body_still_shows_challenge` helpers -- a real
+end-to-end MCP tool call was the only thing that caught it.
 """
 
 from __future__ import annotations
@@ -37,6 +50,7 @@ from __future__ import annotations
 import base64
 import os
 import sys
+from urllib.parse import urljoin
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from browser_launch import DEFAULT_TIMEOUT_MS
@@ -44,8 +58,8 @@ from browser_launch import launch_kwargs as _launch_kwargs
 from budget_guard import enforce as _enforce_budget
 
 
-def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
-                        timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
+async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
+                              timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
     """Navigate to url in a real headless browser and check whether marker
     actually executed as JS, vs. merely appearing in the raw response body.
     Checks three signals: (1) any JS dialog (alert/confirm/prompt) whose
@@ -56,7 +70,7 @@ def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
     title_contains_marker is exactly the "reflected but not confirmed"
     case exploit-agent's rationalizations-to-reject table warns about."""
     _enforce_budget("browser-mcp")
-    from playwright.sync_api import sync_playwright
+    from playwright.async_api import async_playwright
 
     result = {
         "url": url, "marker": marker,
@@ -65,125 +79,187 @@ def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
         "console_errors": [], "error": None,
     }
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(**_launch_kwargs())
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            page = browser.new_page()
+            page = await browser.new_page()
 
-            def _on_dialog(dialog):
+            async def _on_dialog(dialog):
                 if marker in (dialog.message or ""):
                     result["dialog_fired"] = True
                     result["dialog_text"] = dialog.message
-                dialog.dismiss()
+                await dialog.dismiss()
 
             page.on("dialog", _on_dialog)
             page.on("console", lambda msg: result["console_errors"].append(msg.text)
                      if msg.type == "error" else None)
 
             try:
-                response = page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
-                page.wait_for_timeout(wait_ms)
-                result["raw_html_contains_marker"] = marker in (response.text() if response else "")
+                response = await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+                await page.wait_for_timeout(wait_ms)
+                result["raw_html_contains_marker"] = marker in (await response.text() if response else "")
             except Exception:
                 # response.text() can fail for non-text content types; fall
                 # back to the rendered content, which still tells us about
                 # execution even if we can't diff against the raw body
                 pass
 
-            result["title_contains_marker"] = marker in page.title()
+            result["title_contains_marker"] = marker in await page.title()
         except Exception as e:
             result["error"] = str(e)
         finally:
-            browser.close()
+            await browser.close()
 
     return result
 
 
-def render_dom(url: str, wait_selector: str | None = None,
-                timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
+async def render_dom(url: str, wait_selector: str | None = None,
+                      timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
     """Return the fully rendered (post-JS) HTML for comparison against the
     raw HTTP response -- surfaces client-side-injected content, DOM
     clobbering, and anything a raw curl request would never show."""
     _enforce_budget("browser-mcp")
-    from playwright.sync_api import sync_playwright
+    from playwright.async_api import async_playwright
 
     result = {"url": url, "html": None, "title": None, "error": None}
-    with sync_playwright() as p:
-        browser = p.chromium.launch(**_launch_kwargs())
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            page = browser.new_page()
-            page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            page = await browser.new_page()
+            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             if wait_selector:
-                page.wait_for_selector(wait_selector, timeout=timeout_ms)
-            result["html"] = page.content()
-            result["title"] = page.title()
+                await page.wait_for_selector(wait_selector, timeout=timeout_ms)
+            result["html"] = await page.content()
+            result["title"] = await page.title()
         except Exception as e:
             result["error"] = str(e)
         finally:
-            browser.close()
+            await browser.close()
     return result
 
 
-def fill_and_submit(url: str, field_values: dict[str, str], submit_selector: str,
-                     then_check_marker: str | None = None,
-                     timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
+def _normalize_links(base_url: str, raw_links: list[dict], max_links: int) -> list[dict]:
+    """Resolve relative hrefs against base_url, drop non-navigable ones
+    (javascript:/mailto:/tel:/bare-fragment anchors -- not real listing
+    entries), dedupe by (text, href), and cap the count so a page with
+    thousands of anchors doesn't blow out the tool's return size."""
+    seen: set[tuple[str, str]] = set()
+    out: list[dict] = []
+    for link in raw_links:
+        href = (link.get("href") or "").strip()
+        text = (link.get("text") or "").strip()
+        if not href or href.startswith(("javascript:", "mailto:", "tel:", "#")):
+            continue
+        absolute = urljoin(base_url, href)
+        key = (text, absolute)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"text": text, "href": absolute})
+        if len(out) >= max_links:
+            break
+    return out
+
+
+async def extract_page_content(url: str, wait_selector: str | None = None,
+                                max_links: int = 200,
+                                timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
+    """Navigate to url in a real headless browser and return its rendered,
+    human-readable text plus every link on the page -- the general-purpose
+    "browse this page and tell me what's actually on it" primitive that
+    render_dom's raw HTML doesn't give you directly (raw HTML still needs a
+    parser to get to plain text/listings, and render_dom is meant for
+    diffing against the unrendered response, not reading content). Distinct
+    from katana-mcp's crawl(), which discovers URLs/params across a site but
+    never returns a single page's actual text -- this is for reading one
+    already-known page's content, including anything only JS rendering
+    produces (a static fetch/curl would miss it). Requires scope-gate
+    clearance first (Tier-2), same as every other tool in this module."""
+    _enforce_budget("browser-mcp")
+    from playwright.async_api import async_playwright
+
+    result = {"url": url, "title": None, "text": None, "links": [], "error": None}
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(**_launch_kwargs())
+        try:
+            page = await browser.new_page()
+            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            if wait_selector:
+                await page.wait_for_selector(wait_selector, timeout=timeout_ms)
+            result["title"] = await page.title()
+            result["text"] = await page.inner_text("body")
+            raw_links = await page.eval_on_selector_all(
+                "a[href]",
+                "els => els.map(e => ({text: e.innerText.trim(), href: e.getAttribute('href')}))",
+            )
+            result["links"] = _normalize_links(url, raw_links, max_links)
+        except Exception as e:
+            result["error"] = str(e)
+        finally:
+            await browser.close()
+    return result
+
+
+async def fill_and_submit(url: str, field_values: dict[str, str], submit_selector: str,
+                           then_check_marker: str | None = None,
+                           timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
     """Fill form fields (selector -> value) and click submit_selector --
     for stored-XSS/business-logic confirmation flows that need a real
     submission, not just a GET request. If then_check_marker is given,
     checks the resulting page the same way check_js_execution does
     (dialog fired / title contains marker) after the submit completes."""
     _enforce_budget("browser-mcp")
-    from playwright.sync_api import sync_playwright
+    from playwright.async_api import async_playwright
 
     result = {"url": url, "submitted": False, "dialog_fired": False,
               "dialog_text": None, "title_after_submit": None, "error": None}
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(**_launch_kwargs())
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            page = browser.new_page()
+            page = await browser.new_page()
 
-            def _on_dialog(dialog):
+            async def _on_dialog(dialog):
                 if then_check_marker and then_check_marker in (dialog.message or ""):
                     result["dialog_fired"] = True
                     result["dialog_text"] = dialog.message
-                dialog.dismiss()
+                await dialog.dismiss()
 
             page.on("dialog", _on_dialog)
-            page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
 
             for selector, value in field_values.items():
-                page.fill(selector, value, timeout=timeout_ms)
+                await page.fill(selector, value, timeout=timeout_ms)
 
-            page.click(submit_selector, timeout=timeout_ms)
-            page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+            await page.click(submit_selector, timeout=timeout_ms)
+            await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
             result["submitted"] = True
-            result["title_after_submit"] = page.title()
+            result["title_after_submit"] = await page.title()
         except Exception as e:
             result["error"] = str(e)
         finally:
-            browser.close()
+            await browser.close()
     return result
 
 
-def screenshot_base64(url: str, wait_ms: int = 1000,
-                       timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
+async def screenshot_base64(url: str, wait_ms: int = 1000,
+                             timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
     """Full-page screenshot as base64 PNG -- visual PoC evidence for the
     report's "screenshot + PoC" requirement."""
     _enforce_budget("browser-mcp")
-    from playwright.sync_api import sync_playwright
+    from playwright.async_api import async_playwright
 
     result = {"url": url, "screenshot_base64": None, "error": None}
-    with sync_playwright() as p:
-        browser = p.chromium.launch(**_launch_kwargs())
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            page = browser.new_page()
-            page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
-            page.wait_for_timeout(wait_ms)
-            png_bytes = page.screenshot(full_page=True)
+            page = await browser.new_page()
+            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            await page.wait_for_timeout(wait_ms)
+            png_bytes = await page.screenshot(full_page=True)
             result["screenshot_base64"] = base64.b64encode(png_bytes).decode()
         except Exception as e:
             result["error"] = str(e)
         finally:
-            browser.close()
+            await browser.close()
     return result

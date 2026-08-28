@@ -27,6 +27,13 @@ browser-mcp, which only enforces budget) since this is a direct Playwright
 call, not a subprocess through tool_resolver.run_tool()'s chokepoint --
 audit matters more here than for browser-mcp given the scope-ambiguity
 noted above.
+
+Uses Playwright's ASYNC API, not sync_playwright -- see browser_confirm.py's
+module docstring for why: FastMCP dispatches tool handlers on its own
+already-running asyncio event loop, and sync_playwright() cannot start a
+second one inside it. Confirmed live 2026-08-28 that this tool failed
+identically to browser-mcp's the moment it was actually invoked through a
+real MCP call, despite passing its own (Playwright-free) unit tests.
 """
 
 from __future__ import annotations
@@ -114,7 +121,7 @@ def _body_still_shows_challenge(html: str, vendor: str) -> bool:
     return any(marker.lower() in lower_html for marker in _CHALLENGE_SIGNATURES[vendor]["body_markers"])
 
 
-def solve_js_challenge(url: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
+async def solve_js_challenge(url: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
     """Navigate to url in a real headless browser, detect whether a
     JS-based bot-detection challenge is present, and (if so) wait once for
     Playwright's own navigation to settle past it -- a single attempt, not
@@ -124,7 +131,7 @@ def solve_js_challenge(url: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
     request's Cookie header for further testing."""
     _enforce_budget("playwright-mcp")
     start = time.monotonic()
-    from playwright.sync_api import sync_playwright
+    from playwright.async_api import async_playwright
 
     result = {
         "url": url, "challenge_type": None, "solved": False,
@@ -132,16 +139,16 @@ def solve_js_challenge(url: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
         "error": None,
     }
 
-    with sync_playwright() as p:
+    async with async_playwright() as p:
         browser = None
         try:
-            browser = p.chromium.launch(**launch_kwargs())
-            context = browser.new_context()
-            page = context.new_page()
+            browser = await p.chromium.launch(**launch_kwargs())
+            context = await browser.new_context()
+            page = await context.new_page()
 
-            response = page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            response = await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             headers = response.headers if response else {}
-            html = page.content()
+            html = await page.content()
             challenge = _detect_challenge_type(html, headers)
             result["challenge_type"] = challenge
 
@@ -158,13 +165,13 @@ def solve_js_challenge(url: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
                 deadline = time.monotonic() + (timeout_ms / 1000)
                 matched = None
                 while time.monotonic() < deadline:
-                    cookies = {c["name"]: c["value"] for c in context.cookies()}
+                    cookies = {c["name"]: c["value"] for c in await context.cookies()}
                     matched = next((n for n in cookies if n.lower().startswith(cookie_name.lower())), None)
                     if matched:
                         break
-                    page.wait_for_timeout(250)
+                    await page.wait_for_timeout(250)
 
-                still_challenged = _body_still_shows_challenge(page.content(), challenge)
+                still_challenged = _body_still_shows_challenge(await page.content(), challenge)
 
                 if matched and not still_challenged:
                     result["solved"] = True
@@ -174,7 +181,7 @@ def solve_js_challenge(url: str, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
             result["error"] = str(e)
         finally:
             if browser is not None:
-                browser.close()
+                await browser.close()
 
     duration_ms = (time.monotonic() - start) * 1000
     _log_call("playwright-mcp", [url], returncode=None, duration_ms=duration_ms,
