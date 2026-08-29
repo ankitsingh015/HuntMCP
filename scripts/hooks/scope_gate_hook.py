@@ -71,6 +71,13 @@ from scope_guard import is_safe_test_host as _is_safe_test_host  # noqa: E402
 TIER2_BASH_TOOLS = {
     "subfinder", "httpx", "katana", "nmap", "nuclei", "sqlmap", "dalfox", "ffuf",
     "curl", "wget",
+    # scripts/curl-rl.sh is a drop-in curl wrapper (adds reactive 429/
+    # Retry-After backoff a PreToolUse hook has no way to provide itself --
+    # a hook can only allow/block a command before it runs, it can't wrap
+    # or retry the actual subprocess execution). Listed here explicitly so
+    # calling it instead of raw curl is not a way to silently skip scope
+    # enforcement just because the binary name changed.
+    "curl-rl.sh",
 }
 
 # curl/wget also legitimately touch non-target infrastructure during ordinary
@@ -281,22 +288,22 @@ def main() -> int:
             )
             return 2
 
-    # curl/wget have no dedicated MCP wrapper (see the module docstring/
-    # TIER2_BASH_TOOLS comment above), so nothing else in this codebase ever
-    # routes them through tool_resolver.run_tool() -- meaning nothing else
-    # ever calls budget_guard.enforce()/audit_log.log_call() for them either.
-    # Wire both in here, once scope has genuinely passed for a real in-scope
-    # host (not for the other seven TIER2_BASH_TOOLS -- those already get
-    # budgeted/audited exactly once via their own MCP server's run_tool()
-    # call, so doing it here too would double-count every raw-Bash
-    # nmap/nuclei/etc. invocation that's also MCP-wrapped). This is a
-    # PreToolUse hook -- the command hasn't run yet, so there's no real
-    # returncode/duration/WAF-block classification available the way
+    # curl/wget/curl-rl.sh have no dedicated MCP wrapper (see the module
+    # docstring/TIER2_BASH_TOOLS comment above), so nothing else in this
+    # codebase ever routes them through tool_resolver.run_tool() -- meaning
+    # nothing else ever calls budget_guard.enforce()/audit_log.log_call()
+    # for them either. Wire both in here, once scope has genuinely passed
+    # for a real in-scope host (not for the other TIER2_BASH_TOOLS members --
+    # those already get budgeted/audited exactly once via their own MCP
+    # server's run_tool() call, so doing it here too would double-count
+    # every raw-Bash nmap/nuclei/etc. invocation that's also MCP-wrapped).
+    # This is a PreToolUse hook -- the command hasn't run yet, so there's no
+    # real returncode/duration/WAF-block classification available the way
     # run_tool() has after the fact; logged as None/0.0/None. That still
     # captures the primary audit value (exact command + args + timestamp of
-    # every real Tier-2 curl/wget attempt) without the schema-risk of
-    # correlating a second PostToolUse hook by callID.
-    if tool_name == "Bash" and _first_word(command) in ("curl", "wget"):
+    # every real Tier-2 curl/wget/curl-rl.sh attempt) without the
+    # schema-risk of correlating a second PostToolUse hook by callID.
+    if tool_name == "Bash" and _first_word(command) in ("curl", "wget", "curl-rl.sh"):
         name = _first_word(command)
         try:
             _enforce_budget(name)

@@ -31,6 +31,14 @@ _RATE_LIMIT_PATTERNS = [
     re.compile(r"\b429\b"),
     re.compile(r"too many requests", re.I),
     re.compile(r"rate.?limit", re.I),
+    # Added 2026-08-29 after a real engagement's own API rate-limiter used
+    # one of these instead of a bare "429"/"rate limit" string -- a tool's
+    # stdout/stderr can carry the human-readable header/body text without
+    # ever literally saying "429" (e.g. a JSON body of
+    # {"error": "retry after 30 seconds"} with a 200-shaped wrapper status).
+    re.compile(r"retry.?after", re.I),
+    re.compile(r"try again (later|in \d+)", re.I),
+    re.compile(r"slow down", re.I),
 ]
 _WAF_BLOCK_PATTERNS = [
     re.compile(r"\b403\b.*(forbidden|blocked)", re.I),
