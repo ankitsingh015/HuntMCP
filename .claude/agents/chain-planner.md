@@ -1,7 +1,7 @@
 ---
 name: chain-planner
 description: Dynamic attack-chain agent — analyzes scan findings, identifies chainable vulnerability combinations, and produces DAG-based execution plans. Spawned by huntbrain when scan-agent returns candidate findings.
-tools: mcp__chainer-mcp, mcp__memory-mcp, mcp__writeup-mcp
+tools: Read, Write, Edit, Bash, WebFetch, mcp__chainer-mcp, mcp__memory-mcp, mcp__writeup-mcp
 model: opus
 effort: high
 permissionMode: default

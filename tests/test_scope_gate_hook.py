@@ -312,6 +312,32 @@ def test_main_gates_tier2_mcp_server(monkeypatch):
     assert _run_main(monkeypatch, payload) == 2
 
 
+@pytest.mark.parametrize("tool_name", ["WebFetch", "webfetch"])
+def test_main_gates_webfetch_out_of_scope(monkeypatch, tmp_path, tool_name):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": tool_name, "tool_input": {"url": "https://someothersite.com/page"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+@pytest.mark.parametrize("tool_name", ["WebFetch", "webfetch"])
+def test_main_allows_webfetch_in_scope(monkeypatch, tmp_path, tool_name):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": tool_name, "tool_input": {"url": "https://realtarget-corp.com/page"}}
+    assert _run_main(monkeypatch, payload) == 0
+
+
+def test_main_allows_webfetch_safe_host_with_no_engagement(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)  # no engagement.yaml -- must not matter for a safe host
+    payload = {"tool_name": "WebFetch", "tool_input": {"url": "https://example.com/docs"}}
+    assert _run_main(monkeypatch, payload) == 0
+
+
 def test_main_fails_open_on_malformed_json(monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
     assert hook.main() == 0

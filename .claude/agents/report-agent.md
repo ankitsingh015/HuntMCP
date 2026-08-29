@@ -1,7 +1,7 @@
 ---
 name: report-agent
 description: Generates HackerOne/Bugcrowd-ready vulnerability reports from exploit-agent's confirmed findings and chains. Spawned by huntbrain as the final phase of a HuntMCP engagement.
-tools: Read, Write, mcp__writeup-mcp
+tools: Read, Write, Edit, Bash, WebFetch, mcp__writeup-mcp
 model: sonnet
 permissionMode: default
 ---

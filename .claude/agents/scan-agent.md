@@ -1,7 +1,7 @@
 ---
 name: scan-agent
 description: Level 2 specialist — detects vulnerabilities across 30+ classes using nuclei, sqlmap, dalfox, and ffuf for a HuntMCP engagement. Spawned by huntbrain with recon's live hosts/endpoints.
-tools: Bash, Skill, mcp__nuclei-mcp, mcp__sqlmap-mcp, mcp__dalfox-mcp, mcp__ffuf-mcp, mcp__writeup-mcp, mcp__waf-bypass-mcp, mcp__playwright-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__nuclei-mcp, mcp__sqlmap-mcp, mcp__dalfox-mcp, mcp__ffuf-mcp, mcp__writeup-mcp, mcp__waf-bypass-mcp, mcp__playwright-mcp
 model: sonnet
 permissionMode: default
 ---

@@ -2,9 +2,17 @@
 description: Analyzes scan findings, identifies chainable vulnerability combinations, and produces DAG-based attack chain plans for maximum severity impact.
 mode: subagent
 permission:
-  edit: deny
-  bash: deny
-  webfetch: deny
+  edit: allow
+  # rm **/rm deny below is defense-in-depth, not the real enforcement --
+  # see opencode.jsonc's permission.bash comment. Real block is
+  # .opencode/plugin/scope-gate.ts -> scripts/hooks/scope_gate_hook.py.
+  bash:
+    "*": allow
+    "rm **": deny
+    "rm": deny
+  # webfetch is scope-gated via the same plugin/hook (added 2026-08-29,
+  # scope_gate_hook.py's WebFetch branch) -- safe to allow broadly.
+  webfetch: allow
 ---
 
 # Chain Planner — Dynamic Attack Chain Agent

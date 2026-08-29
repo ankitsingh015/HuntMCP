@@ -24,6 +24,12 @@ pip install, editing files, curl-ing a package registry) never trips this:
 - MCP tool calls only trigger a check for the Tier-2 (target-touching)
   servers -- writeup-mcp/memory-mcp/lessons-mcp/chainer-mcp operate on local
   knowledge, not a live target, and are exempt.
+- WebFetch/webfetch (both harnesses' native URL-fetch tool, added
+  2026-08-29) checks its `url` argument's host the same way -- this is
+  what makes it safe to set `webfetch: allow` in agent permission configs
+  instead of leaving it flatly denied; without this branch, a native
+  webfetch call went through neither a Bash subprocess nor an MCP server,
+  so it was invisible to scope enforcement entirely.
 - example.com/example.org/example.net/localhost/loopback/RFC1918 hosts, plus
   a small allowlist of known dev infrastructure (GitHub, PyPI, npm, Go
   module proxy, Debian/Ubuntu package mirrors -- see scope_guard.py's
@@ -205,6 +211,24 @@ def _mcp_server_name(tool_name: str) -> str:
     return parts[1] if len(parts) >= 2 else ""
 
 
+def _extract_hosts_from_webfetch(tool_input: dict) -> list[str]:
+    # WebFetch/webfetch is a NATIVE tool on both harnesses -- it never goes
+    # through a Bash subprocess or an MCP server, so without this branch it
+    # was invisible to scope enforcement entirely (unlike Bash's curl/wget,
+    # which this hook already gated). Added 2026-08-29 specifically so
+    # opencode.jsonc/agent frontmatter's `webfetch: deny` could be loosened
+    # to `allow` without reopening a scope bypass -- this is the actual
+    # enforcement point now, same relationship the Bash/MCP branches above
+    # already have to their own declarative permission settings.
+    url = tool_input.get("url", "")
+    if not isinstance(url, str) or not url:
+        return []
+    host = urlsplit(url).hostname
+    if not host or _is_candidate_exempt(host):
+        return []
+    return [host]
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -241,6 +265,8 @@ def main() -> int:
         if _mcp_server_name(tool_name) not in TIER2_MCP_SERVERS:
             return 0
         candidates = _extract_hosts_from_tool_input(tool_input)
+    elif tool_name in ("WebFetch", "webfetch"):
+        candidates = _extract_hosts_from_webfetch(tool_input)
     else:
         return 0
 

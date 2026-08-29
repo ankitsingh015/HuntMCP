@@ -2,8 +2,10 @@
 description: Discovers attack surface via subdomains, live hosts, endpoints, and port scanning.
 mode: subagent
 permission:
-  edit: deny
-  webfetch: deny
+  edit: allow
+  # webfetch is scope-gated via .opencode/plugin/scope-gate.ts's WebFetch
+  # branch (added 2026-08-29) -- safe to allow broadly.
+  webfetch: allow
   # rm **/rm deny below is defense-in-depth, not the real enforcement --
   # see opencode.jsonc's permission.bash comment. Real block is
   # .opencode/plugin/scope-gate.ts -> scripts/hooks/scope_gate_hook.py.

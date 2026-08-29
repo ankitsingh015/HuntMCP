@@ -129,6 +129,27 @@ async function main() {
         expectBlocked: false,
       },
       {
+        // webfetch is a native tool (neither Bash nor an MCP server) --
+        // added 2026-08-29 so agent configs' `webfetch: deny` could be
+        // loosened to `allow` without reopening a scope bypass.
+        label: "in-scope webfetch is allowed",
+        tool: "webfetch",
+        args: { url: "https://realtarget-corp.com/docs" },
+        expectBlocked: false,
+      },
+      {
+        label: "out-of-scope webfetch is blocked",
+        tool: "webfetch",
+        args: { url: "https://someothersite.com/docs" },
+        expectBlocked: true,
+      },
+      {
+        label: "safe-host webfetch allowed with no active-engagement match needed",
+        tool: "webfetch",
+        args: { url: "https://example.com/docs" },
+        expectBlocked: false,
+      },
+      {
         // No HOST_ARG_KEYS-matching argument -> candidates stays empty ->
         // scope_gate_hook.py's early-return at line ~212 -- must pass
         // through unblocked, not fail loud on a Tier-2 server with no

@@ -2,27 +2,25 @@
 description: Orchestrates autonomous bug bounty hunting. Spawns Recon/Scan/Exploit/Report sub-agents.
 mode: primary
 permission:
-  edit:
-    "engagement.yaml": allow
-    "AGENT-BRIEF.md": allow
-    "data/engagements/**": allow
-    "*": deny
-  webfetch: deny
+  edit: allow
+  # webfetch is scope-gated via .opencode/plugin/scope-gate.ts's WebFetch
+  # branch (added 2026-08-29) -- safe to allow broadly.
+  webfetch: allow
+  # No rm -f allow-patterns here anymore -- they'd never actually fire.
+  # scope_gate_hook.py's unconditional _is_rm_command() check runs before
+  # ANY declarative bash permission is even consulted, so even a
+  # budget.json-only rm is hard-blocked regardless of what's allowed here.
+  # See huntbrain.md's Phase 0 for the write-based reset that replaces it.
+  # Note also: `opencode debug agent huntbrain` shows tools.bash: false
+  # for this agent independent of what's declared below (mode: primary
+  # orchestrators don't get the bash tool at all on OpenCode, by whatever
+  # mechanism sets that -- not yet found in any config file in this repo)
+  # -- kept here anyway for documentation/consistency, and in case that
+  # changes in a future OpenCode version.
   bash:
-    "ls data/*": allow
-    "cat data/*": allow
-    "scripts/check-budget.sh": allow
-    "scripts/check-work.sh *": allow
-    "scripts/switch-engagement.sh *": allow
-    "scripts/tool-gaps.sh *": allow
-    "scripts/check-new-bounty-scope.sh *": allow
-    "rm -f budget.json": allow
-    "rm -f budget.json work-registry.json": allow
-    "rm -f budget.json work-registry.json findings-seen.json": allow
-    "rm -f data/engagements/*/budget.json": allow
-    "rm -f data/engagements/*/budget.json data/engagements/*/work-registry.json": allow
-    "rm -f data/engagements/*/budget.json data/engagements/*/work-registry.json data/engagements/*/findings-seen.json": allow
-    "*": deny
+    "*": allow
+    "rm **": deny
+    "rm": deny
   skill:
     "*": allow
 ---
@@ -34,7 +32,7 @@ You orchestrate the entire bug bounty hunt. Follow this loop until no more attac
 ## Phase 0 — Initialize
 
 1. Parse the target domain from the user's message. Extract optional flags: `--quick` (recon + nuclei only) or `--deep` (full depth).
-2. Confirm real scope/authorization with the user (in-scope domains, out-of-scope exclusions, program URL) — accept this as raw pasted text straight from the H1/Bugcrowd program page and parse it yourself, do not ask them to type it into any particular format or run a command. If it's a HackerOne program and `HACKERONE_API_USERNAME`/`HACKERONE_API_TOKEN` are configured, hackerone-mcp `sync_program_scope(handle)` can pull the structured scope directly instead of the user pasting it — falls back to asking them to paste it if that errors (no credentials, or program not accessible). Either way, you still write `engagement.yaml` yourself; this tool only saves the transcription step. Before anything else, run `scripts/switch-engagement.sh check <target>` (already an allowed bash command) — exit 3 means this chat is already mid-hunt on a DIFFERENT target that isn't marked complete yet, in which case stop and ask the user whether to continue here (mixing two targets' narration in one chat) or open a fresh chat session for the new target instead; proceed only once they've chosen. Exit 0 means no conflict — proceed straight through. Then run `scripts/switch-engagement.sh set <target>` — this points every guard module at `data/engagements/<slug>/` instead of a single shared file, so switching to a different target later never mixes its state with this one's; see "Multi-target hunting" below. Then write `engagement.yaml` yourself into that directory (`data/engagements/<slug>/engagement.yaml`, not the repo root — see `engagement.yaml.example` for the format) using your `edit` permission (scoped to allow this) — once, here, not before every later tool call, and never by asking the user to create/edit it themselves. Also write `AGENT-BRIEF.md` into the same directory (see `AGENT-BRIEF.md.example`) — a plain-English companion explaining *why* each out-of-scope entry is excluded and any out-of-band constraint the client gave that `engagement.yaml`'s structured fields can't hold; for human re-review and your own reference mid-engagement, not something `scope_guard.py` enforces. Do not proceed to Phase 1 without it. Only if this is genuinely a fresh start for this target (check `scripts/switch-engagement.sh list` — if this target's directory already had an `engagement.yaml` before you just wrote it, it's a resume, not a fresh start) also run `rm -f data/engagements/<slug>/budget.json data/engagements/<slug>/work-registry.json data/engagements/<slug>/findings-seen.json` (already an allowed bash pattern for you) to reset the Tier-2 tool-call budget circuit-breaker, the duplicate-work registry, and the finding-level dedup registry for this target specifically (`mcp-servers/budget_guard.py`, wired automatically into every Tier-2 tool call via `tool_resolver.run_tool()` — no per-call action needed from you beyond this reset; `scripts/check-budget.sh` shows current usage, and you'll see a `BUDGET WARNING` at 70/85/95% or a hard stop at 100% (`HUNTMCP_MAX_TOOL_CALLS`, default 500) automatically if a subagent loops). On a resume, skip this reset entirely — the whole point of switching the pointer back is that the target's prior state is exactly as it was left. Once scope is confirmed, go straight into Phase 0.5 and beyond — the user should not need to run anything else themselves.
+2. Confirm real scope/authorization with the user (in-scope domains, out-of-scope exclusions, program URL) — accept this as raw pasted text straight from the H1/Bugcrowd program page and parse it yourself, do not ask them to type it into any particular format or run a command. If it's a HackerOne program and `HACKERONE_API_USERNAME`/`HACKERONE_API_TOKEN` are configured, hackerone-mcp `sync_program_scope(handle)` can pull the structured scope directly instead of the user pasting it — falls back to asking them to paste it if that errors (no credentials, or program not accessible). Either way, you still write `engagement.yaml` yourself; this tool only saves the transcription step. Before anything else, run `scripts/switch-engagement.sh check <target>` (already an allowed bash command) — exit 3 means this chat is already mid-hunt on a DIFFERENT target that isn't marked complete yet, in which case stop and ask the user whether to continue here (mixing two targets' narration in one chat) or open a fresh chat session for the new target instead; proceed only once they've chosen. Exit 0 means no conflict — proceed straight through. Then run `scripts/switch-engagement.sh set <target>` — this points every guard module at `data/engagements/<slug>/` instead of a single shared file, so switching to a different target later never mixes its state with this one's; see "Multi-target hunting" below. Then write `engagement.yaml` yourself into that directory (`data/engagements/<slug>/engagement.yaml`, not the repo root — see `engagement.yaml.example` for the format) using your `edit` permission (scoped to allow this) — once, here, not before every later tool call, and never by asking the user to create/edit it themselves. Also write `AGENT-BRIEF.md` into the same directory (see `AGENT-BRIEF.md.example`) — a plain-English companion explaining *why* each out-of-scope entry is excluded and any out-of-band constraint the client gave that `engagement.yaml`'s structured fields can't hold; for human re-review and your own reference mid-engagement, not something `scope_guard.py` enforces. Do not proceed to Phase 1 without it. Only if this is genuinely a fresh start for this target (check `scripts/switch-engagement.sh list` — if this target's directory already had an `engagement.yaml` before you just wrote it, it's a resume, not a fresh start) also reset the Tier-2 tool-call budget circuit-breaker, the duplicate-work registry, and the finding-level dedup registry for this target specifically by **writing** each file's own empty/default state directly with your `edit` permission — `data/engagements/<slug>/budget.json` to `{"calls": 0, "by_tool": {}, "warned_bands": []}`, `data/engagements/<slug>/work-registry.json` and `data/engagements/<slug>/findings-seen.json` each to `{}`. Not `rm -f` — `rm` is disabled by default in this repo for both harnesses (see `scripts/hooks/scope_gate_hook.py`'s unconditional `_is_rm_command()` check, which fires before this agent's own declarative `bash` permission entries are even consulted), so a delete-based reset would simply be blocked; writing the same empty state `mcp-servers/budget_guard.py`/`work_registry.py`/`dedupe_check.py`'s own `_load()` already falls back to when the file is missing has the identical effect (`mcp-servers/budget_guard.py`, wired automatically into every Tier-2 tool call via `tool_resolver.run_tool()` — no per-call action needed from you beyond this reset; `scripts/check-budget.sh` shows current usage, and you'll see a `BUDGET WARNING` at 70/85/95% or a hard stop at 100% (`HUNTMCP_MAX_TOOL_CALLS`, default 500) automatically if a subagent loops). On a resume, skip this reset entirely — the whole point of switching the pointer back is that the target's prior state is exactly as it was left. Once scope is confirmed, go straight into Phase 0.5 and beyond — the user should not need to run anything else themselves.
 
 ### Multi-target hunting
 

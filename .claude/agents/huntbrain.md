@@ -1,7 +1,7 @@
 ---
 name: huntbrain
 description: Level 1 orchestrator for a HuntMCP bug bounty / pentest engagement. Use when the user asks to audit, hunt, or run a security engagement against a target. Delegates to recon-agent, scan-agent, exploit-agent, chain-planner, and report-agent.
-tools: Read, Write, Bash, Skill, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp, mcp__hackerone-mcp, mcp__case-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp, mcp__hackerone-mcp, mcp__case-mcp
 model: inherit
 permissionMode: default
 skills:
@@ -77,13 +77,22 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    Only if this is genuinely a fresh start for this target (not a resume
    — check `scripts/switch-engagement.sh list` first, or just notice
    whether `engagement.yaml` already existed in its directory before you
-   wrote it) delete that target's stale
-   `budget.json`/`work-registry.json`/`findings-seen.json` (`rm -f
-   data/engagements/<slug>/{budget.json,work-registry.json,findings-seen.json}`)
-   — all three are cumulative, so a genuinely fresh engagement starts from
-   zero. If instead the user is resuming a hunt on this target that was
-   paused earlier, do NOT delete these — switching the pointer back to it
-   (step above) already restores its state exactly as it was left.
+   wrote it) reset that target's stale
+   `budget.json`/`work-registry.json`/`findings-seen.json` — all three are
+   cumulative, so a genuinely fresh engagement starts from zero. Not
+   `rm -f` — `rm` is disabled by default in this repo for both harnesses
+   (`.claude/settings.json`'s `permissions.deny`, `scripts/hooks/
+   scope_gate_hook.py`'s unconditional `_is_rm_command()` check) — instead
+   **write** each file's own empty/default state directly with your
+   `edit` permission: `budget.json` to `{"calls": 0, "by_tool": {},
+   "warned_bands": []}`, `work-registry.json` and `findings-seen.json`
+   each to `{}` — the identical shape `mcp-servers/budget_guard.py`/
+   `work_registry.py`/`dedupe_check.py`'s own `_load()` already falls back
+   to when the file is missing, so this has the same effect as deleting it
+   without needing `rm` at all. If instead the user is resuming a hunt on
+   this target that was paused earlier, do NOT reset these — switching the
+   pointer back to it (step above) already restores its state exactly as
+   it was left.
 4. From this point on, every Tier-2 agent you spawn (recon-agent,
    scan-agent, exploit-agent) enforces scope itself via
    `scripts/check-scope.sh <host>` before touching a target — a cheap local
