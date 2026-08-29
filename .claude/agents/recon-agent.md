@@ -1,7 +1,7 @@
 ---
 name: recon-agent
 description: Level 2 specialist — discovers attack surface (subdomains, live hosts, endpoints, ports) for a HuntMCP engagement. Spawned by huntbrain, never invoked directly against an unconfirmed target.
-tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp, mcp__browser-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp, mcp__browser-mcp, mcp__writeup-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -57,7 +57,12 @@ not just once for the root domain.
    disclosure` — right here, not deferred to scan-agent. Recon is where
    you actually see the raw headers/titles/server banners these skills
    key off of; scan-agent only receives your summary, which is lossy for
-   this purpose.
+   this purpose. If a specific product/version was fingerprinted (not
+   just a generic stack name — e.g. "nginx 1.18.0", "WordPress 6.2", not
+   just "nginx"/"PHP"), also call `mcp__writeup-mcp` `fetch_cves(keyword)`
+   right here rather than waiting for scan-agent to do it — you have the
+   version string the moment httpx returns it, scan-agent only sees
+   whatever you chose to carry forward in your summary.
 
 ## Phase 3 — Endpoint discovery
 

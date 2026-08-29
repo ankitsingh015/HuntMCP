@@ -23,7 +23,7 @@ permission:
 You receive a target domain from HuntBrain. Your job is to discover the full attack surface.
 
 Available MCPs: subfinder-mcp, httpx-mcp, katana-mcp, nmap-mcp, secrets-mcp,
-burp-import-mcp.
+burp-import-mcp, writeup-mcp.
 katana-mcp itself only returns discovered JS file paths as text -- it
 does not save anything to disk. If you want secrets-mcp to scan the
 actual JS content (not just paths), download it yourself: run
@@ -71,7 +71,11 @@ new host discovered.
    As soon as a tech stack/CMS/framework shows up here, load `skill`
    `cms-and-framework-specific` and `skill` `information-disclosure` --
    right here, not deferred to scan-agent, since you're the one seeing
-   the raw headers/titles/banners these key off of.
+   the raw headers/titles/banners these key off of. If a specific
+   product/version was fingerprinted (e.g. "nginx 1.18.0", "WordPress
+   6.2" -- not just a generic stack name), also call writeup-mcp
+   `fetch_cves(keyword)` right here rather than waiting for scan-agent --
+   you have the version string the moment httpx returns it.
 
 ## Phase 3 — Endpoint Discovery
 

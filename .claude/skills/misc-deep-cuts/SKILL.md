@@ -93,3 +93,37 @@ by vuln class.
   integration is often included in the outbound request, so the
   attacker-controlled endpoint captures a live credential, not just a
   callback.
+- **Third-party webhook RECEIVER sweep** (the target's own inbound
+  endpoint for Stripe/Plaid/Twilio/GitHub/etc. callbacks -- the reverse
+  direction of the token-exfil bullet above): treat this as its own
+  first-class pass whenever a third-party integration is fingerprinted
+  (a Stripe/Plaid/Twilio SDK reference in JS, a `/webhooks/*`,
+  `/callbacks/*`, `/hooks/*`, `/integrations/*/notify` path pattern in
+  katana's crawl, or a mention in API docs). Enumerate every such path
+  the same way you'd enumerate any other endpoint, then work through:
+  - **Signature/HMAC verification, actually tested, not assumed**: send
+    a structurally-valid payload with a missing signature header, a
+    garbage signature, and a signature computed with a guessed/default
+    secret. If any of these gets treated identically to a correctly-
+    signed request, verification isn't enforced.
+  - **Replay**: does the same valid signed payload work twice? Most
+    providers' signatures don't expire or nonce-check on the receiver
+    side unless the target explicitly added that -- a captured real
+    webhook (from your own test account, e.g. a Stripe test-mode event)
+    replayed later can trigger the same server-side effect again
+    (double-fulfillment, duplicate credit, re-triggered notification).
+  - **Event-type/object confusion**: does the receiver trust an
+    `event.type`/`object.type` field from the payload body itself to
+    decide what handler runs, without cross-checking it against what the
+    signature actually covers or what the provider would really send for
+    that signed payload shape? Crafting a signed-looking payload that
+    claims to be a different event type than intended is a known class
+    of provider-webhook confusion bugs.
+  - **Don't stop at a 200 -- verify actual processing before calling
+    anything here confirmed.** A 200/ACK response proves the endpoint
+    exists and parses JSON, nothing more; see exploit-agent's
+    rationalizations-to-reject entry on "accepted with a 200/ACK" for the
+    full discriminator (garbage-body-gets-same-response check, observable
+    side effect via OOB or a readable state change, tamper-the-signature
+    check). Skipping straight to "no auth on the webhook" from a bare 200
+    is exactly the false-positive shape that check exists to catch.
