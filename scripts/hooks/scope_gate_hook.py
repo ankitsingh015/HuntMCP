@@ -26,14 +26,14 @@ pip install, editing files, curl-ing a package registry) never trips this:
   knowledge, not a live target, and are exempt.
 - example.com/example.org/example.net/localhost/loopback/RFC1918 hosts, plus
   a small allowlist of known dev infrastructure (GitHub, PyPI, npm, Go
-  module proxy, Debian/Ubuntu package mirrors -- see DEV_INFRA_HOSTS), are
+  module proxy, Debian/Ubuntu package mirrors -- see scope_guard.py's
+  DEV_INFRA_HOSTS, the shared source of truth for this exemption), are
   always allowed with no engagement.yaml required -- that's normal
   development/testing, not a live engagement.
 """
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import re
 import shlex
@@ -46,6 +46,7 @@ from audit_log import log_call as _log_call  # noqa: E402
 from budget_guard import BudgetExceeded  # noqa: E402
 from budget_guard import enforce as _enforce_budget  # noqa: E402
 from scope_guard import NoEngagementFile, is_in_scope, load_engagement  # noqa: E402
+from scope_guard import is_safe_test_host as _is_safe_test_host  # noqa: E402
 
 # The exact binaries HuntMCP's MCP servers shell out to (mcp-servers/*/server.py
 # run_tool() calls) -- the real Tier-2 boundary, not a guess. curl/wget are
@@ -63,40 +64,20 @@ TIER2_BASH_TOOLS = {
 
 # curl/wget also legitimately touch non-target infrastructure during ordinary
 # MCP-server development -- package registries, source hosting, docs -- which
-# must stay exempt the same way SAFE_TEST_HOSTS exempts example.com/localhost.
+# must stay exempt the same way scope_guard.SAFE_TEST_HOSTS exempts
+# example.com/localhost. That allowlist (DEV_INFRA_HOSTS) now lives in
+# scope_guard.py, the one shared source of truth _is_safe_test_host uses --
+# not duplicated here anymore (was, until 2026-08-29; see module docstring).
 # Kept separate from content_scanner.py's KNOWN_GOOD_HOSTS (that allowlist is
 # for outbound calls made BY this repo's own Python code to known service
 # integrations; this one is for a human/agent curl-ing the open internet
 # during development -- different concern, deliberately not shared).
-DEV_INFRA_HOSTS = {
-    "github.com", "raw.githubusercontent.com", "objects.githubusercontent.com",
-    "api.github.com", "codeload.github.com",
-    "pypi.org", "files.pythonhosted.org",
-    "registry.npmjs.org", "nodejs.org",
-    "golang.org", "proxy.golang.org", "go.dev",
-    "deb.debian.org", "archive.ubuntu.com", "security.ubuntu.com",
-}
 
 # MCP servers that actually touch a live target vs. operate on local knowledge only.
 TIER2_MCP_SERVERS = {
     "subfinder-mcp", "httpx-mcp", "katana-mcp", "nmap-mcp",
     "nuclei-mcp", "sqlmap-mcp", "dalfox-mcp", "ffuf-mcp", "watch-mcp",
     "waf-bypass-mcp", "browser-mcp", "playwright-mcp",
-}
-
-SAFE_TEST_HOSTS = {
-    "example.com", "example.org", "example.net", "localhost", "0.0.0.0",
-    # Universally-recognized attacker-origin placeholders (RFC-2606-adjacent
-    # community convention, same status as example.com) -- needed once
-    # curl/wget are Tier-2-checked: a CORS/CSRF PoC's `-H "Origin:
-    # https://evil.com"` is a header VALUE describing the attacker's origin,
-    # not a live target being contacted, but this hook's host-extraction is
-    # a blanket regex over the whole command line (deliberately -- stripping
-    # quoted substrings to distinguish "target" from "header value" risks
-    # also stripping a legitimately-quoted target URL, which fails open
-    # instead of just over-blocking; a false-positive block is the safe
-    # failure mode here, a false-negative allow is not).
-    "evil.com", "attacker.com", "malicious.com",
 }
 
 HOST_ARG_KEYS = ("domains", "domain", "target", "targets", "url", "host", "hosts")
@@ -107,33 +88,27 @@ HOSTNAME_RE = re.compile(
 
 URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 
-# HOSTNAME_RE matches any "word.word" pattern -- it cannot distinguish a real
-# domain from a filename with an extension (results.json, wordlist.txt,
-# payload.py) on pattern shape alone, since e.g. "co"/"io"/"me" are real
-# TLDs but structurally identical to a two-letter... this is the inverse
-# problem: common non-TLD file extensions that would otherwise false-positive
-# as a "hostname" once curl/wget are Tier-2-checked (curl -o results.json,
-# -d @payload.json are the single most common curl invocation shapes there
-# are). Not exhaustive -- a curated denylist of what's actually been seen to
-# collide, not a claim of covering every possible extension.
-NON_TLD_FILE_EXTENSIONS = {
-    "txt", "json", "py", "md", "yaml", "yml", "csv", "html", "htm", "xml",
-    "sh", "js", "ts", "log", "pdf", "zip", "tar", "gz", "cfg", "conf", "ini",
-    "png", "jpg", "jpeg", "gif", "svg", "css", "sql", "db", "bak", "out",
-}
+# SAFE_TEST_HOSTS/DEV_INFRA_HOSTS/NON_TLD_FILE_EXTENSIONS and the
+# is_safe_test_host() check itself moved to scope_guard.py 2026-08-29 -- it's
+# the shared authority scripts/check-scope.sh's CLI also needs (that script
+# used to have NO such exemption at all, so an agent following its own
+# "run check-scope.sh before touching any host" instruction would self-block
+# on example.com/github.com the moment any unrelated engagement.yaml
+# existed, something this hook itself never actually required). Imported
+# as _is_safe_test_host above.
+
+# Deliberately kept local, NOT part of scope_guard.is_safe_test_host(): these
+# are for filtering candidates out of this hook's own blanket command-text
+# regex scan specifically, not for deciding whether a host is authorized.
+# `curl ... -H "Origin: https://evil.com"` has evil.com as a header VALUE,
+# not the host actually being contacted -- but if evil.com were ever the
+# actual target argument to a real Tier-2 tool, it still needs a genuine
+# in_scope entry like any other domain (someone could really own it).
+_ATTACKER_PLACEHOLDER_HOSTS = {"evil.com", "attacker.com", "malicious.com"}
 
 
-def _is_safe_test_host(host: str) -> bool:
-    host = host.lower().strip(".")
-    if host in SAFE_TEST_HOSTS or host in DEV_INFRA_HOSTS:
-        return True
-    if host.rsplit(".", 1)[-1] in NON_TLD_FILE_EXTENSIONS:
-        return True
-    try:
-        ip = ipaddress.ip_address(host)
-        return ip.is_private or ip.is_loopback
-    except ValueError:
-        return False
+def _is_candidate_exempt(host: str) -> bool:
+    return _is_safe_test_host(host) or host.lower().strip(".") in _ATTACKER_PLACEHOLDER_HOSTS
 
 
 def _first_word(command: str) -> str:
@@ -204,7 +179,7 @@ def _extract_hosts_from_bash(command: str) -> list[str]:
         remainder = remainder[:start] + " " + remainder[end:]
 
     hosts.extend(HOSTNAME_RE.findall(remainder))
-    return [h for h in hosts if not _is_safe_test_host(h)]
+    return [h for h in hosts if not _is_candidate_exempt(h)]
 
 
 def _extract_hosts_from_tool_input(tool_input: dict) -> list[str]:
@@ -219,7 +194,7 @@ def _extract_hosts_from_tool_input(tool_input: dict) -> list[str]:
                 continue
             found = HOSTNAME_RE.findall(piece)
             candidate = found[0] if found else piece
-            if not _is_safe_test_host(candidate):
+            if not _is_candidate_exempt(candidate):
                 hosts.append(candidate)
     return hosts
 
