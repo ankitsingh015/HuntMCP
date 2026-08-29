@@ -74,7 +74,11 @@ data/tool-gaps.jsonl
 # target is currently active. Same real-target-data sensitivity as the
 # flat files above, never for git.
 data/engagements/
-data/.active-engagement
+# The default pointer, plus one per parallel session started via
+# scripts/new-target-session.sh (data/.active-engagement-<slug>), which
+# lets multiple opencode/claude sessions hunt different targets at the
+# same time without sharing one "active engagement" pointer.
+data/.active-engagement*
 
 # Legacy fallback for engagement_paths.py's downloads-dir command when no
 # engagement is active (dev/testing use only) -- real engagement downloads

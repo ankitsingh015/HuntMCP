@@ -1,7 +1,12 @@
 import json
 import os
+import subprocess
+import sys
 
 import engagement_paths
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ENGAGEMENT_PATHS_CLI = os.path.join(_REPO_ROOT, "mcp-servers", "engagement_paths.py")
 
 
 def test_slugify_normalizes_target():
@@ -173,6 +178,43 @@ def test_resolve_dir_falls_back_to_legacy_when_no_active_target(tmp_path):
     )
     assert result == legacy
     assert os.path.isdir(legacy)
+
+
+def _run_cli(args, env_extra, cwd):
+    env = {**os.environ, **env_extra}
+    return subprocess.run(
+        [sys.executable, _ENGAGEMENT_PATHS_CLI, *args],
+        cwd=cwd, env=env, capture_output=True, text=True, check=True,
+    )
+
+
+def test_active_pointer_env_var_isolates_concurrent_sessions(tmp_path):
+    """Regression for scripts/new-target-session.sh's whole premise: two
+    real, separate processes (as two concurrent opencode/claude sessions
+    actually are) each pointed at their own HUNTMCP_ACTIVE_POINTER must
+    never see or overwrite each other's active target, even though both
+    share the exact same data/engagements/ root underneath. Runs the
+    actual CLI as a subprocess (not just calling the Python function
+    in-process) because ACTIVE_POINTER's env-var default is itself bound
+    at import time -- the real guarantee only holds if each session is a
+    genuinely separate process, which this test exercises for real."""
+    # engagement_paths.py resolves its own relative default paths against
+    # the process's cwd, so both subprocesses share one cwd (tmp_path) --
+    # same as two concurrent sessions both running from the same repo
+    # checkout, isolated only by which HUNTMCP_ACTIVE_POINTER each sees.
+    pointer_a = "data/.active-engagement-a"
+    pointer_b = "data/.active-engagement-b"
+
+    _run_cli(["set", "company-a.com"], {"HUNTMCP_ACTIVE_POINTER": pointer_a}, cwd=tmp_path)
+    _run_cli(["set", "company-b.com"], {"HUNTMCP_ACTIVE_POINTER": pointer_b}, cwd=tmp_path)
+
+    current_a = _run_cli(["current"], {"HUNTMCP_ACTIVE_POINTER": pointer_a}, cwd=tmp_path)
+    current_b = _run_cli(["current"], {"HUNTMCP_ACTIVE_POINTER": pointer_b}, cwd=tmp_path)
+
+    assert "company-a-com" in current_a.stdout
+    assert "company-b-com" in current_b.stdout
+    assert "company-b-com" not in current_a.stdout
+    assert "company-a-com" not in current_b.stdout
 
 
 def test_resolve_dir_env_override_wins_over_active_target(tmp_path, monkeypatch):

@@ -11,10 +11,12 @@ permissionMode: default
 You receive CONFIRMED findings and chains from exploit-agent — never
 candidates. Your job is to write professional, triager-ready reports.
 
-Save reports to `data/reports/<target-slug>/<date>.md` — one folder per
-target/company, not a flat filename, so every report for the same target
-across multiple engagements/sessions lives together. Get `<target-slug>`
-by reading `data/.active-engagement` (plain text, just the slug, no
+Save reports under `data/reports/<target-slug>/<date>/` — one folder per
+target/company (so every report for the same target across multiple
+engagements/sessions lives together), then one dated subfolder per report
+run within it. Get `<target-slug>` by reading `data/.active-engagement`
+(or, if this session used `scripts/new-target-session.sh`, whatever
+`$HUNTMCP_ACTIVE_POINTER` points at — plain text, just the slug, no
 trailing newline processing needed) — that file is written by
 `mcp-servers/engagement_paths.py`'s `slugify()` at engagement start, so
 reading it back is always byte-identical to `data/engagements/<target-slug>/`,
@@ -23,8 +25,36 @@ by hand from the target name yourself (e.g. lowercase + dash-replace) —
 `slugify()` has edge-case behavior (non-ASCII company names, degenerate
 inputs falling back to `unnamed-target`) that's easy to get slightly
 wrong by eye, and a mismatched folder name defeats the point of this
-convention. If `data/.active-engagement` is missing for some reason, ask
-HuntBrain for the exact slug rather than guessing.
+convention. If the active-engagement pointer is missing for some reason,
+ask HuntBrain for the exact slug rather than guessing.
+
+**One file per finding, never all of them combined into a single
+`<date>.md`.** A session confirming 4 findings produces 4 separate files
+plus one index — never one long file a reviewer has to scroll through to
+find the finding they care about, and never a shape where fixing/updating
+one finding's writeup risks touching unrelated ones in the same diff:
+
+```
+data/reports/<target-slug>/<date>/
+├── README.md                              <- index, see below
+├── 01-critical-sqli-login-endpoint.md
+├── 02-high-idor-account-export.md
+└── 03-medium-reflected-xss-search.md
+```
+
+- `NN-` — two-digit sequence number, most-severe first, purely for stable
+  ordering in a file listing (does not need to match any platform's own
+  numbering).
+- `<severity>` — `critical` / `high` / `medium` / `low`, matching the
+  finding's own CVSS rating below, so severity is visible in a bare `ls`.
+- `<short-slug>` — 3-6 words, vuln class + endpoint, enough to identify
+  the finding without opening it.
+
+`README.md` is a short index, not a report itself: a table with columns
+Title / Severity / Confidence / File (relative link to the `NN-...md`),
+one row per finding, plus any confirmed attack chains listed separately
+underneath (a chain spans multiple findings, so it belongs in the index,
+not filed under any single finding's number).
 
 ## Report format, per finding
 
@@ -98,5 +128,7 @@ of how certain it already is.
 
 ## Output
 
-1. Write the report file to `data/reports/<target-slug>/<date>.md`.
-2. Return the filepath and a one-line summary per finding to HuntBrain.
+1. Write one `NN-<severity>-<short-slug>.md` file per finding, plus one
+   `README.md` index, all under `data/reports/<target-slug>/<date>/`.
+2. Return the folder path and a one-line summary per finding (with each
+   finding's own filename) to HuntBrain.
