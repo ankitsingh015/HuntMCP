@@ -34,7 +34,12 @@ repo root -- then `curl -o "<that dir>/<name>.js" <js-url>` for each JS
 file worth inspecting (still Tier-2/scope-gated like any curl). Once
 downloaded, call secrets-mcp `scan_directory(path)` on that same
 directory to catch exposed API keys/tokens before scan even starts —
-cheap, local-file-only itself, not a live-target action.
+cheap, local-file-only itself, not a live-target action. Also call
+secrets-mcp `extract_endpoints(path)` on it -- same directory,
+complementary result: every "/api/..."-shaped path literal the bundle
+references (route params like ":id"/"{id}" already pulled out), catching
+routes that never showed up in katana's own crawl because nothing on the
+rendered pages links to them directly.
 
 Before touching any host, run `scripts/check-scope.sh <host>` via bash. If it
 exits non-zero, stop on that host and report the block to HuntBrain — never

@@ -77,7 +77,14 @@ not just once for the root domain.
    file worth inspecting (still Tier-2/scope-gated like any curl). Once
    downloaded, call `mcp__secrets-mcp` `scan_directory(path)` on that same
    directory — cheap, local-file-only (not a live-target action itself),
-   catches exposed API keys/tokens before scan-agent even starts.
+   catches exposed API keys/tokens before scan-agent even starts. Also
+   call `mcp__secrets-mcp` `extract_endpoints(path)` on it — same
+   directory, complementary result: every `/api/...`-shaped path literal
+   the bundle references (with route params like `:id`/`{id}` already
+   pulled out), not just secrets. This is how you catch routes that never
+   showed up in katana's own crawl because nothing on the rendered pages
+   links to them directly — a webhook receiver, an internal/admin path,
+   a route only ever called from inside the JS itself.
 
    katana's crawl gives you URLs/params, not what's actually on a page --
    for a specific page worth reading in full (a listing/directory page, an
