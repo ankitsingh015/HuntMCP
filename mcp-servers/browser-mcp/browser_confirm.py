@@ -48,6 +48,7 @@ end-to-end MCP tool call was the only thing that caught it.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import sys
 from urllib.parse import urljoin
@@ -59,27 +60,56 @@ from browser_launch import parse_cookie_header as _parse_cookie_header
 from budget_guard import enforce as _enforce_budget
 
 
-async def _new_page(browser, url: str, cookie_header: str | None):
+async def _new_page(browser, url: str, cookie_header: str | None,
+                     bearer_token: str | None = None,
+                     local_storage: dict[str, str] | None = None):
     """Shared context/page setup for every function below -- an explicit
     BrowserContext (not the implicit one `browser.new_page()` creates) is
-    required to seed cookies at all, since Playwright's add_cookies() is a
-    context-level, not page-level, API. Without this, every tool in this
-    module could only ever drive a page as a logged-out visitor -- no way
-    to exercise an authenticated SPA flow, a role-diff IDOR check (load
-    the same page as two different sessions and compare), or anything
-    behind a login. cookie_header is the same "name=value; name2=value2"
-    string playwright-mcp's solve_js_challenge already outputs for a
-    clearance cookie, so a caller can paste either kind of cookie in here
-    without needing two different formats."""
+    required to seed cookies/headers at all, since Playwright's
+    add_cookies()/set_extra_http_headers() are context-level, not
+    page-level, APIs. Without this, every tool in this module could only
+    ever drive a page as a logged-out visitor -- no way to exercise an
+    authenticated SPA flow, a role-diff IDOR check (load the same page as
+    two different sessions and compare), or anything behind a login.
+
+    Three independent, combinable auth-seeding mechanisms, because real
+    targets split across all of them:
+    - cookie_header ("name=value; name2=value2") -- traditional
+      cookie-based sessions. Same shape playwright-mcp's
+      solve_js_challenge already outputs a clearance cookie in.
+    - bearer_token -- sent as `Authorization: Bearer <token>` on every
+      request via set_extra_http_headers(). Covers APIs/SPAs that use a
+      bearer token instead of (or alongside) cookies.
+    - local_storage -- a modern SPA storing its own session/JWT in
+      localStorage (not a cookie, not a header the browser sends
+      automatically) needs the token to already be *in* localStorage
+      before the app's own JS runs and reads it. add_init_script() runs
+      before any page script on every new document in this context, so
+      the values are there the instant the app boots, on the correct
+      origin, without needing a real login flow first. This was the
+      gap cookie_header alone didn't close: a target authenticating via
+      "JWT in localStorage read by the SPA's own fetch() calls" (common
+      in modern Vue/React apps) has no cookie and no server-set header
+      to seed -- localStorage is the only place the credential lives."""
     context = await browser.new_context()
     if cookie_header:
         await context.add_cookies(_parse_cookie_header(cookie_header, url))
+    if bearer_token:
+        await context.set_extra_http_headers({"Authorization": f"Bearer {bearer_token}"})
+    if local_storage:
+        script = "".join(
+            f"localStorage.setItem({json.dumps(k)}, {json.dumps(v)});"
+            for k, v in local_storage.items()
+        )
+        await context.add_init_script(script)
     return context, await context.new_page()
 
 
 async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
                               timeout_ms: int = DEFAULT_TIMEOUT_MS,
-                              cookie_header: str | None = None) -> dict:
+                              cookie_header: str | None = None,
+                              bearer_token: str | None = None,
+                              local_storage: dict[str, str] | None = None) -> dict:
     """Navigate to url in a real headless browser and check whether marker
     actually executed as JS, vs. merely appearing in the raw response body.
     Checks three signals: (1) any JS dialog (alert/confirm/prompt) whose
@@ -89,7 +119,7 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
     present in raw_html_contains_marker but NOT in dialog_fired/
     title_contains_marker is exactly the "reflected but not confirmed"
     case exploit-agent's rationalizations-to-reject table warns about.
-    cookie_header ("name=value; name2=value2") seeds an authenticated
+    cookie_header/bearer_token/local_storage (see _new_page()) seed an authenticated
     session before navigating, for confirming XSS in a logged-in-only
     view."""
     _enforce_budget("browser-mcp")
@@ -105,7 +135,7 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            _context, page = await _new_page(browser, url, cookie_header)
+            _context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage)
 
             async def _on_dialog(dialog):
                 if marker in (dialog.message or ""):
@@ -138,11 +168,13 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
 
 async def render_dom(url: str, wait_selector: str | None = None,
                       timeout_ms: int = DEFAULT_TIMEOUT_MS,
-                      cookie_header: str | None = None) -> dict:
+                      cookie_header: str | None = None,
+                      bearer_token: str | None = None,
+                      local_storage: dict[str, str] | None = None) -> dict:
     """Return the fully rendered (post-JS) HTML for comparison against the
     raw HTTP response -- surfaces client-side-injected content, DOM
     clobbering, and anything a raw curl request would never show.
-    cookie_header ("name=value; name2=value2") seeds an authenticated
+    cookie_header/bearer_token/local_storage (see _new_page()) seed an authenticated
     session before navigating -- also what makes a role-diff IDOR check
     possible: render_dom the same url once per role's cookie_header and
     compare the two results yourself."""
@@ -153,7 +185,7 @@ async def render_dom(url: str, wait_selector: str | None = None,
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            _context, page = await _new_page(browser, url, cookie_header)
+            _context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage)
             await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             if wait_selector:
                 await page.wait_for_selector(wait_selector, timeout=timeout_ms)
@@ -192,7 +224,9 @@ def _normalize_links(base_url: str, raw_links: list[dict], max_links: int) -> li
 async def extract_page_content(url: str, wait_selector: str | None = None,
                                 max_links: int = 200,
                                 timeout_ms: int = DEFAULT_TIMEOUT_MS,
-                                cookie_header: str | None = None) -> dict:
+                                cookie_header: str | None = None,
+                                bearer_token: str | None = None,
+                                local_storage: dict[str, str] | None = None) -> dict:
     """Navigate to url in a real headless browser and return its rendered,
     human-readable text plus every link on the page -- the general-purpose
     "browse this page and tell me what's actually on it" primitive that
@@ -204,7 +238,7 @@ async def extract_page_content(url: str, wait_selector: str | None = None,
     already-known page's content, including anything only JS rendering
     produces (a static fetch/curl would miss it). Requires scope-gate
     clearance first (Tier-2), same as every other tool in this module.
-    cookie_header ("name=value; name2=value2") seeds an authenticated
+    cookie_header/bearer_token/local_storage (see _new_page()) seed an authenticated
     session before navigating, for reading a logged-in-only page/listing."""
     _enforce_budget("browser-mcp")
     from playwright.async_api import async_playwright
@@ -213,7 +247,7 @@ async def extract_page_content(url: str, wait_selector: str | None = None,
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            _context, page = await _new_page(browser, url, cookie_header)
+            _context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage)
             await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             if wait_selector:
                 await page.wait_for_selector(wait_selector, timeout=timeout_ms)
@@ -234,13 +268,15 @@ async def extract_page_content(url: str, wait_selector: str | None = None,
 async def fill_and_submit(url: str, field_values: dict[str, str], submit_selector: str,
                            then_check_marker: str | None = None,
                            timeout_ms: int = DEFAULT_TIMEOUT_MS,
-                           cookie_header: str | None = None) -> dict:
+                           cookie_header: str | None = None,
+                           bearer_token: str | None = None,
+                           local_storage: dict[str, str] | None = None) -> dict:
     """Fill form fields (selector -> value) and click submit_selector --
     for stored-XSS/business-logic confirmation flows that need a real
     submission, not just a GET request. If then_check_marker is given,
     checks the resulting page the same way check_js_execution does
     (dialog fired / title contains marker) after the submit completes.
-    cookie_header ("name=value; name2=value2") seeds an authenticated
+    cookie_header/bearer_token/local_storage (see _new_page()) seed an authenticated
     session before navigating, for a form that only appears once logged in."""
     _enforce_budget("browser-mcp")
     from playwright.async_api import async_playwright
@@ -251,7 +287,7 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            _context, page = await _new_page(browser, url, cookie_header)
+            _context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage)
 
             async def _on_dialog(dialog):
                 if then_check_marker and then_check_marker in (dialog.message or ""):
@@ -278,10 +314,13 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
 
 async def screenshot_base64(url: str, wait_ms: int = 1000,
                              timeout_ms: int = DEFAULT_TIMEOUT_MS,
-                             cookie_header: str | None = None) -> dict:
+                             cookie_header: str | None = None,
+                             bearer_token: str | None = None,
+                             local_storage: dict[str, str] | None = None) -> dict:
     """Full-page screenshot as base64 PNG -- visual PoC evidence for the
-    report's "screenshot + PoC" requirement. cookie_header ("name=value;
-    name2=value2") seeds an authenticated session before navigating, for
+    report's "screenshot + PoC" requirement.
+    cookie_header/bearer_token/local_storage (see _new_page()) seed an
+    authenticated session before navigating, for
     a screenshot of a logged-in-only view."""
     _enforce_budget("browser-mcp")
     from playwright.async_api import async_playwright
@@ -290,7 +329,7 @@ async def screenshot_base64(url: str, wait_ms: int = 1000,
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            _context, page = await _new_page(browser, url, cookie_header)
+            _context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage)
             await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             await page.wait_for_timeout(wait_ms)
             png_bytes = await page.screenshot(full_page=True)

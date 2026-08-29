@@ -18,12 +18,19 @@ Chrome/Chromium is found (see ../browser_launch.SYSTEM_BROWSER_CANDIDATES,
 shared with playwright-mcp); otherwise run `playwright install chromium`
 once to get Playwright's own bundled browser.
 
-Every tool here takes an optional cookie_header ("name=value;
-name2=value2", the same shape playwright-mcp's solve_js_challenge already
-outputs a clearance cookie in) -- added 2026-08-29 to close a real gap: an
-agent could only ever drive a page as a logged-out visitor before this,
-with no way to exercise an authenticated SPA flow or diff the same page
-across two roles for an IDOR check. See browser_confirm.py's _new_page().
+Every tool here takes three optional, independent, combinable auth-
+seeding params (added 2026-08-29 -- see browser_confirm.py's _new_page()
+for the full rationale on why all three, not just one):
+- cookie_header ("name=value; name2=value2", the same shape playwright-
+  mcp's solve_js_challenge already outputs a clearance cookie in) for
+  traditional cookie-based sessions.
+- bearer_token, sent as `Authorization: Bearer <token>` on every request,
+  for APIs/SPAs that use a bearer token instead of (or alongside) cookies.
+- local_storage (a dict of key -> value), seeded into the target origin's
+  localStorage before any page script runs, for a modern SPA that reads
+  its own session/JWT out of localStorage rather than a cookie or a
+  server-sent header -- the one case cookie_header/bearer_token alone
+  can't reach.
 """
 
 import sys
@@ -38,18 +45,24 @@ app = FastMCP("browser-mcp")
 
 @app.tool()
 async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
-                              cookie_header: str = "") -> str:
+                              cookie_header: str = "", bearer_token: str = "",
+                              local_storage: dict[str, str] | None = None) -> str:
     """Navigate to url in a real headless browser and check whether marker
     actually executed as JS (a fired alert/confirm/prompt dialog containing
     it, or document.title containing it) vs. merely being present in the
     raw HTML response. Use this to confirm a suspected XSS actually runs in
     a browser context before marking it CONFIRMED -- a payload that shows
     up in raw_html but not in dialog/title is reflection, not proof of
-    execution. Pass cookie_header ("name=value; name2=value2") to check
-    this in a logged-in-only view. Requires scope-gate clearance first
-    (Tier-2)."""
-    r = await browser_confirm.check_js_execution(url, marker, wait_ms=wait_ms,
-                                                   cookie_header=cookie_header or None)
+    execution. Pass cookie_header ("name=value; name2=value2"),
+    bearer_token, and/or local_storage to check this in a logged-in-only
+    view -- see this server's module docstring for when to use which.
+    Requires scope-gate clearance first (Tier-2)."""
+    r = await browser_confirm.check_js_execution(
+        url, marker, wait_ms=wait_ms,
+        cookie_header=cookie_header or None,
+        bearer_token=bearer_token or None,
+        local_storage=local_storage or None,
+    )
     if r["error"]:
         return f"Browser error: {r['error']}"
     lines = [f"URL: {url}", f"Marker: {marker!r}"]
@@ -67,16 +80,21 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
 
 
 @app.tool()
-async def render_dom(url: str, wait_selector: str = "", cookie_header: str = "") -> str:
+async def render_dom(url: str, wait_selector: str = "", cookie_header: str = "",
+                      bearer_token: str = "", local_storage: dict[str, str] | None = None) -> str:
     """Return the fully rendered (post-JS) HTML for url, for comparison
     against the raw HTTP response -- surfaces client-side-injected content,
     DOM clobbering, and anything a plain curl would never show. Truncated
-    to 5000 chars. Pass cookie_header ("name=value; name2=value2") to
-    render this as a logged-in user -- also how to do a role-diff IDOR
-    check: call this once per role's own cookie_header and compare the two
-    results yourself. Requires scope-gate clearance first (Tier-2)."""
-    r = await browser_confirm.render_dom(url, wait_selector=wait_selector or None,
-                                          cookie_header=cookie_header or None)
+    to 5000 chars. Pass cookie_header/bearer_token/local_storage to render
+    this as a logged-in user -- also how to do a role-diff IDOR check:
+    call this once per role's own credentials and compare the two results
+    yourself. Requires scope-gate clearance first (Tier-2)."""
+    r = await browser_confirm.render_dom(
+        url, wait_selector=wait_selector or None,
+        cookie_header=cookie_header or None,
+        bearer_token=bearer_token or None,
+        local_storage=local_storage or None,
+    )
     if r["error"]:
         return f"Browser error: {r['error']}"
     html = r["html"] or ""
@@ -86,7 +104,8 @@ async def render_dom(url: str, wait_selector: str = "", cookie_header: str = "")
 
 @app.tool()
 async def extract_page_content(url: str, wait_selector: str = "", max_links: int = 200,
-                                cookie_header: str = "") -> str:
+                                cookie_header: str = "", bearer_token: str = "",
+                                local_storage: dict[str, str] | None = None) -> str:
     """Navigate to url in a real headless browser and return its rendered,
     human-readable text plus every link on the page (text + absolute href,
     deduped, capped at max_links) -- the general "browse this page and see
@@ -94,12 +113,15 @@ async def extract_page_content(url: str, wait_selector: str = "", max_links: int
     fetch/katana-mcp crawl would miss. Use this to read a single already-
     known page's content or listings, not to discover new URLs across a
     site (that's katana-mcp's job) or to diff rendered vs. raw HTML (that's
-    render_dom). Pass cookie_header ("name=value; name2=value2") to read a
+    render_dom). Pass cookie_header/bearer_token/local_storage to read a
     logged-in-only page/listing. Text truncated to 8000 chars. Requires
     scope-gate clearance first (Tier-2)."""
-    r = await browser_confirm.extract_page_content(url, wait_selector=wait_selector or None,
-                                                     max_links=max_links,
-                                                     cookie_header=cookie_header or None)
+    r = await browser_confirm.extract_page_content(
+        url, wait_selector=wait_selector or None, max_links=max_links,
+        cookie_header=cookie_header or None,
+        bearer_token=bearer_token or None,
+        local_storage=local_storage or None,
+    )
     if r["error"]:
         return f"Browser error: {r['error']}"
     text = r["text"] or ""
@@ -116,16 +138,21 @@ async def extract_page_content(url: str, wait_selector: str = "", max_links: int
 
 @app.tool()
 async def fill_and_submit(url: str, field_values: dict[str, str], submit_selector: str,
-                           then_check_marker: str = "", cookie_header: str = "") -> str:
+                           then_check_marker: str = "", cookie_header: str = "",
+                           bearer_token: str = "", local_storage: dict[str, str] | None = None) -> str:
     """Fill form fields (CSS selector -> value) and click submit_selector --
     for stored-XSS or business-logic flows needing a real form submission,
     not just a GET. If then_check_marker is given, checks the resulting
-    page for a fired dialog containing it. Pass cookie_header ("name=value;
-    name2=value2") for a form that only appears once logged in. Requires
+    page for a fired dialog containing it. Pass cookie_header/bearer_token/
+    local_storage for a form that only appears once logged in. Requires
     scope-gate clearance first (Tier-2)."""
-    r = await browser_confirm.fill_and_submit(url, field_values, submit_selector,
-                                               then_check_marker=then_check_marker or None,
-                                               cookie_header=cookie_header or None)
+    r = await browser_confirm.fill_and_submit(
+        url, field_values, submit_selector,
+        then_check_marker=then_check_marker or None,
+        cookie_header=cookie_header or None,
+        bearer_token=bearer_token or None,
+        local_storage=local_storage or None,
+    )
     if r["error"]:
         return f"Browser error: {r['error']}"
     lines = [f"Submitted: {r['submitted']}", f"Title after submit: {r['title_after_submit']}"]
@@ -138,13 +165,18 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
 
 
 @app.tool()
-async def screenshot(url: str, wait_ms: int = 1000, cookie_header: str = "") -> str:
+async def screenshot(url: str, wait_ms: int = 1000, cookie_header: str = "",
+                      bearer_token: str = "", local_storage: dict[str, str] | None = None) -> str:
     """Full-page screenshot of url as a base64-encoded PNG -- visual PoC
     evidence for a report's "screenshot + PoC" requirement. Pass
-    cookie_header ("name=value; name2=value2") for a screenshot of a
+    cookie_header/bearer_token/local_storage for a screenshot of a
     logged-in-only view. Requires scope-gate clearance first (Tier-2)."""
-    r = await browser_confirm.screenshot_base64(url, wait_ms=wait_ms,
-                                                  cookie_header=cookie_header or None)
+    r = await browser_confirm.screenshot_base64(
+        url, wait_ms=wait_ms,
+        cookie_header=cookie_header or None,
+        bearer_token=bearer_token or None,
+        local_storage=local_storage or None,
+    )
     if r["error"]:
         return f"Browser error: {r['error']}"
     return f"data:image/png;base64,{r['screenshot_base64']}"
