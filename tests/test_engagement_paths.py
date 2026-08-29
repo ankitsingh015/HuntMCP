@@ -188,6 +188,46 @@ def _run_cli(args, env_extra, cwd):
     )
 
 
+def test_format_session_commands_empty_when_no_engagements(tmp_path):
+    root = str(tmp_path / "engagements")
+    assert engagement_paths.format_session_commands(root) == "No engagements yet -- nothing to copy."
+
+
+def test_format_session_commands_prints_one_ready_line_per_engagement(tmp_path):
+    root = str(tmp_path / "engagements")
+    for slug, target, calls, complete in [
+        ("target-a-com", "target-a.com", 12, False),
+        ("target-b-com", "target-b.com", 54, True),
+    ]:
+        d = os.path.join(root, slug)
+        os.makedirs(d)
+        with open(os.path.join(d, "engagement.yaml"), "w") as f:
+            f.write(f"target: {target}\nin_scope:\n  - {target}\n")
+        with open(os.path.join(d, "budget.json"), "w") as f:
+            json.dump({"calls": calls}, f)
+        if complete:
+            open(os.path.join(d, ".complete"), "w").close()
+
+    output = engagement_paths.format_session_commands(root, active_slug="target-a-com")
+    lines = output.splitlines()
+    assert len(lines) == 2
+    assert 'source scripts/new-target-session.sh "target-a.com"' in lines[0]
+    assert "12 Tier-2 calls" in lines[0]
+    assert "open" in lines[0]
+    assert "(this terminal's active target)" in lines[0]
+    assert 'source scripts/new-target-session.sh "target-b.com"' in lines[1]
+    assert "54 Tier-2 calls" in lines[1]
+    assert "COMPLETE" in lines[1]
+    assert "(this terminal's active target)" not in lines[1]
+
+
+def test_format_session_commands_falls_back_to_slug_when_no_engagement_yaml(tmp_path):
+    root = str(tmp_path / "engagements")
+    os.makedirs(os.path.join(root, "mystery-target"))
+    output = engagement_paths.format_session_commands(root)
+    assert 'source scripts/new-target-session.sh "mystery-target"' in output
+
+
 def test_active_pointer_env_var_isolates_concurrent_sessions(tmp_path):
     """Regression for scripts/new-target-session.sh's whole premise: two
     real, separate processes (as two concurrent opencode/claude sessions

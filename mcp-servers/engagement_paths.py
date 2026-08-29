@@ -54,6 +54,13 @@ CLI usage (what HuntBrain runs via Bash at Phase 0):
            name (from engagement.yaml, if present), Tier-2 call count
            (from budget.json, if present), and whether it's marked complete
            -- a quick "what's paused vs. finished" view
+    python3 mcp-servers/engagement_paths.py sessions
+        -> human-facing companion to `list`: prints one ready-to-copy
+           `source scripts/new-target-session.sh "<target>"` line per
+           known engagement (active or paused), so resuming/parallelizing
+           a past target never requires typing or remembering its exact
+           name/slug by hand -- copy the line, paste it into a new
+           terminal, launch opencode/claude from there.
     python3 mcp-servers/engagement_paths.py downloads-dir
         -> prints (creating if needed) data/engagements/<slug>/downloads/
            for the active target, or data/downloads (legacy, no active
@@ -211,9 +218,40 @@ def list_engagements(engagements_root: str = ENGAGEMENTS_ROOT) -> list[dict]:
     return out
 
 
+def format_session_commands(engagements_root: str = ENGAGEMENTS_ROOT,
+                             active_slug: str | None = None) -> str:
+    """Human-facing, copy-paste-ready companion to list_engagements() --
+    for every known engagement (active or paused), print the exact
+    `source scripts/new-target-session.sh <target>` line that opens it in
+    its own isolated parallel session, so the user never has to type or
+    remember a target name/slug by hand to resume or parallelize a hunt.
+    Passing the ORIGINAL target string (not the slug) here still resolves
+    to the same existing directory -- set_active_target()/slugify() are
+    idempotent for an already-slug-shaped input, and new-target-session.sh
+    itself calls `engagement_paths.py set <target>`, which only points the
+    pointer at an existing directory rather than recreating it."""
+    engagements = list_engagements(engagements_root)
+    if not engagements:
+        return "No engagements yet -- nothing to copy."
+    lines = []
+    for e in engagements:
+        target = e["target"] or e["slug"]
+        status = "COMPLETE" if e["complete"] else "open"
+        calls = e["tier2_calls"] if e["tier2_calls"] is not None else "?"
+        marker = " (this terminal's active target)" if e["slug"] == active_slug else ""
+        lines.append(
+            f'source scripts/new-target-session.sh "{target}"'
+            f"   # {e['slug']}, {calls} Tier-2 calls, {status}{marker}"
+        )
+    return "\n".join(lines)
+
+
 def _cli() -> None:
     if len(sys.argv) < 2:
-        print("usage: engagement_paths.py <check|set|complete|current|list|downloads-dir> ...", file=sys.stderr)
+        print(
+            "usage: engagement_paths.py <check|set|complete|current|list|sessions|downloads-dir> ...",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     cmd = sys.argv[1]
@@ -247,6 +285,8 @@ def _cli() -> None:
             print("none")
     elif cmd == "list":
         print(json.dumps(list_engagements(), indent=2))
+    elif cmd == "sessions":
+        print(format_session_commands(active_slug=get_active_target()))
     elif cmd == "downloads-dir":
         print(resolve_dir("downloads", override_env="HUNTMCP_DOWNLOADS_DIR",
                            legacy_default="data/downloads"))
