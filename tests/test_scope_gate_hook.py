@@ -313,28 +313,26 @@ def test_main_gates_tier2_mcp_server(monkeypatch):
 
 
 @pytest.mark.parametrize("tool_name", ["WebFetch", "webfetch"])
-def test_main_gates_webfetch_out_of_scope(monkeypatch, tmp_path, tool_name):
+def test_main_never_gates_webfetch_regardless_of_scope_or_host(monkeypatch, tmp_path, tool_name):
+    """Regression: WebFetch was briefly scope-gated the same way as Bash's
+    curl/wget (2026-08-29), then reverted the same day -- its real use in
+    this agent system is read-only research (CVE pages, writeups, vendor
+    docs), and gating it identically to curl blocked any research URL that
+    wasn't the target itself or on the dev-infra allowlist as "not in
+    scope," which isn't a meaningful authorization boundary for reading a
+    public webpage. WebFetch must never be blocked by this hook, with or
+    without an engagement.yaml, in scope or out."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "engagement.yaml").write_text(
         "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
     )
     payload = {"tool_name": tool_name, "tool_input": {"url": "https://someothersite.com/page"}}
-    assert _run_main(monkeypatch, payload) == 2
-
-
-@pytest.mark.parametrize("tool_name", ["WebFetch", "webfetch"])
-def test_main_allows_webfetch_in_scope(monkeypatch, tmp_path, tool_name):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "engagement.yaml").write_text(
-        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
-    )
-    payload = {"tool_name": tool_name, "tool_input": {"url": "https://realtarget-corp.com/page"}}
     assert _run_main(monkeypatch, payload) == 0
 
 
-def test_main_allows_webfetch_safe_host_with_no_engagement(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)  # no engagement.yaml -- must not matter for a safe host
-    payload = {"tool_name": "WebFetch", "tool_input": {"url": "https://example.com/docs"}}
+def test_main_never_gates_webfetch_with_no_engagement_at_all(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)  # no engagement.yaml -- must not matter for WebFetch
+    payload = {"tool_name": "WebFetch", "tool_input": {"url": "https://someothersite.com/page"}}
     assert _run_main(monkeypatch, payload) == 0
 
 

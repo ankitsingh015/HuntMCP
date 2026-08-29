@@ -3,8 +3,9 @@ description: Detects vulnerabilities across 30+ classes using nuclei, sqlmap, da
 mode: subagent
 permission:
   edit: allow
-  # webfetch is scope-gated via .opencode/plugin/scope-gate.ts's WebFetch
-  # branch (added 2026-08-29) -- safe to allow broadly.
+  # webfetch is deliberately NOT scope-gated (unlike bash) -- its real
+  # use here is read-only research (CVE pages, writeups, docs), not
+  # touching the target; see scope_gate_hook.py's module docstring.
   webfetch: allow
   # rm **/rm deny below is defense-in-depth, not the real enforcement --
   # see opencode.jsonc's permission.bash comment. Real block is

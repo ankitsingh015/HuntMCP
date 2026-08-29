@@ -3,8 +3,9 @@ description: Orchestrates autonomous bug bounty hunting. Spawns Recon/Scan/Explo
 mode: primary
 permission:
   edit: allow
-  # webfetch is scope-gated via .opencode/plugin/scope-gate.ts's WebFetch
-  # branch (added 2026-08-29) -- safe to allow broadly.
+  # webfetch is deliberately NOT scope-gated (unlike bash) -- its real
+  # use here is read-only research (CVE pages, writeups, docs), not
+  # touching the target; see scope_gate_hook.py's module docstring.
   webfetch: allow
   # No rm -f allow-patterns here anymore -- they'd never actually fire.
   # scope_gate_hook.py's unconditional _is_rm_command() check runs before

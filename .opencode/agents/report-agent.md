@@ -10,8 +10,9 @@ permission:
     "*": allow
     "rm **": deny
     "rm": deny
-  # webfetch is scope-gated via the same plugin/hook (added 2026-08-29,
-  # scope_gate_hook.py's WebFetch branch) -- safe to allow broadly.
+  # webfetch is deliberately NOT scope-gated (unlike bash) -- its real
+  # use here is read-only research (CVE pages, writeups, docs), not
+  # touching the target; see scope_gate_hook.py's module docstring.
   webfetch: allow
 ---
 

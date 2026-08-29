@@ -32,14 +32,12 @@
 // _extract_hosts_from_tool_input) handles both harnesses identically with
 // zero Python-side changes.
 //
-// Also covers webfetch (added 2026-08-29): OpenCode's native URL-fetch
-// tool goes through neither a Bash subprocess nor an MCP server, so it was
-// invisible to every branch above -- the one gap that made loosening
-// agent permission configs' `webfetch: deny` to `allow` unsafe (a native
-// fetch call would have completely bypassed scope enforcement). Forwarded
-// as `tool_name: "WebFetch"` so scope_gate_hook.py's single check
-// (`tool_name in ("WebFetch", "webfetch")`) covers both harnesses' exact
-// tool-name casing with no Python-side branching needed per harness.
+// Deliberately does NOT cover webfetch (briefly did, 2026-08-29, reverted
+// the same day -- see scope_gate_hook.py's own module docstring for the
+// full reasoning): curl/wget send attacker-controlled requests AT a
+// target, webfetch's real use in this agent system is read-only research
+// (CVE pages, writeups, vendor docs) that never touches the target at
+// all, and gating it identically to curl blocked that research entirely.
 import type { Plugin } from "@opencode-ai/plugin"
 
 export const ScopeGate: Plugin = async ({ directory }) => {
@@ -51,10 +49,6 @@ export const ScopeGate: Plugin = async ({ directory }) => {
         const command = output.args?.command
         if (typeof command !== "string" || !command.trim()) return
         payload = JSON.stringify({ tool_name: "Bash", tool_input: { command } })
-      } else if (input.tool === "webfetch") {
-        const url = output.args?.url
-        if (typeof url !== "string" || !url.trim()) return
-        payload = JSON.stringify({ tool_name: "WebFetch", tool_input: { url } })
       } else if (input.tool.includes(":")) {
         const sepIndex = input.tool.indexOf(":")
         const server = input.tool.slice(0, sepIndex)
