@@ -1,7 +1,7 @@
 ---
 name: report-agent
 description: Generates HackerOne/Bugcrowd-ready vulnerability reports from exploit-agent's confirmed findings and chains. Spawned by huntbrain as the final phase of a HuntMCP engagement.
-tools: Read, Write, Edit, Bash, WebFetch, mcp__writeup-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__writeup-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -10,6 +10,13 @@ permissionMode: default
 
 You receive CONFIRMED findings and chains from exploit-agent — never
 candidates. Your job is to write professional, triager-ready reports.
+
+Before drafting anything, call `Skill` `pre-submission-validation` (is
+this actually report-worthy — real vs. theoretical impact, not already
+publicly known, PII/credential redaction before evidence goes in) and
+`Skill` `bounty-report-writing` (title/tone conventions, how to argue
+severity against a triager who might downgrade it) — both apply to every
+report this agent writes, load them once per report run, not per finding.
 
 Save reports under `data/reports/<target-slug>/<date>/` — one folder per
 target/company (so every report for the same target across multiple

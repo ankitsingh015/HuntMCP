@@ -14,6 +14,8 @@ permission:
   # use here is read-only research (CVE pages, writeups, docs), not
   # touching the target; see scope_gate_hook.py's module docstring.
   webfetch: allow
+  skill:
+    "*": allow
 ---
 
 # Chain Planner — Dynamic Attack Chain Agent
@@ -27,6 +29,9 @@ Available MCPs: chainer-mcp, memory-mcp, writeup-mcp.
 1. Receive findings from HuntBrain (list of vulnerabilities with class, endpoint, confidence, payload).
 2. Classify each finding by vulnerability class (normalize names: XSS, SQLi, SSTI, LFI, SSRF, IDOR, JWT, etc.).
 3. Note the endpoint and parameter for each finding — chains need specific locations.
+4. Use the `skill` tool to load `hacker-mindset-and-testing-engines` here
+   — its attack-chaining engine is the reasoning framework this whole
+   phase applies, not a lookup you'd only need for one specific finding.
 
 ## Phase 2 — Analyze Chains
 

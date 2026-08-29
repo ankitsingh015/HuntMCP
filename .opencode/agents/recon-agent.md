@@ -14,6 +14,8 @@ permission:
     "*": allow
     "rm **": deny
     "rm": deny
+  skill:
+    "*": allow
 ---
 
 # Recon Agent — Level 2 Specialist
@@ -54,13 +56,22 @@ new host discovered.
 ## Phase 1 — Subdomain Enumeration
 
 1. Call subfinder-mcp `run_subdomain(domain)` to find subdomains.
-2. Collect all subdomains found.
+2. Collect all subdomains found. Then use the `skill` tool to load
+   `reconnaissance`, `osint-and-secret-hunting`, and `subdomain-takeover`
+   — don't wait for something interesting to show up first, all three
+   apply directly to this phase's raw subdomain list (JS-mining/dork
+   patterns, and every subdomain is a takeover candidate before httpx
+   even narrows the list down to what currently resolves).
 
 ## Phase 2 — HTTP Probing
 
 3. Call httpx-mcp `probe_hosts(domains)` with the discovered subdomains plus the root domain.
    - Default ports: 80,443. Add 8080,8443,3000 if `--deep`.
 4. Record: live hosts, status codes, page titles, detected technologies, web servers.
+   As soon as a tech stack/CMS/framework shows up here, load `skill`
+   `cms-and-framework-specific` and `skill` `information-disclosure` --
+   right here, not deferred to scan-agent, since you're the one seeing
+   the raw headers/titles/banners these key off of.
 
 ## Phase 3 — Endpoint Discovery
 

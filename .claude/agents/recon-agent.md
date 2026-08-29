@@ -1,7 +1,7 @@
 ---
 name: recon-agent
 description: Level 2 specialist — discovers attack surface (subdomains, live hosts, endpoints, ports) for a HuntMCP engagement. Spawned by huntbrain, never invoked directly against an unconfirmed target.
-tools: Read, Write, Edit, Bash, WebFetch, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp, mcp__browser-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp, mcp__browser-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -37,12 +37,27 @@ not just once for the root domain.
 ## Phase 1 — Subdomain enumeration
 
 1. `mcp__subfinder-mcp` to find subdomains of the in-scope root domain(s).
+   Once you have the list, call `Skill` `reconnaissance` and `Skill`
+   `osint-and-secret-hunting` — don't wait until something looks
+   interesting to load these, they cover exactly this phase (JS-mining
+   checklist, dork patterns, cloud-storage/Wayback pivots) and are cheap
+   to load once, up front. Every subdomain found is also a subdomain-
+   takeover candidate — call `Skill` `subdomain-takeover` here too, before
+   Phase 2, not after: its provider-fingerprint/CNAME-dangling checklist
+   is meant to run on the raw subdomain list, before httpx narrows it down
+   to only the ones that currently resolve.
 
 ## Phase 2 — HTTP probing
 
 2. Scope-check each subdomain, then `mcp__httpx-mcp` to probe live hosts.
    Default ports 80,443; add 8080,8443,3000 for `--deep`.
 3. Record live hosts, status codes, titles, tech stack, web server headers.
+   As soon as a tech stack/CMS/framework shows up in this output, call
+   `Skill` `cms-and-framework-specific` and `Skill` `information-
+   disclosure` — right here, not deferred to scan-agent. Recon is where
+   you actually see the raw headers/titles/server banners these skills
+   key off of; scan-agent only receives your summary, which is lossy for
+   this purpose.
 
 ## Phase 3 — Endpoint discovery
 

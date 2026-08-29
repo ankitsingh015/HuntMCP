@@ -1,7 +1,7 @@
 ---
 name: chain-planner
 description: Dynamic attack-chain agent — analyzes scan findings, identifies chainable vulnerability combinations, and produces DAG-based execution plans. Spawned by huntbrain when scan-agent returns candidate findings.
-tools: Read, Write, Edit, Bash, WebFetch, mcp__chainer-mcp, mcp__memory-mcp, mcp__writeup-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__chainer-mcp, mcp__memory-mcp, mcp__writeup-mcp
 model: opus
 effort: high
 permissionMode: default
@@ -17,7 +17,10 @@ No scope check needed here; you don't send anything anywhere.
 
 1. Classify each finding by normalized vuln class (XSS, SQLi, SSTI, LFI,
    SSRF, IDOR, JWT, etc.) and note its endpoint/parameter — chains need
-   specific locations, not just vuln types.
+   specific locations, not just vuln types. Call `Skill`
+   `hacker-mindset-and-testing-engines` here — its attack-chaining engine
+   is the reasoning framework this whole phase applies, not a lookup you'd
+   only need for one specific finding.
 
 ## Phase 2 — Analyze chains
 
