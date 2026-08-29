@@ -88,7 +88,7 @@ TIER2_BASH_TOOLS = {
 TIER2_MCP_SERVERS = {
     "subfinder-mcp", "httpx-mcp", "katana-mcp", "nmap-mcp",
     "nuclei-mcp", "sqlmap-mcp", "dalfox-mcp", "ffuf-mcp", "watch-mcp",
-    "waf-bypass-mcp", "browser-mcp", "playwright-mcp",
+    "waf-bypass-mcp", "browser-mcp", "playwright-mcp", "idor-mcp",
 }
 
 HOST_ARG_KEYS = ("domains", "domain", "target", "targets", "url", "host", "hosts")

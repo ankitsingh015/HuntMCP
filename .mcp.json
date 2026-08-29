@@ -91,6 +91,10 @@
     "case-mcp": {
       "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/case-mcp/server.py"]
+    },
+    "idor-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/idor-mcp/server.py"]
     }
   }
 }

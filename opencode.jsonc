@@ -136,6 +136,11 @@
       "type": "local",
       "enabled": true,
       "command": ["./.venv/bin/python", "mcp-servers/case-mcp/server.py"]
+    },
+    "idor-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": ["./.venv/bin/python", "mcp-servers/idor-mcp/server.py"]
     }
   },
   "autoupdate": "notify"

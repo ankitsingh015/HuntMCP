@@ -50,7 +50,18 @@ one user role, any GraphQL API, and any feature that moves money
    object identifiers (numeric ID, UUID, slug, base64, hash, JWT `sub`)
    from attacker values to victim values. If swapping IDs returns the
    victim's data or changes it, IDOR/BOLA is confirmed -- try both
-   directions.
+   directions. Once you have more than a couple of object ids per
+   endpoint, hand-testing each one doesn't scale -- `mcp__idor-mcp`
+   `sweep_idor(url, object_ids, owner_cookie_header/owner_bearer_token,
+   other_cookie_header/other_bearer_token)` automates exactly this loop:
+   given a URL template with an `{id}` placeholder and a list of ids
+   known to belong to one account, it fetches every id once per account
+   and classifies the pair (PROTECTED/LEAKED/AMBIGUOUS/DIFFERENT/
+   OWNER_BASELINE_FAILED -- the last one is the tool's own way of
+   flagging "this account has no real data for this id," the same empty-
+   test-account problem this procedure's step 1 exists to avoid). A
+   LEAKED verdict is a strong candidate for manual confirmation, not an
+   automatic CONFIRMED finding.
 4. Widen the test: method swap (GET/DELETE/PUT on the same object),
    parameter pollution (`?user_id=A&user_id=V`), nested/deep-link IDs,
    GUID/UUID enumeration (date/base64 prediction), and sequential loops.
