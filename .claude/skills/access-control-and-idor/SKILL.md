@@ -1,6 +1,10 @@
 ---
 name: access-control-and-idor
 description: Access-control technique list (IDOR, mass assignment, horizontal/vertical privilege escalation, GraphQL abuse, business-logic/money manipulation, race conditions) plus the explicit two-account IDOR testing procedure. Converted from master-pentest-prompt.md Phases 8/8.5. Use on any endpoint that returns or modifies user-specific data, and any multi-role application.
+tags: [idor, bola, access-control, mass-assignment, privilege-escalation, graphql, business-logic]
+tech_stack: []
+cwe_ids: [CWE-639, CWE-862, CWE-863, CWE-915]
+owasp_id: WSTG-ATHZ-04
 ---
 
 # Access control & logic
