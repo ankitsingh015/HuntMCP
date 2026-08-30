@@ -2,7 +2,26 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mcp-servers"))
-from browser_launch import parse_cookie_header
+from browser_launch import STEALTH_ARGS, launch_kwargs, parse_cookie_header
+
+
+def test_launch_kwargs_includes_stability_and_stealth_args():
+    args = launch_kwargs()["args"]
+    assert "--no-sandbox" in args
+    assert "--disable-dev-shm-usage" in args
+    for stealth_arg in STEALTH_ARGS:
+        assert stealth_arg in args
+
+
+def test_launch_kwargs_stealth_args_include_automation_controlled_flag():
+    # The one flag that actually matters here (see browser_launch.py's own
+    # comment): without it, Chromium sets navigator.webdriver=true, which
+    # basic bot-detection JS can key off even on an otherwise-normal page.
+    assert "--disable-blink-features=AutomationControlled" in STEALTH_ARGS
+
+
+def test_launch_kwargs_is_headless_by_default():
+    assert launch_kwargs()["headless"] is True
 
 
 def test_parse_cookie_header_single_cookie():
