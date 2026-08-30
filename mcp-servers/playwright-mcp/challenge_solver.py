@@ -22,11 +22,12 @@ Tier-2 (target-touching) -- callers must run scripts/check-scope.sh <host>
 first, exactly like every other Tier-2 tool in this repo. Registered in
 scripts/hooks/scope_gate_hook.py's TIER2_MCP_SERVERS, inherited
 automatically by .opencode/plugin/scope-gate.ts (shells out to that same
-script). Budget AND audit are both enforced directly here (unlike
-browser-mcp, which only enforces budget) since this is a direct Playwright
-call, not a subprocess through tool_resolver.run_tool()'s chokepoint --
-audit matters more here than for browser-mcp given the scope-ambiguity
-noted above.
+script). Budget AND audit are both enforced directly here since this is a
+direct Playwright call, not a subprocess through tool_resolver.run_tool()'s
+chokepoint -- audit matters especially here given the scope-ambiguity
+noted above. browser-mcp's browser_confirm.py (same direct-Playwright
+shape) originally only wired up budget and not audit; fixed there too as
+of 2026-08-30, see that module's own docstring.
 
 Uses Playwright's ASYNC API, not sync_playwright -- see browser_confirm.py's
 module docstring for why: FastMCP dispatches tool handlers on its own
