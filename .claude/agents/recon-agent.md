@@ -1,7 +1,7 @@
 ---
 name: recon-agent
 description: Level 2 specialist — discovers attack surface (subdomains, live hosts, endpoints, ports) for a HuntMCP engagement. Spawned by huntbrain, never invoked directly against an unconfirmed target.
-tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp, mcp__browser-mcp, mcp__writeup-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp, mcp__browser-mcp, mcp__writeup-mcp, mcp__osint-mcp
 model: sonnet
 permissionMode: default
 ---
