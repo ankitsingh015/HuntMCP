@@ -59,7 +59,11 @@ def sweep_idor(url: str, object_ids: list[str], method: str = "GET",
     glance), OWNER_BASELINE_FAILED (owner's own request didn't return real
     data either -- same "empty test account" problem at the tooling
     level, fix the baseline before trusting a verdict for that id), or
-    ERROR (a request itself failed). Pass owner_cookie_header/
+    ERROR (a request itself failed). If most of the batch comes back
+    OWNER_BASELINE_FAILED, the summary carries a separate warning: that
+    pattern almost always means the owner credential itself is dead, not
+    that N object ids happen not to exist -- fix the credential and re-run
+    rather than trust the verdicts. Pass owner_cookie_header/
     owner_bearer_token for the account that legitimately owns the object
     ids, and other_cookie_header/other_bearer_token for the account being
     tested -- same "name=value; name2=value2" cookie format and bearer
@@ -94,6 +98,9 @@ def sweep_idor(url: str, object_ids: list[str], method: str = "GET",
 
     lines = [f"URL template: {url}", f"Object ids tested: {len(result.verdicts)}/{len(object_ids)}",
              f"Summary: {counts}"]
+    baseline_warning = result.owner_baseline_failure_warning()
+    if baseline_warning:
+        lines.append(baseline_warning)
     if budget_exhausted_at:
         lines.append(f"⚠️ STOPPED EARLY -- Tier-2 budget exhausted: {budget_exhausted_at}")
     lines.append("")
