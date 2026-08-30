@@ -31,6 +31,7 @@ import time
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 
 import idor_sweep
+import session_context
 from audit_log import log_call as _log_call
 from budget_guard import BudgetExceeded
 from budget_guard import enforce as _enforce_budget
@@ -40,13 +41,19 @@ app = FastMCP("idor-mcp")
 
 
 @app.tool()
-def sweep_idor(url: str, object_ids: list[str], method: str = "GET",
+def sweep_idor(url: str, object_ids: list[str] | None = None, method: str = "GET",
                owner_cookie_header: str = "", owner_bearer_token: str = "",
                other_cookie_header: str = "", other_bearer_token: str = "",
                body_template: str = "") -> str:
     """Cross-account IDOR/BOLA sweep. `url` must contain a literal `{id}`
-    placeholder (e.g. "https://target.com/api/orders/{id}"). For each id
-    in object_ids -- each one known to actually belong to the OWNER
+    placeholder (e.g. "https://target.com/api/orders/{id}"). object_ids is
+    now optional: if omitted (or empty), this looks up ids previously
+    observed for this exact endpoint via session_context.suggest_object_ids()
+    -- populated automatically as recon/browser-mcp tools discover real
+    urls for this target -- before falling back to an error asking for an
+    explicit list. Pass object_ids explicitly to skip that lookup or when
+    testing ids that haven't been observed yet. For each id in object_ids
+    -- each one known to actually belong to the OWNER
     identity -- fetches it once as OWNER (the baseline: confirms the id is
     real and returns actual data) and once as OTHER (the identity being
     tested for improper access to OWNER's object), then classifies the
@@ -71,6 +78,17 @@ def sweep_idor(url: str, object_ids: list[str], method: str = "GET",
     the shared Tier-2 budget is exhausted, rather than silently sending
     far more real requests than the circuit breaker was meant to allow."""
     start = time.monotonic()
+
+    if not object_ids:
+        object_ids = session_context.suggest_object_ids(url)
+        if not object_ids:
+            return (
+                f"No object_ids given and none previously observed for {url!r} "
+                "(session_context has nothing recorded for this endpoint yet). "
+                "Pass object_ids explicitly, or run recon/browser-mcp against this "
+                "endpoint first so real ids get recorded automatically."
+            )
+
     owner_headers = idor_sweep._build_headers(owner_cookie_header or None, owner_bearer_token or None)
     other_headers = idor_sweep._build_headers(other_cookie_header or None, other_bearer_token or None)
 
