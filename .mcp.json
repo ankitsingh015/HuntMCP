@@ -80,6 +80,10 @@
       "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/osint-mcp/server.py"]
     },
+    "github-security-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/github-security-mcp/server.py"]
+    },
     "secrets-mcp": {
       "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/secrets-mcp/server.py"]
