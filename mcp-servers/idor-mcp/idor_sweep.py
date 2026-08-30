@@ -203,3 +203,155 @@ def sweep_idor(url_template: str, object_ids: list[str], method: str = "GET",
                          body_template, timeout_s)
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Single-credential ID-guess mode -- doesn't need a second identity. Instead
+# of diffing owner-vs-other on ids already known to belong to the owner, this
+# takes ONE credential and ONE known-good id, then tries ids that plausibly
+# DON'T belong to that credential (sequential neighbors, small/admin-like
+# ids, the negative variant) and checks whether the same credential can pull
+# them anyway. Real for auto-increment integer ids; UUIDs/hashids can't be
+# meaningfully sequence-guessed this way, so generate_id_guesses() returns
+# nothing for a non-numeric known_id rather than pretending to guess one.
+#
+# This can only ever report PROTECTED/ACCESSIBLE/EMPTY_RESPONSE/ERROR, never
+# sweep_idor()'s LEAKED -- LEAKED requires a second identity's response body
+# to diff against as evidence the data really is someone else's. A single
+# credential getting 200 on a guessed id is a strong lead, not proof; the
+# verdict detail says so explicitly rather than overclaiming confirmation.
+# ---------------------------------------------------------------------------
+
+GUESS_ADMIN_LIKE_IDS = (0, 1)
+
+
+def generate_id_guesses(known_id: str, count: int = 10) -> list[str]:
+    """Generate up to `count` candidate ids to guess, given one id already
+    known to be real. Returns [] for a non-numeric known_id (UUIDs, hashids,
+    ULIDs) -- there's no meaningful "neighbor" of a random-looking identifier,
+    unlike a plain auto-increment integer. Order: small/admin-like ids first
+    (id=0/1 is very often an admin/system/seed account on auto-increment
+    schemes -- cheap, high-value guesses), then the negative variant (some
+    frameworks never validate that an id can't be negative because "no real
+    id is negative" feels obvious enough not to test), then sequential
+    neighbors alternating +/- outward from known_id (closest -- most likely
+    to be a real adjacent account/order -- tried first). known_id itself is
+    never re-tested."""
+    try:
+        base = int(known_id)
+    except ValueError:
+        return []
+
+    seen = {base}
+    out: list[int] = []
+
+    def _add(candidate: int) -> None:
+        if candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+
+    for admin_id in GUESS_ADMIN_LIKE_IDS:
+        _add(admin_id)
+    if base > 0:
+        _add(-base)
+
+    offset = 1
+    while len(out) < count:
+        _add(base + offset)
+        if len(out) >= count:
+            break
+        _add(base - offset)
+        offset += 1
+
+    return [str(c) for c in out[:count]]
+
+
+@dataclass
+class GuessVerdict:
+    object_id: str
+    status: int | None
+    verdict: str
+    detail: str = ""
+
+
+@dataclass
+class GuessSweepResult:
+    url_template: str
+    known_id: str
+    baseline_ok: bool = True
+    baseline_detail: str = ""
+    verdicts: list[GuessVerdict] = field(default_factory=list)
+
+    def summary_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for v in self.verdicts:
+            counts[v.verdict] = counts.get(v.verdict, 0) + 1
+        return counts
+
+
+def _classify_guess(resp: FetchResult) -> tuple[str, str]:
+    if resp.error:
+        return "ERROR", f"request failed: {resp.error}"
+    if resp.status in PROTECTED_STATUSES:
+        return "PROTECTED", f"got {resp.status} -- access control appears to be working for this id"
+    if resp.status != 200:
+        return "ERROR", f"unexpected status {resp.status}, neither 200 nor a protected status"
+    if not resp.body.strip():
+        return "EMPTY_RESPONSE", (
+            "got 200 but an empty body -- likely not a real object at this id, not a confirmed "
+            "access issue either way"
+        )
+    return "ACCESSIBLE", (
+        "got 200 with a non-empty body for an id not already known to belong to this credential -- "
+        "verify by hand whether the object actually belongs to the tested account before calling "
+        "this an IDOR. Single-credential guessing can't auto-diff against an owner baseline the way "
+        "the two-identity sweep_idor() can, so this is a strong lead, not proof."
+    )
+
+
+def check_one_guess(url_template: str, object_id: str, method: str, headers: dict[str, str],
+                     body_template: str | None, timeout_s: float) -> GuessVerdict:
+    """The actual per-guess work (1 real HTTP request), factored out the same
+    way check_one_id() is so a caller enforcing budget per guess can call
+    this directly in its own loop."""
+    url = url_template.replace("{id}", object_id)
+    body = body_template.replace("{id}", object_id) if body_template else None
+    resp = _fetch(url, method, headers, body, timeout_s)
+    verdict, detail = _classify_guess(resp)
+    return GuessVerdict(object_id=object_id, status=resp.status, verdict=verdict, detail=detail)
+
+
+def sweep_idor_guess(url_template: str, known_id: str, method: str = "GET",
+                      cookie_header: str | None = None, bearer_token: str | None = None,
+                      guess_count: int = 10, body_template: str | None = None,
+                      timeout_s: float = DEFAULT_TIMEOUT_S) -> GuessSweepResult:
+    """Convenience batch wrapper (no budget accounting -- idor-mcp/server.py's
+    guess_idor tool calls check_one_guess() itself in a loop, same reasoning
+    as sweep_idor()/check_one_id()) for single-credential ID-guess testing.
+    Confirms known_id itself still works with this credential FIRST -- same
+    "don't trust anything built on a dead credential" lesson as
+    SweepResult.owner_baseline_failure_warning() above, applied preemptively
+    here instead of after the fact: there's no point spending budget on N
+    guesses if the one id already known to work doesn't. If that baseline
+    check fails, returns immediately with baseline_ok=False and no guesses
+    attempted."""
+    headers = _build_headers(cookie_header, bearer_token)
+    result = GuessSweepResult(url_template=url_template, known_id=known_id)
+
+    baseline_url = url_template.replace("{id}", known_id)
+    baseline_body = body_template.replace("{id}", known_id) if body_template else None
+    baseline = _fetch(baseline_url, method, headers, baseline_body, timeout_s)
+    if baseline.error or baseline.status != 200 or not baseline.body.strip():
+        result.baseline_ok = False
+        result.baseline_detail = (
+            f"known_id baseline check failed (status={baseline.status}, error={baseline.error!r}) -- "
+            "the credential may be invalid/expired, or known_id doesn't actually belong to it. "
+            "Guessing skipped."
+        )
+        return result
+
+    for guess_id in generate_id_guesses(known_id, guess_count):
+        result.verdicts.append(
+            check_one_guess(url_template, guess_id, method, headers, body_template, timeout_s)
+        )
+    return result

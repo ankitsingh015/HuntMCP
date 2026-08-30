@@ -109,6 +109,91 @@ def sweep_idor(url: str, object_ids: list[str], method: str = "GET",
     return "\n".join(lines)
 
 
+@app.tool()
+def guess_idor(url: str, known_id: str, method: str = "GET", cookie_header: str = "",
+                bearer_token: str = "", guess_count: int = 10, body_template: str = "") -> str:
+    """Single-credential IDOR/BOLA guessing -- for when you only have ONE
+    account and don't yet have a second identity to diff against (that case
+    is sweep_idor()'s job, and gives a stronger LEAKED/PROTECTED verdict when
+    you can set it up). `url` must contain a literal `{id}` placeholder.
+    `known_id` is one id already confirmed to belong to this credential (used
+    as the baseline AND as the anchor for generating guesses -- sequential
+    neighbors, small/admin-like ids like 0/1, and the negative variant).
+    Numeric ids only: a UUID/hashid known_id can't be meaningfully
+    sequence-guessed, and returns an empty guess list rather than pretending
+    to. Checks the baseline FIRST -- if known_id itself doesn't return real
+    200 data with this credential, guessing is skipped entirely rather than
+    wasting budget on ids anchored to a bad baseline. Each guessed id is
+    classified: PROTECTED (401/403/404 -- access control is working),
+    ACCESSIBLE (200 with a real body -- a strong lead, but verify by hand
+    whether the object actually belongs to the tested account; this mode
+    can't auto-diff against an owner baseline the way sweep_idor() can, so
+    it never claims LEAKED), EMPTY_RESPONSE (200 but empty -- probably not a
+    real object here), or ERROR. Same cookie_header/bearer_token convention
+    as sweep_idor()/browser-mcp. Requires scope-gate clearance first
+    (Tier-2) -- sends real requests to the live target, one per guess plus
+    the baseline check. Budget is enforced per request, same as
+    sweep_idor()."""
+    start = time.monotonic()
+    headers = idor_sweep._build_headers(cookie_header or None, bearer_token or None)
+
+    try:
+        _enforce_budget("idor-mcp")
+    except BudgetExceeded as e:
+        return f"⚠️ Tier-2 budget exhausted before the baseline check could run: {e}"
+
+    baseline_url = url.replace("{id}", known_id)
+    baseline_body = body_template.replace("{id}", known_id) if body_template else None
+    baseline = idor_sweep._fetch(baseline_url, method, headers, baseline_body, idor_sweep.DEFAULT_TIMEOUT_S)
+
+    if baseline.error or baseline.status != 200 or not baseline.body.strip():
+        return (
+            f"⚠️ known_id baseline check failed (status={baseline.status}, error={baseline.error!r}) "
+            "-- the credential may be invalid/expired, or known_id doesn't actually belong to it. "
+            "Guessing skipped."
+        )
+
+    guesses = idor_sweep.generate_id_guesses(known_id, guess_count)
+    if not guesses:
+        return (
+            f"known_id '{known_id}' isn't a plain integer -- sequential/admin/negative-id guessing "
+            "only applies to numeric ids, not UUIDs/hashids. No guesses generated; use sweep_idor() "
+            "with a second identity instead if you have one."
+        )
+
+    verdicts: list = []
+    budget_exhausted_at = None
+    for guess_id in guesses:
+        try:
+            _enforce_budget("idor-mcp")
+        except BudgetExceeded as e:
+            budget_exhausted_at = str(e)
+            break
+        verdicts.append(
+            idor_sweep.check_one_guess(url, guess_id, method, headers, body_template or None,
+                                        idor_sweep.DEFAULT_TIMEOUT_S)
+        )
+
+    duration_ms = (time.monotonic() - start) * 1000
+    counts: dict[str, int] = {}
+    for v in verdicts:
+        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+    _log_call("idor-mcp", [url, f"guess from {known_id}", f"{len(guesses)} guesses"],
+              returncode=None, duration_ms=duration_ms, block=None)
+
+    lines = [f"URL template: {url}", f"Known id: {known_id} (baseline confirmed OK)",
+             f"Guessed ids tested: {len(verdicts)}/{len(guesses)}", f"Summary: {counts}"]
+    if budget_exhausted_at:
+        lines.append(f"⚠️ STOPPED EARLY -- Tier-2 budget exhausted: {budget_exhausted_at}")
+    lines.append("")
+    for v in verdicts:
+        marker = {"ACCESSIBLE": "🔴", "PROTECTED": "🟢",
+                  "EMPTY_RESPONSE": "⚪", "ERROR": "❌"}.get(v.verdict, "")
+        lines.append(f"{marker} {v.object_id}: {v.verdict} [status={v.status}]")
+        lines.append(f"    {v.detail}")
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     print("idor-mcp starting...", file=sys.stderr)
     app.run(transport="stdio")
