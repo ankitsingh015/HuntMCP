@@ -151,6 +151,11 @@
       "type": "local",
       "enabled": true,
       "command": ["./.venv/bin/python", "mcp-servers/idor-mcp/server.py"]
+    },
+    "azure-postexploit-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": ["./.venv/bin/python", "mcp-servers/azure-postexploit-mcp/server.py"]
     }
   },
   "autoupdate": "notify"
