@@ -122,6 +122,11 @@
       "enabled": true,
       "command": ["./.venv/bin/python", "mcp-servers/osint-mcp/server.py"]
     },
+    "github-security-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": ["./.venv/bin/python", "mcp-servers/github-security-mcp/server.py"]
+    },
     "secrets-mcp": {
       "type": "local",
       "enabled": true,

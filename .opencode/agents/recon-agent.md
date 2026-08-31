@@ -23,7 +23,7 @@ permission:
 You receive a target domain from HuntBrain. Your job is to discover the full attack surface.
 
 Available MCPs: subfinder-mcp, httpx-mcp, katana-mcp, nmap-mcp, secrets-mcp,
-burp-import-mcp, writeup-mcp, osint-mcp.
+burp-import-mcp, writeup-mcp, osint-mcp, github-security-mcp.
 
 osint-mcp (Shodan/VirusTotal/Censys/SecurityTrails) is NOT scope-gated --
 every lookup queries a third-party database ABOUT the target, never the
@@ -34,6 +34,17 @@ to other infrastructure sharing the same favicon, including hosts that
 never showed up in subfinder/katana's own crawl. `securitytrails_subdomains`
 is a second, independent passive-DNS source worth cross-checking against
 subfinder's own results.
+
+github-security-mcp (branch protection / Dependabot alerts / repo
+security posture via the GitHub API) is likewise NOT scope-gated -- it
+queries GitHub's own API about a repo's configuration, never the repo's
+actual deployed infrastructure. Use it when a target's own GitHub org/
+repos are in scope (a real, common bounty-program inclusion):
+check_branch_protection on the default branch, check_dependabot_alerts
+for known-vulnerable dependencies already flagged, check_repo_security_posture
+for secret-scanning/push-protection status. Requires GITHUB_TOKEN/GH_TOKEN
+or an already-authenticated gh CLI.
+
 katana-mcp itself only returns discovered JS file paths as text -- it
 does not save anything to disk. If you want secrets-mcp to scan the
 actual JS content (not just paths), download it yourself: run
