@@ -54,6 +54,7 @@ sys.path.insert(0, __file__.rsplit("/", 2)[0])
 
 import bounty_scope
 import db
+import disclosure_lookup
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("target-discovery-mcp")
@@ -255,6 +256,51 @@ def list_new_bounty_scope(since_hours: int = 24) -> str:
     lines = [f"{len(events)} newly-added scope entr{'y' if len(events)==1 else 'ies'} in the last {since_hours}h:"]
     for e in events:
         lines.append(f"  [{e['platform']}] {e['domain']} -- {e['program']} (seen {e['ts']})")
+    return "\n".join(lines)
+
+
+@app.tool()
+def refresh_disclosure_programs(force: bool = False) -> str:
+    """Refresh the local cache of lissy93/bug-bounties' two source files
+    (platform-programs.yml + independent-programs.yml, github.com/lissy93/
+    bug-bounties) -- complements refresh_bounty_scope()'s 5-platform data
+    with company/contact/safe-harbor-centric program info, including
+    standalone VDPs not on any platform. Skips the download if the cache
+    is still fresh (<24h old, this is a community-curated file, not a
+    live-synced feed) unless force=True."""
+    result = disclosure_lookup.refresh(force=force)
+    if not result["refreshed"]:
+        return f"Not refreshed: {result['reason']} (cached companies: {result['companies']})"
+    lines = [f"Refreshed -- {result['companies']} companies across both source files."]
+    if result["failed_sources"]:
+        lines.append(f"  Failed to fetch: {', '.join(result['failed_sources'])} (kept prior cached data for those)")
+    return "\n".join(lines)
+
+
+@app.tool()
+def lookup_disclosure_channel(domain: str) -> str:
+    """Find how to report a vulnerability for a domain -- contact method,
+    safe-harbor status, reward type -- from lissy93/bug-bounties' cached
+    company data. Complements lookup_bounty_scope() (which answers "is
+    this in scope on a major platform"): this answers "how do I actually
+    report this," and additionally covers standalone VDPs never listed on
+    any of the 5 major platforms. Matching is looser than
+    lookup_bounty_scope()'s exact wildcard-domain match (this dataset's
+    domain field is free text, not structured) -- treat a match as "a
+    program plausibly covers this, go read the url" rather than a
+    confirmed in-scope determination. Reads the local cache only -- call
+    refresh_disclosure_programs() first if it might be stale."""
+    matches = disclosure_lookup.lookup(domain)
+    if not matches:
+        return f"{domain!r} not found in cached disclosure-program data (may be unlisted, or cache needs a refresh)."
+    lines = [f"{len(matches)} possible match(es) for {domain!r}:"]
+    for m in matches:
+        harbor = f", safe harbor: {m['safe_harbor']}" if m.get("safe_harbor") else ""
+        rewards = f", rewards: {', '.join(m['rewards'])}" if m.get("rewards") else ""
+        lines.append(
+            f"  [{m['source']}] {m['company']} -- {m['url']}"
+            f" (contact: {m['contact'] or '(none listed)'}{harbor}{rewards})"
+        )
     return "\n".join(lines)
 
 
