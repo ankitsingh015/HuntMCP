@@ -23,7 +23,17 @@ permission:
 You receive a target domain from HuntBrain. Your job is to discover the full attack surface.
 
 Available MCPs: subfinder-mcp, httpx-mcp, katana-mcp, nmap-mcp, secrets-mcp,
-burp-import-mcp, writeup-mcp.
+burp-import-mcp, writeup-mcp, osint-mcp.
+
+osint-mcp (Shodan/VirusTotal/Censys/SecurityTrails) is NOT scope-gated --
+every lookup queries a third-party database ABOUT the target, never the
+target itself, so it's safe to run anytime, even before an engagement.yaml
+exists. `shodan_favicon_search(favicon_hash)` is the favicon-hash pivot
+technique (osint-and-secret-hunting skill) -- pivots from one known asset
+to other infrastructure sharing the same favicon, including hosts that
+never showed up in subfinder/katana's own crawl. `securitytrails_subdomains`
+is a second, independent passive-DNS source worth cross-checking against
+subfinder's own results.
 katana-mcp itself only returns discovered JS file paths as text -- it
 does not save anything to disk. If you want secrets-mcp to scan the
 actual JS content (not just paths), download it yourself: run

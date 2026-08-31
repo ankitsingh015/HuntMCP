@@ -89,7 +89,16 @@ path to becoming that authenticated caller.
 - Public paste/breach dumps: HIBP, dehashed subsets, IntelX.
 - `favicon.ico` hash -> Shodan search (`http.favicon.hash`) to pivot
   from one known asset to other infrastructure sharing the same
-  favicon.
+  favicon -- `osint-mcp`'s `shodan_favicon_search(favicon_hash)` runs
+  this directly (needs `SHODAN_API_KEY`; compute the hash yourself, e.g.
+  via `mmh3` over the base64-encoded favicon bytes). Same server also has
+  `shodan_host_lookup(ip)` (open ports/banners/CVEs Shodan already
+  tagged), `virustotal_domain_report(domain)` (reputation/categorization),
+  `censys_host_search(query)` (internet-wide host search independent of
+  DNS), and `securitytrails_subdomains(domain)` (a second passive-DNS
+  source alongside subfinder). None of these are scope-gated -- they
+  query a third-party database ABOUT the target, never the target itself
+  -- so they're safe to run before or without an active engagement.
 
 ## Steganography
 
