@@ -123,6 +123,56 @@ def test_sweep_result_summary_counts():
     assert result.summary_counts() == {"LEAKED": 1, "PROTECTED": 2}
 
 
+def _verdicts(*verdicts: str) -> list:
+    return [
+        idor_sweep.IdVerdict(object_id=str(i), owner_status=None, other_status=None, verdict=v)
+        for i, v in enumerate(verdicts)
+    ]
+
+
+def test_owner_baseline_failure_warning_none_when_all_healthy():
+    result = idor_sweep.SweepResult(url_template="https://target.com/api/orders/{id}")
+    result.verdicts = _verdicts("PROTECTED", "LEAKED", "PROTECTED", "DIFFERENT")
+    assert result.owner_baseline_failure_warning() is None
+
+
+def test_owner_baseline_failure_warning_none_below_min_sample():
+    # 2/2 = 100% OWNER_BASELINE_FAILED, but below OWNER_BASELINE_FAILURE_MIN_SAMPLE
+    # (3) -- too small a batch to call it systemic rather than two bad ids.
+    result = idor_sweep.SweepResult(url_template="https://target.com/api/orders/{id}")
+    result.verdicts = _verdicts("OWNER_BASELINE_FAILED", "OWNER_BASELINE_FAILED")
+    assert result.owner_baseline_failure_warning() is None
+
+
+def test_owner_baseline_failure_warning_none_below_ratio_threshold():
+    # 1/4 = 25% OWNER_BASELINE_FAILED -- plausibly just one bad id, not systemic.
+    result = idor_sweep.SweepResult(url_template="https://target.com/api/orders/{id}")
+    result.verdicts = _verdicts("OWNER_BASELINE_FAILED", "PROTECTED", "PROTECTED", "LEAKED")
+    assert result.owner_baseline_failure_warning() is None
+
+
+def test_owner_baseline_failure_warning_fires_above_ratio_threshold():
+    # 4/5 = 80% OWNER_BASELINE_FAILED -- meets the threshold exactly.
+    result = idor_sweep.SweepResult(url_template="https://target.com/api/orders/{id}")
+    result.verdicts = _verdicts(
+        "OWNER_BASELINE_FAILED", "OWNER_BASELINE_FAILED", "OWNER_BASELINE_FAILED",
+        "OWNER_BASELINE_FAILED", "PROTECTED",
+    )
+    warning = result.owner_baseline_failure_warning()
+    assert warning is not None
+    assert "4/5" in warning
+    assert "80%" in warning
+    assert "owner_cookie_header" in warning and "owner_bearer_token" in warning
+
+
+def test_owner_baseline_failure_warning_fires_when_every_id_fails():
+    result = idor_sweep.SweepResult(url_template="https://target.com/api/orders/{id}")
+    result.verdicts = _verdicts(*(["OWNER_BASELINE_FAILED"] * 5))
+    warning = result.owner_baseline_failure_warning()
+    assert warning is not None
+    assert "5/5" in warning and "100%" in warning
+
+
 def test_check_one_id_url_and_body_substitute_id_placeholder(monkeypatch):
     calls = []
 

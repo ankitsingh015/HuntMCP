@@ -45,6 +45,16 @@ AMBIGUOUS_RATIO_THRESHOLD = 0.5
 
 PROTECTED_STATUSES = {401, 403, 404}
 
+# Fraction of one sweep's verdicts that come back OWNER_BASELINE_FAILED
+# above which the failure is almost certainly systemic (a dead/expired
+# owner_cookie_header or owner_bearer_token), not N independently
+# nonexistent object ids -- see SweepResult.owner_baseline_failure_warning().
+OWNER_BASELINE_FAILURE_WARNING_RATIO = 0.8
+# Below this many tested ids, a high failure ratio is just as likely to be
+# a couple of genuinely bad ids in a small batch as a systemic credential
+# problem -- not enough signal to call it out as a warning either way.
+OWNER_BASELINE_FAILURE_MIN_SAMPLE = 3
+
 
 @dataclass
 class FetchResult:
@@ -73,6 +83,33 @@ class SweepResult:
         for v in self.verdicts:
             counts[v.verdict] = counts.get(v.verdict, 0) + 1
         return counts
+
+    def owner_baseline_failure_warning(self) -> str | None:
+        """None unless OWNER_BASELINE_FAILED verdicts dominate this sweep --
+        in which case that's almost certainly one systemic problem (the
+        owner credential is dead/expired/invalid), not N separately
+        nonexistent object ids, and every other verdict in the sweep is
+        untrustworthy until it's fixed. Per-id OWNER_BASELINE_FAILED already
+        says this for one id; a caller skimming a long verdict list can
+        still miss that the SAME reason repeated across most of the batch,
+        so this is a summary-level check, not a duplicate of the per-id one.
+        Modeled on the same principle CyberStrike's hackbrowser navigator.ts
+        applies to its own crawl planner: a systemic auth failure must
+        surface as a hard, specific warning, never blend into an ordinary
+        "nothing found here" result."""
+        total = len(self.verdicts)
+        if total < OWNER_BASELINE_FAILURE_MIN_SAMPLE:
+            return None
+        failed = sum(1 for v in self.verdicts if v.verdict == "OWNER_BASELINE_FAILED")
+        ratio = failed / total
+        if ratio < OWNER_BASELINE_FAILURE_WARNING_RATIO:
+            return None
+        return (
+            f"⚠️ {failed}/{total} ({ratio:.0%}) object ids came back OWNER_BASELINE_FAILED. "
+            "This pattern is almost always a dead/expired/invalid owner_cookie_header or "
+            "owner_bearer_token, not N separately nonexistent object ids -- verify the owner "
+            "credential is still valid and re-run before trusting any verdict in this sweep."
+        )
 
 
 def _build_headers(cookie_header: str | None, bearer_token: str | None) -> dict[str, str]:
