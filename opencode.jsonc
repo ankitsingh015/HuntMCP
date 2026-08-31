@@ -156,6 +156,11 @@
       "type": "local",
       "enabled": true,
       "command": ["./.venv/bin/python", "mcp-servers/azure-postexploit-mcp/server.py"]
+    },
+    "aws-postexploit-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": ["./.venv/bin/python", "mcp-servers/aws-postexploit-mcp/server.py"]
     }
   },
   "autoupdate": "notify"

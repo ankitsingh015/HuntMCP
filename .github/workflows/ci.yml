@@ -68,7 +68,11 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install --no-cache-dir pytest pyyaml "mcp>=1.0.0,<2.0.0"
+        # boto3/botocore (unlike Playwright/chromadb elsewhere in this repo)
+        # are pure-Python, no browser download or system deps -- cheap enough
+        # to include here so aws-postexploit-mcp gets real botocore.stub.Stubber
+        # coverage instead of falling back to live-verified-only.
+        run: pip install --no-cache-dir pytest pyyaml "mcp>=1.0.0,<2.0.0" boto3
 
       - name: Run pytest
         run: python3 -m pytest tests/ -v
