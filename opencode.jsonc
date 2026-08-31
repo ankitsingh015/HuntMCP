@@ -166,6 +166,11 @@
       "type": "local",
       "enabled": true,
       "command": ["./.venv/bin/python", "mcp-servers/gcp-postexploit-mcp/server.py"]
+    },
+    "local-privesc-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": ["./.venv/bin/python", "mcp-servers/local-privesc-mcp/server.py"]
     }
   },
   "autoupdate": "notify"
