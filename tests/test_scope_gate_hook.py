@@ -54,6 +54,15 @@ def test_extract_hosts_from_bash_flags_raw_wget():
     assert "realtarget-corp.com" in hosts
 
 
+def test_extract_hosts_from_bash_flags_curl_rl_wrapper():
+    """Regression: scripts/curl-rl.sh (the 429-retry curl wrapper) must
+    get identical scope treatment to raw curl -- calling it instead of
+    curl must never be a way to silently skip host extraction just
+    because the binary name changed."""
+    hosts = hook._extract_hosts_from_bash("scripts/curl-rl.sh https://realtarget-corp.com/api")
+    assert "realtarget-corp.com" in hosts
+
+
 def test_extract_hosts_from_bash_curl_exempts_dev_infra():
     assert hook._extract_hosts_from_bash(
         "curl -sL https://raw.githubusercontent.com/foo/bar/main/README.md"
@@ -213,6 +222,35 @@ def test_main_blocks_raw_curl_to_out_of_scope_target(monkeypatch, tmp_path):
     )
     payload = {"tool_name": "Bash", "tool_input": {"command": "curl https://someothersite.com/api"}}
     assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_curl_rl_wrapper_to_out_of_scope_target(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "scripts/curl-rl.sh https://someothersite.com/api"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_curl_rl_wrapper_in_scope_enforces_budget_and_logs_audit(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    budget_calls = []
+    monkeypatch.setattr(hook, "_enforce_budget", lambda name: budget_calls.append(name))
+    audit_calls = []
+    monkeypatch.setattr(
+        hook, "_log_call",
+        lambda tool, args, returncode, duration_ms, block: audit_calls.append(
+            (tool, args, returncode, duration_ms, block)
+        ),
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "scripts/curl-rl.sh -s https://realtarget-corp.com/api"}}
+    assert _run_main(monkeypatch, payload) == 0
+    assert budget_calls == ["curl-rl.sh"]
+    assert audit_calls == [("curl-rl.sh", ["-s", "https://realtarget-corp.com/api"], None, 0.0, None)]
 
 
 def test_main_allows_raw_curl_to_in_scope_target(monkeypatch, tmp_path):
