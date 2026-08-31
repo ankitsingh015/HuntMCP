@@ -39,13 +39,28 @@ except ImportError:
     from redact import redact_text
 
 _LEGACY_LOG_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "audit.jsonl")
+
+# Snapshot only, for introspection/backward-compat -- log_call() below
+# re-resolves this fresh via _resolve_path() instead of using this frozen
+# value (a literal `path: str = LOG_PATH` parameter default freezes onto
+# whatever active-engagement pointer existed at import time; see
+# scope_guard.load_engagement's comment for the full story).
 LOG_PATH = engagement_paths.resolve(
     "audit.jsonl", override_env="HUNTMCP_AUDIT_LOG", legacy_default=_LEGACY_LOG_PATH,
 )
 
 
+def _resolve_path(path: str | None) -> str:
+    if path is not None:
+        return path
+    return engagement_paths.resolve(
+        "audit.jsonl", override_env="HUNTMCP_AUDIT_LOG", legacy_default=_LEGACY_LOG_PATH,
+    )
+
+
 def log_call(tool: str, args: list[str], returncode: int | None,
-             duration_ms: float, block: str | None, path: str = LOG_PATH) -> None:
+             duration_ms: float, block: str | None, path: str | None = None) -> None:
+    path = _resolve_path(path)
     entry = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "tool": tool,

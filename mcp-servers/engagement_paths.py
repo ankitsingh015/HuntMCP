@@ -78,8 +78,21 @@ import os
 import re
 import sys
 
-ACTIVE_POINTER = os.getenv("HUNTMCP_ACTIVE_POINTER", "data/.active-engagement")
-ENGAGEMENTS_ROOT = os.getenv("HUNTMCP_ENGAGEMENTS_ROOT", "data/engagements")
+# Anchored to the repo root, NOT the caller's cwd. Bug found live
+# (2026-08-31, coderabbit.ai engagement): a subagent whose cwd had drifted
+# into a tool's own mcp-servers/<tool>/ subdirectory (working around the
+# separate MCP-binding issue by importing server.py directly) silently
+# resolved these to mcp-servers/<tool>/data/.active-engagement and
+# mcp-servers/<tool>/data/engagements -- neither existed, so
+# get_active_target() quietly returned None instead of erroring, and every
+# guard module fell back to "no active target," writing budget.json.lock
+# files straight into mcp-servers/<tool>/ instead of the real per-engagement
+# directory. Repo-root-anchoring makes the default correct regardless of
+# the caller's cwd; HUNTMCP_ACTIVE_POINTER/HUNTMCP_ENGAGEMENTS_ROOT (used by
+# tests and advanced manual use) still override it exactly as before.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ACTIVE_POINTER = os.getenv("HUNTMCP_ACTIVE_POINTER", os.path.join(_REPO_ROOT, "data/.active-engagement"))
+ENGAGEMENTS_ROOT = os.getenv("HUNTMCP_ENGAGEMENTS_ROOT", os.path.join(_REPO_ROOT, "data/engagements"))
 
 
 def slugify(target: str) -> str:
@@ -87,7 +100,8 @@ def slugify(target: str) -> str:
     return slug or "unnamed-target"
 
 
-def get_active_target(pointer_path: str = ACTIVE_POINTER) -> str | None:
+def get_active_target(pointer_path: str | None = None) -> str | None:
+    pointer_path = ACTIVE_POINTER if pointer_path is None else pointer_path
     if not os.path.isfile(pointer_path):
         return None
     with open(pointer_path) as f:
@@ -95,11 +109,13 @@ def get_active_target(pointer_path: str = ACTIVE_POINTER) -> str | None:
     return slug or None
 
 
-def set_active_target(target: str, pointer_path: str = ACTIVE_POINTER,
-                       engagements_root: str = ENGAGEMENTS_ROOT) -> str:
+def set_active_target(target: str, pointer_path: str | None = None,
+                       engagements_root: str | None = None) -> str:
     """Point the active pointer at target's directory, creating it if new.
     Never touches files already inside an existing target directory --
     switching back to a paused target is always safe."""
+    pointer_path = ACTIVE_POINTER if pointer_path is None else pointer_path
+    engagements_root = ENGAGEMENTS_ROOT if engagements_root is None else engagements_root
     slug = slugify(target)
     os.makedirs(os.path.dirname(pointer_path) or ".", exist_ok=True)
     with open(pointer_path, "w") as f:
@@ -109,8 +125,8 @@ def set_active_target(target: str, pointer_path: str = ACTIVE_POINTER,
 
 
 def resolve(filename: str, override_env: str | None = None,
-            pointer_path: str = ACTIVE_POINTER,
-            engagements_root: str = ENGAGEMENTS_ROOT,
+            pointer_path: str | None = None,
+            engagements_root: str | None = None,
             legacy_default: str | None = None) -> str:
     """Resolve filename to its actual on-disk path for the active target.
 
@@ -119,7 +135,16 @@ def resolve(filename: str, override_env: str | None = None,
     target is currently active, resolve inside its per-target directory.
     Otherwise fall back to legacy_default (or, if not given, the bare
     filename) -- so a single-target workflow that never calls `set` behaves
-    exactly as it did before this module existed."""
+    exactly as it did before this module existed.
+
+    pointer_path/engagements_root default to None (not ACTIVE_POINTER/
+    ENGAGEMENTS_ROOT bound as literal parameter defaults) specifically so a
+    test can `monkeypatch.setattr(engagement_paths, "ACTIVE_POINTER", ...)`
+    and have every caller actually pick it up -- a bound-at-definition-time
+    default would freeze in whatever ACTIVE_POINTER was at import time,
+    silently ignoring a later monkeypatch of the module attribute."""
+    pointer_path = ACTIVE_POINTER if pointer_path is None else pointer_path
+    engagements_root = ENGAGEMENTS_ROOT if engagements_root is None else engagements_root
     if override_env:
         override = os.getenv(override_env)
         if override:
@@ -131,8 +156,8 @@ def resolve(filename: str, override_env: str | None = None,
 
 
 def resolve_dir(dirname: str, override_env: str | None = None,
-                 pointer_path: str = ACTIVE_POINTER,
-                 engagements_root: str = ENGAGEMENTS_ROOT,
+                 pointer_path: str | None = None,
+                 engagements_root: str | None = None,
                  legacy_default: str | None = None) -> str:
     """Like resolve(), but for a subdirectory rather than a single file --
     e.g. sqlmap-mcp's scratch dir, or recon-agent's JS-download directory.
@@ -146,16 +171,17 @@ def resolve_dir(dirname: str, override_env: str | None = None,
     return path
 
 
-def _complete_marker(slug: str, engagements_root: str = ENGAGEMENTS_ROOT) -> str:
+def _complete_marker(slug: str, engagements_root: str | None = None) -> str:
+    engagements_root = ENGAGEMENTS_ROOT if engagements_root is None else engagements_root
     return os.path.join(engagements_root, slug, ".complete")
 
 
-def is_complete(slug: str, engagements_root: str = ENGAGEMENTS_ROOT) -> bool:
+def is_complete(slug: str, engagements_root: str | None = None) -> bool:
     return os.path.isfile(_complete_marker(slug, engagements_root))
 
 
-def mark_complete(pointer_path: str = ACTIVE_POINTER,
-                   engagements_root: str = ENGAGEMENTS_ROOT) -> str | None:
+def mark_complete(pointer_path: str | None = None,
+                   engagements_root: str | None = None) -> str | None:
     """Mark the currently active target's directory complete. Returns the
     slug marked, or None if no target is active."""
     slug = get_active_target(pointer_path)
@@ -166,8 +192,8 @@ def mark_complete(pointer_path: str = ACTIVE_POINTER,
     return slug
 
 
-def check_conflict(target: str, pointer_path: str = ACTIVE_POINTER,
-                    engagements_root: str = ENGAGEMENTS_ROOT) -> str | None:
+def check_conflict(target: str, pointer_path: str | None = None,
+                    engagements_root: str | None = None) -> str | None:
     """Returns a warning message if starting `target` would conflict with
     an already-active, not-yet-complete DIFFERENT target in this same chat
     session -- None if there's no conflict (nothing active, this target IS
@@ -188,7 +214,8 @@ def check_conflict(target: str, pointer_path: str = ACTIVE_POINTER,
     )
 
 
-def list_engagements(engagements_root: str = ENGAGEMENTS_ROOT) -> list[dict]:
+def list_engagements(engagements_root: str | None = None) -> list[dict]:
+    engagements_root = ENGAGEMENTS_ROOT if engagements_root is None else engagements_root
     if not os.path.isdir(engagements_root):
         return []
     out = []
@@ -218,7 +245,7 @@ def list_engagements(engagements_root: str = ENGAGEMENTS_ROOT) -> list[dict]:
     return out
 
 
-def format_session_commands(engagements_root: str = ENGAGEMENTS_ROOT,
+def format_session_commands(engagements_root: str | None = None,
                              active_slug: str | None = None) -> str:
     """Human-facing, copy-paste-ready companion to list_engagements() --
     for every known engagement (active or paused), print the exact

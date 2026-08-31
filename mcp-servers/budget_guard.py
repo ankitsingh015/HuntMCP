@@ -36,6 +36,12 @@ except ImportError:
 
 import file_lock
 
+# Snapshot only, for introspection/backward-compat -- check_budget()/
+# enforce() below re-resolve this fresh on every call instead of using
+# this frozen value (see scope_guard.load_engagement's comment for why:
+# a literal `path: str = DEFAULT_PATH` parameter default freezes onto
+# whatever active-engagement pointer existed at import time and never
+# picks up a later engagement switch or test override).
 DEFAULT_PATH = engagement_paths.resolve("budget.json", override_env="HUNTMCP_BUDGET_PATH")
 MAX_CALLS = int(os.getenv("HUNTMCP_MAX_TOOL_CALLS", "500"))
 WARNING_BANDS = (0.70, 0.85, 0.95)
@@ -74,13 +80,20 @@ def _status(state: dict) -> dict:
     }
 
 
-def check_budget(path: str = DEFAULT_PATH) -> dict:
+def _resolve_path(path: str | None) -> str:
+    if path is not None:
+        return path
+    return engagement_paths.resolve("budget.json", override_env="HUNTMCP_BUDGET_PATH")
+
+
+def check_budget(path: str | None = None) -> dict:
     """Read-only status check -- does not record a call."""
+    path = _resolve_path(path)
     with file_lock.locked(path):
         return _status(_load(path))
 
 
-def enforce(tool_name: str, path: str = DEFAULT_PATH) -> dict:
+def enforce(tool_name: str, path: str | None = None) -> dict:
     """Record one Tier-2 tool call and return the current status.
 
     Prints a one-line stderr notice the first time a new warning band
@@ -89,6 +102,7 @@ def enforce(tool_name: str, path: str = DEFAULT_PATH) -> dict:
     caller proceed) once the hard cap is reached -- call this BEFORE
     running the actual subprocess, not after.
     """
+    path = _resolve_path(path)
     with file_lock.locked(path):
         state = _load(path)
         state["calls"] += 1

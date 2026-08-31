@@ -1,127 +1,127 @@
 {
   "mcpServers": {
     "writeup-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/writeup-mcp/server.py"]
     },
     "memory-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/memory-mcp/server.py"]
     },
     "lessons-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/lessons-mcp/server.py"]
     },
     "subfinder-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/subfinder-mcp/server.py"]
     },
     "httpx-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/httpx-mcp/server.py"]
     },
     "katana-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/katana-mcp/server.py"]
     },
     "nmap-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/nmap-mcp/server.py"]
     },
     "nuclei-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/nuclei-mcp/server.py"]
     },
     "sqlmap-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/sqlmap-mcp/server.py"]
     },
     "dalfox-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/dalfox-mcp/server.py"]
     },
     "ffuf-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/ffuf-mcp/server.py"]
     },
     "chainer-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/chainer-mcp/server.py"]
     },
     "oob-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/oob-mcp/server.py"]
     },
     "watch-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/watch-mcp/server.py"]
     },
     "waf-bypass-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/waf-bypass-mcp/server.py"]
     },
     "browser-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/browser-mcp/server.py"]
     },
     "playwright-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/playwright-mcp/server.py"]
     },
     "hackerone-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/hackerone-mcp/server.py"]
     },
     "target-discovery-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/target-discovery-mcp/server.py"]
     },
     "osint-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/osint-mcp/server.py"]
     },
     "github-security-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/github-security-mcp/server.py"]
     },
     "secrets-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/secrets-mcp/server.py"]
     },
     "second-opinion-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/second-opinion-mcp/server.py"]
     },
     "burp-import-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/burp-import-mcp/server.py"]
     },
     "case-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/case-mcp/server.py"]
     },
     "idor-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/idor-mcp/server.py"]
     },
     "azure-postexploit-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/azure-postexploit-mcp/server.py"]
     },
     "aws-postexploit-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/aws-postexploit-mcp/server.py"]
     },
     "gcp-postexploit-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/gcp-postexploit-mcp/server.py"]
     },
     "local-privesc-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/local-privesc-mcp/server.py"]
     },
     "ad-recon-mcp": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/ad-recon-mcp/server.py"]
     }
   }

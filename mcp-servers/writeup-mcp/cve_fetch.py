@@ -104,18 +104,32 @@ tech: {keyword}
 
 
 def _fetch_json(url: str, headers: dict, retries: int = 3) -> dict:
+    last_err: Exception | None = None
     for attempt in range(retries):
         req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
+            last_err = e
             # NVD's public rate limit (no API key) is 5 requests / 30s.
             if e.code in (403, 429) and attempt < retries - 1:
                 time.sleep(6)
                 continue
             raise
-    raise RuntimeError(f"Failed to fetch {url} after {retries} attempts")
+        except (urllib.error.URLError, TimeoutError, ConnectionResetError) as e:
+            # Transient network failure (timeout, connection reset, DNS
+            # hiccup) -- NOT an HTTPError, so the branch above never caught
+            # it: a single dropped connection used to propagate immediately
+            # with zero retries despite the `retries` param implying
+            # otherwise. Short backoff, same attempt budget as the rate-limit
+            # case above.
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(2)
+                continue
+            raise
+    raise RuntimeError(f"Failed to fetch {url} after {retries} attempts") from last_err
 
 
 def fetch_cves(
