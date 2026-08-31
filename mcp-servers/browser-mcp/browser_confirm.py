@@ -28,8 +28,20 @@ target's JS) -- callers MUST run scripts/check-scope.sh <host> first,
 exactly like every other Tier-2 tool in this repo. Not enforced inside
 this module itself (consistent with how other MCP servers work -- the
 calling agent enforces scope, tool_resolver.run_tool()'s subprocess
-callers enforce budget); budget IS enforced here directly since these
-calls don't go through run_tool()'s subprocess chokepoint.
+callers enforce budget); budget AND audit are both enforced here
+directly since these calls don't go through run_tool()'s subprocess
+chokepoint at all.
+
+Audit logging was a real gap here until 2026-08-30: playwright-mcp's
+challenge_solver.py (built after this file, same direct-Playwright shape)
+called both budget_guard.enforce() and audit_log.log_call(), while this
+file only ever picked up the budget half -- every browser-mcp call was
+invisible to the audit trail a real engagement gets reviewed against
+afterward. Fixed by mirroring challenge_solver.py's pattern exactly
+(time.monotonic() around the Playwright block, log_call() with the
+result's url and a None block -- there's no rate-limit/WAF classification
+to make here, this module isn't the one that inspects challenge/block
+signatures) rather than reinventing it.
 
 Uses Playwright's ASYNC API (async_playwright), not sync_playwright --
 deliberately, and not optional. FastMCP dispatches tool handlers on the
@@ -51,9 +63,11 @@ import base64
 import json
 import os
 import sys
+import time
 from urllib.parse import urljoin
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from audit_log import log_call as _log_call
 from browser_launch import DEFAULT_TIMEOUT_MS
 from browser_launch import launch_kwargs as _launch_kwargs
 from browser_launch import parse_cookie_header as _parse_cookie_header
@@ -167,6 +181,7 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
     session before navigating, for confirming XSS in a logged-in-only
     view."""
     _enforce_budget("browser-mcp")
+    start = time.monotonic()
     from playwright.async_api import async_playwright
 
     result = {
@@ -208,6 +223,8 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
             await _save_session(context, session_file)
             await browser.close()
 
+    _log_call("browser-mcp", [url], returncode=None,
+              duration_ms=(time.monotonic() - start) * 1000, block=None)
     return result
 
 
@@ -225,6 +242,7 @@ async def render_dom(url: str, wait_selector: str | None = None,
     possible: render_dom the same url once per role's cookie_header and
     compare the two results yourself."""
     _enforce_budget("browser-mcp")
+    start = time.monotonic()
     from playwright.async_api import async_playwright
 
     result = {"url": url, "html": None, "title": None, "error": None}
@@ -242,6 +260,8 @@ async def render_dom(url: str, wait_selector: str | None = None,
         finally:
             await _save_session(context, session_file)
             await browser.close()
+    _log_call("browser-mcp", [url], returncode=None,
+              duration_ms=(time.monotonic() - start) * 1000, block=None)
     return result
 
 
@@ -289,6 +309,7 @@ async def extract_page_content(url: str, wait_selector: str | None = None,
     cookie_header/bearer_token/local_storage/session_file (see _new_page()) seed an authenticated
     session before navigating, for reading a logged-in-only page/listing."""
     _enforce_budget("browser-mcp")
+    start = time.monotonic()
     from playwright.async_api import async_playwright
 
     result = {"url": url, "title": None, "text": None, "links": [], "error": None}
@@ -311,6 +332,8 @@ async def extract_page_content(url: str, wait_selector: str | None = None,
         finally:
             await _save_session(context, session_file)
             await browser.close()
+    _log_call("browser-mcp", [url], returncode=None,
+              duration_ms=(time.monotonic() - start) * 1000, block=None)
     return result
 
 
@@ -329,6 +352,7 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
     cookie_header/bearer_token/local_storage/session_file (see _new_page()) seed an authenticated
     session before navigating, for a form that only appears once logged in."""
     _enforce_budget("browser-mcp")
+    start = time.monotonic()
     from playwright.async_api import async_playwright
 
     result = {"url": url, "submitted": False, "dialog_fired": False,
@@ -360,6 +384,11 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
         finally:
             await _save_session(context, session_file)
             await browser.close()
+    # Log the url + submit selector only -- not field_values, which can
+    # legitimately contain a password or other secret being tested and has
+    # no business sitting in a plaintext audit log.
+    _log_call("browser-mcp", [url, submit_selector], returncode=None,
+              duration_ms=(time.monotonic() - start) * 1000, block=None)
     return result
 
 
@@ -375,6 +404,7 @@ async def screenshot_base64(url: str, wait_ms: int = 1000,
     authenticated session before navigating, for
     a screenshot of a logged-in-only view."""
     _enforce_budget("browser-mcp")
+    start = time.monotonic()
     from playwright.async_api import async_playwright
 
     result = {"url": url, "screenshot_base64": None, "error": None}
@@ -391,4 +421,6 @@ async def screenshot_base64(url: str, wait_ms: int = 1000,
         finally:
             await _save_session(context, session_file)
             await browser.close()
+    _log_call("browser-mcp", [url], returncode=None,
+              duration_ms=(time.monotonic() - start) * 1000, block=None)
     return result
