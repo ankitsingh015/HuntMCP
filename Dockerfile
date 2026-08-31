@@ -63,6 +63,7 @@ RUN pip install --no-cache-dir -U pip && \
         sentence-transformers>=3.0.0 \
         numpy>=1.24.0 \
         pyyaml>=6.0 \
+        boto3>=1.34.0 \
         sqlmap
 
 # Create project structure
