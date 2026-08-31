@@ -115,6 +115,10 @@
     "gcp-postexploit-mcp": {
       "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/gcp-postexploit-mcp/server.py"]
+    },
+    "local-privesc-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/local-privesc-mcp/server.py"]
     }
   }
 }
