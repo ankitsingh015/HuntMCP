@@ -10,6 +10,7 @@ on:
       - 'opencode.jsonc'
       - 'Dockerfile'
       - '.github/workflows/ci.yml'
+      - '.claude/skills/**'
   pull_request:
     branches: [main]
     paths:
@@ -17,6 +18,8 @@ on:
       - 'scripts/**'
       - 'tests/**'
       - 'Dockerfile'
+      - '.github/workflows/ci.yml'
+      - '.claude/skills/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -189,6 +192,53 @@ jobs:
           if issues:
               exit(1)
           print(f'✅ All writeups valid')
+          " 2>&1
+
+      - name: Validate skill frontmatter
+        run: |
+          python3 -c "
+          import os, re
+          skill_dir = '.claude/skills'
+          required = ['name', 'description']
+          # Optional structured-metadata fields (tags/tech_stack/cwe_ids) --
+          # not required on any skill yet, only validated for shape when
+          # present, so adding them to skills is an incremental, per-skill
+          # migration rather than a one-shot break-everything change.
+          list_fields = ['tags', 'tech_stack', 'cwe_ids']
+          issues = 0
+          dirs = sorted(d for d in os.listdir(skill_dir) if os.path.isdir(os.path.join(skill_dir, d)))
+          for d in dirs:
+              path = os.path.join(skill_dir, d, 'SKILL.md')
+              if not os.path.exists(path):
+                  print(f'❌ {d}: missing SKILL.md')
+                  issues += 1
+                  continue
+              content = open(path).read()
+              match = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
+              if not match:
+                  print(f'❌ {d}/SKILL.md: missing YAML frontmatter')
+                  issues += 1
+                  continue
+              fm = match.group(1)
+              before = issues
+              for field in required:
+                  if not re.search(rf'^{field}:', fm, re.MULTILINE):
+                      print(f'❌ {d}/SKILL.md: missing required field \"{field}\"')
+                      issues += 1
+              name_match = re.search(r'^name:\s*(\S+)', fm, re.MULTILINE)
+              if name_match and name_match.group(1) != d:
+                  print(f'❌ {d}/SKILL.md: name field \"{name_match.group(1)}\" does not match directory name \"{d}\"')
+                  issues += 1
+              for field in list_fields:
+                  m = re.search(rf'^{field}:\s*(.+)$', fm, re.MULTILINE)
+                  if m and not (m.group(1).strip().startswith('[') and m.group(1).strip().endswith(']')):
+                      print(f'❌ {d}/SKILL.md: \"{field}\" must be a flow-style list ([a, b, c]) if present')
+                      issues += 1
+              if issues == before:
+                  print(f'✅ {d}')
+          if issues:
+              exit(1)
+          print(f'✅ All {len(dirs)} skills have valid frontmatter')
           " 2>&1
 
   validate-agent-files:
