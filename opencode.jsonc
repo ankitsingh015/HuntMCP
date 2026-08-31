@@ -171,6 +171,11 @@
       "type": "local",
       "enabled": true,
       "command": ["./.venv/bin/python", "mcp-servers/local-privesc-mcp/server.py"]
+    },
+    "ad-recon-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": ["./.venv/bin/python", "mcp-servers/ad-recon-mcp/server.py"]
     }
   },
   "autoupdate": "notify"

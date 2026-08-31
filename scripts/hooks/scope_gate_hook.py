@@ -96,6 +96,14 @@ TIER2_MCP_SERVERS = {
     "subfinder-mcp", "httpx-mcp", "katana-mcp", "nmap-mcp",
     "nuclei-mcp", "sqlmap-mcp", "dalfox-mcp", "ffuf-mcp", "watch-mcp",
     "waf-bypass-mcp", "browser-mcp", "playwright-mcp", "idor-mcp",
+    # ad-recon-mcp's kerberoast_tool/asreproast_tool both take a `domain`
+    # param (an AD domain, e.g. "corp.local") -- unlike aws/azure/
+    # gcp-postexploit-mcp (which take a credential, not a domain, and are
+    # deliberately NOT here -- see their own module docstrings), this one
+    # genuinely has a hostname-shaped arg HOST_ARG_KEYS can extract and
+    # check, so it gets the same real scope-gate every other domain-taking
+    # Tier-2 server already does.
+    "ad-recon-mcp",
 }
 
 HOST_ARG_KEYS = ("domains", "domain", "target", "targets", "url", "host", "hosts")
