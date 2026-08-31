@@ -26,6 +26,31 @@ SYSTEM_BROWSER_CANDIDATES = [
 
 DEFAULT_TIMEOUT_MS = 15_000
 
+# Cheap, well-known Chromium launch flags that reduce the odds of tripping
+# basic bot-detection during an ordinary confirmation call (check_js_execution/
+# render_dom/extract_page_content/solve_js_challenge) -- NOT a claim of full
+# fingerprint spoofing (no canvas/WebGL/font masking here, none of that is
+# needed for what this module does). --disable-blink-features=
+# AutomationControlled is the one that actually matters: without it, Chromium
+# sets navigator.webdriver=true and a handful of other automation-only
+# properties that even simple bot-detection JS checks for -- a page that
+# would otherwise render normally can instead serve a challenge/block page
+# purely because the browser announced itself as automated, which would look
+# identical to a real WAF block to everything downstream (classify_block(),
+# a human reading the result) without ever being one. The other two are
+# low-risk companions with the same intent: --disable-features=IsolateOrigins,
+# site-per-process avoids a site-isolation quirk some bot-detection scripts
+# key off, --no-first-run suppresses first-run UI noise that has no reason to
+# ever show up in a headless run anyway. playwright-mcp's solve_js_challenge
+# already handles the case where a target's challenge is unavoidable even
+# with these flags -- this is about not walking into one that a real visitor
+# wouldn't have hit at all.
+STEALTH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--no-first-run",
+]
+
 
 def find_browser_executable() -> str | None:
     for path in SYSTEM_BROWSER_CANDIDATES:
@@ -36,7 +61,10 @@ def find_browser_executable() -> str | None:
 
 def launch_kwargs() -> dict:
     executable = find_browser_executable()
-    kwargs: dict = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
+    kwargs: dict = {
+        "headless": True,
+        "args": ["--no-sandbox", "--disable-dev-shm-usage", *STEALTH_ARGS],
+    }
     if executable:
         kwargs["executable_path"] = executable
     return kwargs
