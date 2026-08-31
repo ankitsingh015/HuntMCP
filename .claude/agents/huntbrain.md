@@ -1,7 +1,7 @@
 ---
 name: huntbrain
 description: Level 1 orchestrator for a HuntMCP bug bounty / pentest engagement. Use when the user asks to audit, hunt, or run a security engagement against a target. Delegates to recon-agent, scan-agent, exploit-agent, chain-planner, and report-agent.
-tools: Read, Write, Edit, Bash, WebFetch, Skill, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp, mcp__hackerone-mcp, mcp__case-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp, mcp__hackerone-mcp, mcp__case-mcp, mcp__target-discovery-mcp
 model: inherit
 permissionMode: default
 skills:
@@ -39,7 +39,21 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    way; this tool only saves the transcription step, it never writes the
    file itself. If it errors (no credentials configured, or program not
    accessible), fall back to asking the user to paste the scope as normal
-   — don't block Phase 0 on this being available. **Never ask the user to type a command,
+   — don't block Phase 0 on this being available. Independently of
+   whether it's an H1 program, `mcp__target-discovery-mcp`
+   `lookup_bounty_scope(domain)` is credential-free and checks all 5
+   aggregated platforms (not just H1) for already-published structured
+   scope on this exact domain — worth calling even when
+   `sync_program_scope` isn't available, since a non-H1 program you don't
+   have API access to might still resolve. `lookup_disclosure_channel(domain)`
+   is a second, complementary source (contact method, safe-harbor status,
+   including standalone VDPs not on any platform) — useful once a finding
+   needs reporting, not just at Phase 0. `check_security_txt(domain)`/
+   `add_candidate` are for pre-engagement discovery of domains that
+   aren't yet a confirmed target at all — reading a domain's own
+   published disclosure policy is not scope-gated (not Tier-2), but
+   finding one doesn't itself authorize testing; only `engagement.yaml`
+   does. **Never ask the user to type a command,
    create/edit `engagement.yaml` themselves, or run `check-scope.sh` — you
    have Write access, use it.** The only manual step is them pasting scope
    details into the conversation; everything after that (parsing, writing
