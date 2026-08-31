@@ -191,3 +191,136 @@ def test_check_one_id_url_and_body_substitute_id_placeholder(monkeypatch):
     assert calls[0][1] == "owner=1"
     assert calls[1][1] == "other=1"
     assert verdict.object_id == "4521"
+
+
+# ---------------------------------------------------------------------------
+# Single-credential ID-guess mode
+# ---------------------------------------------------------------------------
+
+def test_generate_id_guesses_returns_empty_for_non_numeric_id():
+    # UUIDs/hashids have no meaningful "neighbor" -- must not pretend to guess.
+    assert idor_sweep.generate_id_guesses("f47ac10b-58cc-4372-a567-0e02b2c3d479") == []
+
+
+def test_generate_id_guesses_never_repeats_known_id():
+    guesses = idor_sweep.generate_id_guesses("5", count=20)
+    assert "5" not in guesses
+
+
+def test_generate_id_guesses_tries_admin_like_ids_first():
+    guesses = idor_sweep.generate_id_guesses("500", count=10)
+    assert guesses[0] == "0"
+    assert guesses[1] == "1"
+
+
+def test_generate_id_guesses_includes_negative_variant_for_positive_base():
+    guesses = idor_sweep.generate_id_guesses("500", count=10)
+    assert "-500" in guesses
+
+
+def test_generate_id_guesses_no_negative_variant_when_base_not_positive():
+    # known_id=0: no positive base to negate, so "-0" should never appear.
+    guesses = idor_sweep.generate_id_guesses("0", count=10)
+    assert "-0" not in guesses
+
+
+def test_generate_id_guesses_includes_sequential_neighbors():
+    guesses = idor_sweep.generate_id_guesses("500", count=10)
+    assert "501" in guesses
+    assert "499" in guesses
+
+
+def test_generate_id_guesses_respects_count_cap():
+    guesses = idor_sweep.generate_id_guesses("500", count=4)
+    assert len(guesses) == 4
+
+
+def test_generate_id_guesses_no_duplicates():
+    guesses = idor_sweep.generate_id_guesses("1", count=10)
+    assert len(guesses) == len(set(guesses))
+
+
+def test_classify_guess_protected_on_403():
+    verdict, detail = idor_sweep._classify_guess(FetchResult(status=403, body=""))
+    assert verdict == "PROTECTED"
+
+
+def test_classify_guess_accessible_on_200_with_body():
+    verdict, detail = idor_sweep._classify_guess(FetchResult(status=200, body="real object data"))
+    assert verdict == "ACCESSIBLE"
+    assert "verify by hand" in detail
+
+
+def test_classify_guess_empty_response_on_200_empty_body():
+    verdict, detail = idor_sweep._classify_guess(FetchResult(status=200, body="   "))
+    assert verdict == "EMPTY_RESPONSE"
+
+
+def test_classify_guess_error_on_request_failure():
+    verdict, detail = idor_sweep._classify_guess(FetchResult(status=None, body="", error="timed out"))
+    assert verdict == "ERROR"
+    assert "timed out" in detail
+
+
+def test_classify_guess_error_on_unexpected_status():
+    verdict, detail = idor_sweep._classify_guess(FetchResult(status=500, body=""))
+    assert verdict == "ERROR"
+
+
+def test_check_one_guess_substitutes_id_placeholder(monkeypatch):
+    calls = []
+
+    def fake_fetch(url, method, headers, body, timeout_s):
+        calls.append(url)
+        return FetchResult(status=200, body="data")
+
+    monkeypatch.setattr(idor_sweep, "_fetch", fake_fetch)
+    verdict = idor_sweep.check_one_guess(
+        "https://target.com/api/orders/{id}", "0", "GET", {"Cookie": "session=1"},
+        None, idor_sweep.DEFAULT_TIMEOUT_S,
+    )
+    assert calls == ["https://target.com/api/orders/0"]
+    assert verdict.object_id == "0"
+    assert verdict.verdict == "ACCESSIBLE"
+
+
+def test_sweep_idor_guess_skips_guessing_when_baseline_fails(monkeypatch):
+    def fake_fetch(url, method, headers, body, timeout_s):
+        return FetchResult(status=401, body="")  # dead/invalid credential
+
+    monkeypatch.setattr(idor_sweep, "_fetch", fake_fetch)
+    result = idor_sweep.sweep_idor_guess(
+        "https://target.com/api/orders/{id}", "500", cookie_header="session=dead",
+    )
+    assert result.baseline_ok is False
+    assert result.verdicts == []
+    assert "invalid/expired" in result.baseline_detail
+
+
+def test_sweep_idor_guess_proceeds_when_baseline_ok(monkeypatch):
+    seen_urls = []
+
+    def fake_fetch(url, method, headers, body, timeout_s):
+        seen_urls.append(url)
+        if url.endswith("/500"):
+            return FetchResult(status=200, body="owner's own order")
+        return FetchResult(status=403, body="")  # every guess is protected
+
+    monkeypatch.setattr(idor_sweep, "_fetch", fake_fetch)
+    result = idor_sweep.sweep_idor_guess(
+        "https://target.com/api/orders/{id}", "500", cookie_header="session=alive", guess_count=5,
+    )
+    assert result.baseline_ok is True
+    assert len(result.verdicts) == 5
+    assert all(v.verdict == "PROTECTED" for v in result.verdicts)
+    assert result.summary_counts() == {"PROTECTED": 5}
+
+
+def test_guess_sweep_result_summary_counts():
+    result = idor_sweep.GuessSweepResult(url_template="https://target.com/api/orders/{id}", known_id="1")
+    result.verdicts = [
+        idor_sweep.GuessVerdict(object_id="0", status=200, verdict="ACCESSIBLE"),
+        idor_sweep.GuessVerdict(object_id="2", status=403, verdict="PROTECTED"),
+        idor_sweep.GuessVerdict(object_id="3", status=403, verdict="PROTECTED"),
+    ]
+    assert result.summary_counts() == {"ACCESSIBLE": 1, "PROTECTED": 2}
