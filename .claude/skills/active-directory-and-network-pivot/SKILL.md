@@ -21,6 +21,20 @@ tickets (forged via a compromised `krbtgt` hash), Unconstrained
 Delegation abuse, shadow credentials via `msDS-KeyCredentialLink`, ADCS
 ESC1 through ESC8 certificate-template abuse, and GPO poisoning.
 
+`ad-recon-mcp` automates the first two (enumeration/exposure-confirmation
+only, deliberately -- see its own module docstring for why ticket
+forgery isn't built): `kerberoast_tool(domain, username, dc_ip,
+password_or_ntlm_hash)` requests TGS tickets for every discoverable SPN
+account and extracts crackable (`$krb5tgs$23$...`) hashes for offline
+cracking (`hashcat -m 13100`) -- works with any valid domain account, not
+necessarily a privileged one. `asreproast_tool(domain, dc_ip, username_or_users_file)`
+requests AS-REPs for accounts with Kerberos pre-authentication disabled
+and extracts `$krb5asrep$23$...` hashes (`hashcat -m 18200`) -- genuinely
+needs no authentication at all against qualifying accounts. Both wrap
+Impacket's own `GetUserSPNs.py`/`GetNPUsers.py` rather than reimplementing
+Kerberos protocol handling from scratch; `pip install impacket` if
+neither is already on PATH.
+
 ## NTLM attacks
 
 Pass-the-hash, overpass-the-hash, DCSync via MS-DRSR, SMB relay
