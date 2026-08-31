@@ -238,18 +238,26 @@ def test_active_pointer_env_var_isolates_concurrent_sessions(tmp_path):
     in-process) because ACTIVE_POINTER's env-var default is itself bound
     at import time -- the real guarantee only holds if each session is a
     genuinely separate process, which this test exercises for real."""
-    # engagement_paths.py resolves its own relative default paths against
-    # the process's cwd, so both subprocesses share one cwd (tmp_path) --
-    # same as two concurrent sessions both running from the same repo
-    # checkout, isolated only by which HUNTMCP_ACTIVE_POINTER each sees.
+    # ENGAGEMENTS_ROOT is repo-root-anchored by default now (not resolved
+    # against the process's cwd -- that used to silently break whenever a
+    # caller's cwd wasn't the repo root, confirmed live on 2026-08-31), so
+    # it must be pointed at tmp_path explicitly here too, same as
+    # HUNTMCP_ACTIVE_POINTER, or both subprocesses would share the REAL
+    # repo's data/engagements/ instead of an isolated one -- deliberately
+    # THE SAME root for both, since the whole point of this test is that
+    # two sessions sharing one engagements root stay isolated purely by
+    # which pointer file each uses.
     pointer_a = "data/.active-engagement-a"
     pointer_b = "data/.active-engagement-b"
+    shared_root = str(tmp_path / "engagements")
+    env_a = {"HUNTMCP_ACTIVE_POINTER": pointer_a, "HUNTMCP_ENGAGEMENTS_ROOT": shared_root}
+    env_b = {"HUNTMCP_ACTIVE_POINTER": pointer_b, "HUNTMCP_ENGAGEMENTS_ROOT": shared_root}
 
-    _run_cli(["set", "company-a.com"], {"HUNTMCP_ACTIVE_POINTER": pointer_a}, cwd=tmp_path)
-    _run_cli(["set", "company-b.com"], {"HUNTMCP_ACTIVE_POINTER": pointer_b}, cwd=tmp_path)
+    _run_cli(["set", "company-a.com"], env_a, cwd=tmp_path)
+    _run_cli(["set", "company-b.com"], env_b, cwd=tmp_path)
 
-    current_a = _run_cli(["current"], {"HUNTMCP_ACTIVE_POINTER": pointer_a}, cwd=tmp_path)
-    current_b = _run_cli(["current"], {"HUNTMCP_ACTIVE_POINTER": pointer_b}, cwd=tmp_path)
+    current_a = _run_cli(["current"], env_a, cwd=tmp_path)
+    current_b = _run_cli(["current"], env_b, cwd=tmp_path)
 
     assert "company-a-com" in current_a.stdout
     assert "company-b-com" in current_b.stdout

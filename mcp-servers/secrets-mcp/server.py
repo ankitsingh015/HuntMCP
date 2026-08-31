@@ -16,6 +16,7 @@ secrets it's leaking while doing it.
 
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -26,6 +27,18 @@ import js_endpoints
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("secrets-mcp")
+
+# Frontend build tools inline env vars carrying one of these prefixes
+# straight into the shipped JS bundle BY DESIGN -- they're intentionally
+# public (feature flags, allowlisted IDs, publishable-only keys), not
+# leaked secrets. gitleaks has no framework awareness and flags them at a
+# high rate on any Vite/CRA/Next/Gatsby/Expo target (confirmed live: 17/17
+# "secrets" on one real engagement were VITE_-prefixed public constants).
+# Never dropped outright -- just labeled and sorted last, so a real high-
+# confidence secret in the same scan isn't buried under this noise.
+_PUBLIC_BUILD_ENV_PREFIXES = re.compile(
+    r"\b(VITE_|NEXT_PUBLIC_|REACT_APP_|GATSBY_|EXPO_PUBLIC_|PUBLIC_)[A-Z0-9_]*\s*=",
+)
 
 
 @app.tool()
@@ -74,12 +87,28 @@ def scan_directory(path: str, redact: bool = True) -> str:
     if not findings:
         return f"No secrets found in {path!r}."
 
-    lines = [f"{len(findings)} potential secret(s) found in {path!r}:"]
-    for f in findings:
-        lines.append(
+    def _fmt(f: dict) -> str:
+        return (
             f"  [{f.get('RuleID', '?')}] {f.get('File', '?')}:{f.get('StartLine', '?')} "
             f"-- {f.get('Match', f.get('Secret', '(redacted)'))[:80]}"
         )
+
+    likely_public, real = [], []
+    for f in findings:
+        needle = f.get("Match") or f.get("Secret") or ""
+        (likely_public if _PUBLIC_BUILD_ENV_PREFIXES.search(needle) else real).append(f)
+
+    lines = [f"{len(findings)} potential secret(s) found in {path!r}:"]
+    if real:
+        lines.append(f"\n{len(real)} to actually investigate:")
+        lines.extend(_fmt(f) for f in real)
+    if likely_public:
+        lines.append(
+            f"\n{len(likely_public)} likely PUBLIC build-time env var(s) "
+            "(VITE_/NEXT_PUBLIC_/REACT_APP_/etc. -- shipped to the client "
+            "by design, verify manually before treating as a leak):"
+        )
+        lines.extend(_fmt(f) for f in likely_public)
     return "\n".join(lines)
 
 

@@ -25,157 +25,157 @@
     "writeup-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/writeup-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/writeup-mcp/server.py"]
     },
     "memory-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/memory-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/memory-mcp/server.py"]
     },
     "lessons-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/lessons-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/lessons-mcp/server.py"]
     },
     "subfinder-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/subfinder-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/subfinder-mcp/server.py"]
     },
     "httpx-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/httpx-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/httpx-mcp/server.py"]
     },
     "katana-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/katana-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/katana-mcp/server.py"]
     },
     "nmap-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/nmap-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/nmap-mcp/server.py"]
     },
     "nuclei-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/nuclei-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/nuclei-mcp/server.py"]
     },
     "sqlmap-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/sqlmap-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/sqlmap-mcp/server.py"]
     },
     "dalfox-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/dalfox-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/dalfox-mcp/server.py"]
     },
     "ffuf-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/ffuf-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/ffuf-mcp/server.py"]
     },
     "chainer-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/chainer-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/chainer-mcp/server.py"]
     },
     "watch-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/watch-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/watch-mcp/server.py"]
     },
     "oob-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/oob-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/oob-mcp/server.py"]
     },
     "waf-bypass-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/waf-bypass-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/waf-bypass-mcp/server.py"]
     },
     "browser-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/browser-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/browser-mcp/server.py"]
     },
     "playwright-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/playwright-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/playwright-mcp/server.py"]
     },
     "hackerone-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/hackerone-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/hackerone-mcp/server.py"]
     },
     "target-discovery-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/target-discovery-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/target-discovery-mcp/server.py"]
     },
     "osint-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/osint-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/osint-mcp/server.py"]
     },
     "github-security-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/github-security-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/github-security-mcp/server.py"]
     },
     "secrets-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/secrets-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/secrets-mcp/server.py"]
     },
     "second-opinion-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/second-opinion-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/second-opinion-mcp/server.py"]
     },
     "burp-import-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/burp-import-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/burp-import-mcp/server.py"]
     },
     "case-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/case-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/case-mcp/server.py"]
     },
     "idor-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/idor-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/idor-mcp/server.py"]
     },
     "azure-postexploit-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/azure-postexploit-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/azure-postexploit-mcp/server.py"]
     },
     "aws-postexploit-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/aws-postexploit-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/aws-postexploit-mcp/server.py"]
     },
     "gcp-postexploit-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/gcp-postexploit-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/gcp-postexploit-mcp/server.py"]
     },
     "local-privesc-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/local-privesc-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/local-privesc-mcp/server.py"]
     },
     "ad-recon-mcp": {
       "type": "local",
       "enabled": true,
-      "command": ["./.venv/bin/python", "mcp-servers/ad-recon-mcp/server.py"]
+      "command": ["./scripts/venv-python.sh", "mcp-servers/ad-recon-mcp/server.py"]
     }
   },
   "autoupdate": "notify"

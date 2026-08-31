@@ -40,24 +40,38 @@ except ImportError:
 
 import file_lock
 
+# Snapshot only, for introspection/backward-compat -- every function below
+# re-resolves this fresh via _resolve_path() instead of using this frozen
+# value (a literal `path: str = DEFAULT_PATH` parameter default freezes
+# onto whatever active-engagement pointer existed at import time; see
+# scope_guard.load_engagement's comment for the full story).
 DEFAULT_PATH = engagement_paths.resolve("work-registry.json", override_env="HUNTMCP_WORK_REGISTRY_PATH")
 
 
-def _load(path: str = DEFAULT_PATH) -> dict:
+def _resolve_path(path: str | None) -> str:
+    if path is not None:
+        return path
+    return engagement_paths.resolve("work-registry.json", override_env="HUNTMCP_WORK_REGISTRY_PATH")
+
+
+def _load(path: str | None = None) -> dict:
+    path = _resolve_path(path)
     if not os.path.isfile(path):
         return {}
     with open(path) as f:
         return json.load(f)
 
 
-def _save(state: dict, path: str = DEFAULT_PATH) -> None:
+def _save(state: dict, path: str | None = None) -> None:
+    path = _resolve_path(path)
     with open(path, "w") as f:
         json.dump(state, f, indent=2)
 
 
-def start_work(agent: str, host: str, task: str = "", path: str = DEFAULT_PATH) -> str:
+def start_work(agent: str, host: str, task: str = "", path: str | None = None) -> str:
     """Record a specialist as in-progress on a host. Returns a work_id to
     pass to complete_work() when it returns."""
+    path = _resolve_path(path)
     with file_lock.locked(path):
         state = _load(path)
         work_id = uuid.uuid4().hex[:8]
@@ -74,7 +88,8 @@ def start_work(agent: str, host: str, task: str = "", path: str = DEFAULT_PATH) 
     return work_id
 
 
-def complete_work(work_id: str, outcome: str = "", path: str = DEFAULT_PATH) -> bool:
+def complete_work(work_id: str, outcome: str = "", path: str | None = None) -> bool:
+    path = _resolve_path(path)
     with file_lock.locked(path):
         state = _load(path)
         if work_id not in state:
@@ -86,9 +101,10 @@ def complete_work(work_id: str, outcome: str = "", path: str = DEFAULT_PATH) -> 
         return True
 
 
-def list_active_work(host: str | None = None, path: str = DEFAULT_PATH) -> list[dict]:
+def list_active_work(host: str | None = None, path: str | None = None) -> list[dict]:
     """Everything currently in_progress -- check this before spawning a
     specialist to avoid redundant work on the same host."""
+    path = _resolve_path(path)
     with file_lock.locked(path):
         state = _load(path)
     items = [dict(id=k, **v) for k, v in state.items() if v["status"] == "in_progress"]
@@ -97,7 +113,8 @@ def list_active_work(host: str | None = None, path: str = DEFAULT_PATH) -> list[
     return items
 
 
-def list_all_work(path: str = DEFAULT_PATH) -> list[dict]:
+def list_all_work(path: str | None = None) -> list[dict]:
+    path = _resolve_path(path)
     with file_lock.locked(path):
         state = _load(path)
     return [dict(id=k, **v) for k, v in state.items()]

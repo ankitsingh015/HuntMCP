@@ -25,7 +25,7 @@ GITHUB_REPOS=(
 SEEN_FILE="$BASE/data/.cron-seen-urls.txt"
 
 # ── Helpers ────────────────────────────────────────────────────────
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; echo "$*"; }
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; echo "$*" >&2; }
 err() { log "ERROR: $*"; }
 
 usage() {
@@ -65,7 +65,7 @@ for item in root.iter('item'):
     title = item.findtext('title', '').strip()
     link  = item.findtext('link',  '').strip()
     desc  = item.findtext('description', '').strip()
-    items.append(f'{title}|--SEP--|{link}|--SEP--|{desc}')
+    items.append(f'{title}\x1f{link}\x1f{desc}')
 # Atom
 ns = '{http://www.w3.org/2005/Atom}'
 for entry in root.iter(ns + 'entry'):
@@ -76,7 +76,7 @@ for entry in root.iter(ns + 'entry'):
     if not desc:
         desc = entry.findtext(ns + 'summary', '')
     desc = desc.strip()
-    items.append(f'{title}|--SEP--|{link}|--SEP--|{desc}')
+    items.append(f'{title}\x1f{link}\x1f{desc}')
 for i in items:
     print(i)
 "
@@ -176,7 +176,7 @@ scan_feeds() {
       continue
     fi
 
-    while IFS='|--SEP--|' read -r title link desc; do
+    while IFS=$'\x1f' read -r title link desc; do
       [[ -z "$link" || -z "$title" ]] && continue
       if process_entry "$title" "$link" "$desc"; then
         count=$((count + 1))

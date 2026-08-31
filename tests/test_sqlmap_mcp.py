@@ -54,17 +54,21 @@ def test_output_dir_scopes_under_active_engagement(monkeypatch, tmp_path):
     # gets via engagement_paths.py. Confirm _output_dir() now resolves
     # under the ACTIVE target's own directory.
     #
-    # ACTIVE_POINTER/ENGAGEMENTS_ROOT are bare relative path strings
-    # ("data/.active-engagement", "data/engagements") resolved against the
-    # process's cwd at call time, not at module-import time -- so
-    # monkeypatching those module constants after import wouldn't actually
-    # change resolve_dir()'s behavior (its `pointer_path: str =
-    # ACTIVE_POINTER` default was already bound at definition time).
-    # chdir into an isolated tmp_path instead, matching how the rest of
-    # this suite avoids touching the real repo's data/ directory.
-    monkeypatch.chdir(tmp_path)
+    # ACTIVE_POINTER/ENGAGEMENTS_ROOT are now repo-root-anchored absolute
+    # paths (not cwd-relative -- that used to silently break whenever a
+    # caller's cwd wasn't the repo root, confirmed live on 2026-08-31), and
+    # every function that uses them re-reads the module attribute at call
+    # time rather than binding it into a parameter default at definition
+    # time -- so monkeypatching the module attributes directly here (the
+    # obvious approach) actually takes effect, and does so without ever
+    # touching the real repo's data/ directory the way a chdir()-based
+    # trick or an unpatched default well would.
+    pointer = tmp_path / ".active-engagement"
+    root = tmp_path / "engagements"
+    monkeypatch.setattr(engagement_paths, "ACTIVE_POINTER", str(pointer))
+    monkeypatch.setattr(engagement_paths, "ENGAGEMENTS_ROOT", str(root))
     engagement_paths.set_active_target("acme.com")
 
     out_dir = sqlmap_server._output_dir()
-    assert out_dir == os.path.join("data", "engagements", "acme-com", "tmp-sqlmap")
+    assert out_dir == os.path.join(str(root), "acme-com", "tmp-sqlmap")
     assert os.path.isdir(out_dir)

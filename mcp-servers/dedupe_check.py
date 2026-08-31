@@ -35,7 +35,18 @@ except ImportError:
 
 import file_lock
 
+# Snapshot only, for introspection/backward-compat -- every function below
+# re-resolves this fresh via _resolve_path() instead of using this frozen
+# value (a literal `path: str = DEFAULT_PATH` parameter default freezes
+# onto whatever active-engagement pointer existed at import time; see
+# scope_guard.load_engagement's comment for the full story).
 DEFAULT_PATH = engagement_paths.resolve("findings-seen.json", override_env="HUNTMCP_FINDINGS_SEEN_PATH")
+
+
+def _resolve_path(path: str | None) -> str:
+    if path is not None:
+        return path
+    return engagement_paths.resolve("findings-seen.json", override_env="HUNTMCP_FINDINGS_SEEN_PATH")
 
 
 def _fingerprint(vuln_class: str, endpoint: str, parameter: str = "") -> str:
@@ -43,26 +54,29 @@ def _fingerprint(vuln_class: str, endpoint: str, parameter: str = "") -> str:
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
-def _load(path: str = DEFAULT_PATH) -> dict:
+def _load(path: str | None = None) -> dict:
+    path = _resolve_path(path)
     if not os.path.isfile(path):
         return {}
     with open(path) as f:
         return json.load(f)
 
 
-def _save(state: dict, path: str = DEFAULT_PATH) -> None:
+def _save(state: dict, path: str | None = None) -> None:
+    path = _resolve_path(path)
     with open(path, "w") as f:
         json.dump(state, f, indent=2)
 
 
 def check_and_record(vuln_class: str, endpoint: str, parameter: str = "",
-                      path: str = DEFAULT_PATH) -> dict:
+                      path: str | None = None) -> dict:
     """Check whether this vuln_class+endpoint+parameter was already
     confirmed this engagement. If new, records it (so the NEXT call with
     the same fingerprint IS flagged as a duplicate) and returns
     duplicate=False. Call this once per finding, right before finalizing a
     CONFIRMED verdict -- not on every candidate, since a candidate that
     turns out to be a false positive shouldn't occupy a fingerprint slot."""
+    path = _resolve_path(path)
     fp = _fingerprint(vuln_class, endpoint, parameter)
     with file_lock.locked(path):
         state = _load(path)

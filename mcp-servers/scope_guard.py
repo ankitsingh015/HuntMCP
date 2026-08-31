@@ -34,6 +34,9 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import engagement_paths
 
+# Snapshot only, for introspection/backward-compat (e.g. printing the
+# resolved path in a log line) -- load_engagement() below re-resolves this
+# fresh on every call instead of using this frozen value; see its comment.
 DEFAULT_PATH = engagement_paths.resolve("engagement.yaml", override_env="HUNTMCP_ENGAGEMENT_PATH")
 
 # Hosts/patterns that never need an engagement.yaml at all, on either the
@@ -118,7 +121,20 @@ class NoEngagementFile(Exception):
     pass
 
 
-def load_engagement(path: str = DEFAULT_PATH) -> Engagement:
+def load_engagement(path: str | None = None) -> Engagement:
+    # `path: str | None = None`, re-resolved fresh here on every call when
+    # not given explicitly -- NOT `path: str = DEFAULT_PATH`. DEFAULT_PATH
+    # is computed once at import time; binding it as a literal parameter
+    # default freezes every future call onto whatever active-engagement
+    # pointer existed at THAT moment (a stale one left in the real repo by
+    # an earlier real audit, in the worst case -- confirmed live, this
+    # silently pinned every scope check to the wrong engagement.yaml for
+    # an entire process lifetime with no way to override it after the
+    # fact) and never picks up a later `switch-engagement.sh` mid-session.
+    # Re-resolving here instead makes every call reflect whichever
+    # engagement is ACTUALLY active right now.
+    if path is None:
+        path = engagement_paths.resolve("engagement.yaml", override_env="HUNTMCP_ENGAGEMENT_PATH")
     if not os.path.isfile(path):
         raise NoEngagementFile(
             f"No engagement file at {path!r}. HuntBrain must write this once at "

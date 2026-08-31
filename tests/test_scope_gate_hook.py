@@ -1,8 +1,30 @@
 import io
 import json
 
+import engagement_paths
 import pytest
 import scope_gate_hook as hook
+
+
+@pytest.fixture(autouse=True)
+def _isolated_active_engagement(monkeypatch, tmp_path):
+    """Every test in this file must be isolated from whatever real
+    engagement (if any) is actually active in this repo right now.
+    scope_guard/budget_guard/audit_log/etc. correctly follow WHICHEVER
+    engagement is currently active (by design -- confirmed live: a real
+    active engagement correctly overrides a test's own chdir()'d
+    engagement.yaml, exactly as intended). That means a stale
+    data/.active-engagement pointer left behind by a real audit would
+    otherwise silently make every "in scope" test below see the wrong
+    engagement instead of the one it writes into its own tmp_path --
+    this is exactly what caused this file's 5 hardest-to-diagnose
+    failures (2026-08-31): they looked like "no engagement.yaml found"
+    but were actually "found the WRONG one, frozen in from whatever was
+    active when this module first imported." Point ACTIVE_POINTER at a
+    path inside this test's own tmp_path that deliberately never has a
+    file written to it, so every test here starts from a guaranteed
+    "no active engagement" regardless of real repo state."""
+    monkeypatch.setattr(engagement_paths, "ACTIVE_POINTER", str(tmp_path / ".not-really-active"))
 
 
 def test_safe_test_host_recognized():
