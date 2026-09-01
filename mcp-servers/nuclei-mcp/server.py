@@ -13,6 +13,10 @@ app = FastMCP("nuclei-mcp")
 
 @app.tool()
 def scan_target(target: str, severity: str = "medium,high,critical", timeout: int = 300) -> str:
+    """Run nuclei's full default template set against `target`, filtered to
+    `severity` (comma-separated: info,low,medium,high,critical -- default
+    "medium,high,critical"). Use scan_with_templates() instead to run a
+    specific template/category rather than everything at that severity."""
     args = [
         "-u", target,
         "-severity", severity,
@@ -63,6 +67,10 @@ def scan_target(target: str, severity: str = "medium,high,critical", timeout: in
 
 @app.tool()
 def scan_with_templates(target: str, templates: str, timeout: int = 300) -> str:
+    """Run specific nuclei template(s) against `target` instead of the full
+    default set. `templates` is nuclei's own -t syntax: a template ID/tag
+    (e.g. "cves/2021" or "exposed-panels"), a file path, a directory path,
+    or a comma-separated list of any of those."""
     args = [
         "-u", target,
         "-t", templates,

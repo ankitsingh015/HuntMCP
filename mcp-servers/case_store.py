@@ -67,6 +67,8 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import engagement_paths
 
+# Snapshot only, for introspection/backward-compat -- _get_conn() below
+# re-resolves this fresh on every call instead of using this frozen value.
 DEFAULT_DB_PATH = engagement_paths.resolve("case.db", override_env="HUNTMCP_CASE_DB_PATH")
 
 HYPOTHESIS_STATUSES = {"NEW", "TESTING", "SUPPORTED", "REFUTED", "INCONCLUSIVE", "CONFIRMED"}
@@ -87,13 +89,33 @@ def _band_for_score(score: int) -> str:
     return "LOW"
 
 
-def _evidence_dir(db_path: str) -> str:
+def _evidence_dir(db_path: str | None = None) -> str:
+    # add_evidence() (this function's only caller) now defaults its own
+    # db_path to None too -- resolve it here the same way _get_conn() does,
+    # or a caller that never passed db_path explicitly would crash on
+    # os.path.abspath(None) instead of using the active engagement's dir.
+    if db_path is None:
+        db_path = engagement_paths.resolve("case.db", override_env="HUNTMCP_CASE_DB_PATH")
     d = os.path.join(os.path.dirname(os.path.abspath(db_path)) or ".", "evidence")
     os.makedirs(d, exist_ok=True)
     return d
 
 
-def _get_conn(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
+def _get_conn(db_path: str | None = None) -> sqlite3.Connection:
+    # Re-resolved fresh here on every call when not given explicitly --
+    # every other function in this module just passes its own db_path
+    # straight through to here unchanged, so this is the single place that
+    # needs to know about the None sentinel. NOT a bound
+    # `db_path: str = DEFAULT_DB_PATH` parameter default: that's evaluated
+    # once at import time and freezes onto whatever active-engagement
+    # pointer existed then (confirmed live: this is exactly what caused
+    # case.db to land in the repo root during ad hoc testing with no
+    # active engagement set) -- see scope_guard.load_engagement's comment
+    # for the full story; case_store.py had the identical bug, just missed
+    # in the first pass because this module's constant is named
+    # DEFAULT_DB_PATH, not DEFAULT_PATH.
+    if db_path is None:
+        db_path = engagement_paths.resolve("case.db", override_env="HUNTMCP_CASE_DB_PATH")
     os.makedirs(os.path.dirname(os.path.abspath(db_path)) or ".", exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -164,7 +186,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 
 # ---- Hypotheses ----------------------------------------------------------
 
-def log_hypothesis(observation: str, hypothesis: str, db_path: str = DEFAULT_DB_PATH) -> dict:
+def log_hypothesis(observation: str, hypothesis: str, db_path: str | None = None) -> dict:
     conn = _get_conn(db_path)
     try:
         cur = conn.execute(
@@ -178,7 +200,7 @@ def log_hypothesis(observation: str, hypothesis: str, db_path: str = DEFAULT_DB_
 
 
 def update_hypothesis(hypothesis_id: int, status: str, note: str = "",
-                       db_path: str = DEFAULT_DB_PATH) -> dict:
+                       db_path: str | None = None) -> dict:
     if status not in HYPOTHESIS_STATUSES:
         return {"error": f"invalid status {status!r}, expected one of {sorted(HYPOTHESIS_STATUSES)}"}
     conn = _get_conn(db_path)
@@ -199,7 +221,7 @@ def update_hypothesis(hypothesis_id: int, status: str, note: str = "",
 # ---- Evidence -------------------------------------------------------------
 
 def add_evidence(type: str, content: str, hypothesis_id: int | None = None,
-                  finding_id: int | None = None, db_path: str = DEFAULT_DB_PATH) -> dict:
+                  finding_id: int | None = None, db_path: str | None = None) -> dict:
     if type not in EVIDENCE_TYPES:
         return {"error": f"invalid type {type!r}, expected one of {sorted(EVIDENCE_TYPES)}"}
     if hypothesis_id is None and finding_id is None:
@@ -230,7 +252,7 @@ def add_evidence(type: str, content: str, hypothesis_id: int | None = None,
 
 def log_experiment(tool: str, input: str, target: str, result: str = "", cost: int = 0,
                     hypothesis_id: int | None = None, finding_id: int | None = None,
-                    status: str = "done", db_path: str = DEFAULT_DB_PATH) -> dict:
+                    status: str = "done", db_path: str | None = None) -> dict:
     conn = _get_conn(db_path)
     try:
         cur = conn.execute(
@@ -244,7 +266,7 @@ def log_experiment(tool: str, input: str, target: str, result: str = "", cost: i
         conn.close()
 
 
-def check_experiment_exists(tool: str, input: str, target: str, db_path: str = DEFAULT_DB_PATH) -> bool:
+def check_experiment_exists(tool: str, input: str, target: str, db_path: str | None = None) -> bool:
     conn = _get_conn(db_path)
     try:
         row = conn.execute(
@@ -259,7 +281,7 @@ def check_experiment_exists(tool: str, input: str, target: str, db_path: str = D
 # ---- Findings ---------------------------------------------------------------
 
 def create_finding(vuln_class: str, endpoint: str, parameter: str = "",
-                    hypothesis_id: int | None = None, db_path: str = DEFAULT_DB_PATH) -> dict:
+                    hypothesis_id: int | None = None, db_path: str | None = None) -> dict:
     conn = _get_conn(db_path)
     try:
         cur = conn.execute(
@@ -272,7 +294,7 @@ def create_finding(vuln_class: str, endpoint: str, parameter: str = "",
         conn.close()
 
 
-def update_finding_status(finding_id: int, status: str, db_path: str = DEFAULT_DB_PATH) -> dict:
+def update_finding_status(finding_id: int, status: str, db_path: str | None = None) -> dict:
     if status not in FINDING_STATUSES:
         return {"error": f"invalid status {status!r}, expected one of {sorted(FINDING_STATUSES)}"}
     conn = _get_conn(db_path)
@@ -300,7 +322,7 @@ def update_finding_status(finding_id: int, status: str, db_path: str = DEFAULT_D
 
 
 def score_finding_confidence(finding_id: int, signals: dict[str, int],
-                              db_path: str = DEFAULT_DB_PATH) -> dict:
+                              db_path: str | None = None) -> dict:
     """signals is a caller-named {label: points} map, e.g.
     {"endpoint_confirmed": 15, "reproduction": 25, "oob_confirmation": 20} --
     summed and clamped to 0-100, then banded (see CONFIDENCE_BANDS)."""
@@ -327,7 +349,7 @@ def score_finding_confidence(finding_id: int, signals: dict[str, int],
 
 # ---- Root cause -------------------------------------------------------------
 
-def group_root_cause(finding_ids: list[int], description: str, db_path: str = DEFAULT_DB_PATH) -> dict:
+def group_root_cause(finding_ids: list[int], description: str, db_path: str | None = None) -> dict:
     if len(finding_ids) < 2:
         return {"error": "group_root_cause needs at least 2 finding_ids -- a single finding doesn't need grouping"}
     conn = _get_conn(db_path)
@@ -350,7 +372,7 @@ def group_root_cause(finding_ids: list[int], description: str, db_path: str = DE
         conn.close()
 
 
-def suggest_root_cause(db_path: str = DEFAULT_DB_PATH) -> str:
+def suggest_root_cause(db_path: str | None = None) -> str:
     """Heuristic grouping suggestion: findings that already share the same
     vuln_class + endpoint (e.g. IDOR on /api/user and IDOR on /api/user/2)
     and aren't grouped yet are flagged as a likely single root cause. This
@@ -381,7 +403,7 @@ def suggest_root_cause(db_path: str = DEFAULT_DB_PATH) -> str:
 
 # ---- Next best action -------------------------------------------------------
 
-def suggest_next_action(db_path: str = DEFAULT_DB_PATH) -> str:
+def suggest_next_action(db_path: str | None = None) -> str:
     """Heuristic priority order, cheapest-signal-first (see module
     docstring for why this isn't the full expected_value/information_gain
     formula): 1) hypotheses already TESTING (finish what's in flight before
@@ -424,7 +446,7 @@ def suggest_next_action(db_path: str = DEFAULT_DB_PATH) -> str:
 
 # ---- Summary / export --------------------------------------------------------
 
-def case_summary(db_path: str = DEFAULT_DB_PATH) -> str:
+def case_summary(db_path: str | None = None) -> str:
     conn = _get_conn(db_path)
     try:
         hyp_counts = conn.execute(
@@ -452,7 +474,7 @@ def case_summary(db_path: str = DEFAULT_DB_PATH) -> str:
         conn.close()
 
 
-def case_export(db_path: str = DEFAULT_DB_PATH) -> str:
+def case_export(db_path: str | None = None) -> str:
     conn = _get_conn(db_path)
     try:
         def _all(table: str) -> list[dict]:

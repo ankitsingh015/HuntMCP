@@ -121,5 +121,9 @@ complete/incomplete status.
 - "audit <target>" — full autonomous audit (all phases including chaining)
 - "audit <target> --quick" — recon + nuclei scan only (no chaining)
 - "audit <target> --deep" — full depth with all tool configurations + chaining
-- "watch <target>" — continuous monitoring mode (future)
+- "watch <target> start/stop/list/check/history" — continuous monitoring via
+  watch-mcp's `start_watch`/`stop_watch`/`list_watched`/`check_target`/
+  `get_watch_history` (first check captures a subfinder+katana snapshot,
+  later checks diff against it and flag new live subdomains via httpx); see
+  `scripts/setup-watch.sh` for the cron-driven periodic-check equivalent
 - "/chain <findings>" — chain analysis on existing findings

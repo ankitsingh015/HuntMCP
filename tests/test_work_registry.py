@@ -47,6 +47,35 @@ def test_two_specialists_same_host_both_tracked_independently(tmp_path):
     assert remaining[0]["id"] == id2
 
 
+def test_stale_in_progress_entry_excluded_from_active_work(monkeypatch, tmp_path):
+    """Regression test for the permanent-lock bug: a process that dies
+    mid-work (network hang, kill, crash) never calls complete_work(), so
+    the entry stayed "in_progress" forever, and a resumed session (which
+    deliberately does NOT reset this registry on resume) would see that
+    host as permanently already-being-worked-on and never retry it."""
+    p = str(tmp_path / "work-registry.json")
+    monkeypatch.setattr(work_registry, "STALE_AFTER_SECONDS", 100)
+
+    work_id = work_registry.start_work("scan-agent", "example.com", path=p)
+    # Still fresh -- must show up as active.
+    assert len(work_registry.list_active_work(path=p)) == 1
+
+    # Simulate the starting process having died 2 hours ago (well past the
+    # 100s threshold) without ever calling complete_work().
+    state = work_registry._load(p)
+    state[work_id]["started_at"] = time.time() - 7200
+    work_registry._save(state, p)
+
+    assert work_registry.list_active_work(path=p) == []
+    assert work_registry.list_active_work(host="example.com", path=p) == []
+
+    # The stale entry is still on disk (for audit/list_all_work), just no
+    # longer treated as a live lock.
+    all_work = work_registry.list_all_work(path=p)
+    assert all_work[0]["id"] == work_id
+    assert all_work[0]["status"] == "in_progress"
+
+
 def test_start_work_is_safe_under_concurrent_calls(monkeypatch, tmp_path):
     """Regression test for the lost-update race: start_work() used to
     load-mutate-save with no locking, so concurrent spawns could clobber

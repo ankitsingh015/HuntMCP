@@ -4,7 +4,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import UTC, datetime
+
+try:
+    from datetime import UTC, datetime
+except ImportError:  # datetime.UTC was added in Python 3.11; README's
+    # documented minimum is 3.10 -- without this shim, the whole module
+    # fails to import on 3.10 and the server crashes before it even
+    # starts, which OpenCode/Claude Code just report as "connection
+    # closed"/"not working" with the real ImportError never surfaced.
+    from datetime import datetime, timezone
+    UTC = timezone.utc
 
 from mcp.server.fastmcp import FastMCP
 
@@ -18,6 +27,12 @@ REPORTS_DIR = __file__.rsplit("/", 3)[0] + "/data/reports"
 
 @app.tool()
 def probe_hosts(domains: str, ports: str = "80,443", threads: int = 50, timeout: int = 120) -> str:
+    """Probe hosts for liveness with httpx -- status code, title, tech
+    stack, server header, content length. `domains` is a single string of
+    one or more hostnames, comma- or newline-separated (e.g.
+    "example.com,api.example.com" or "example.com\\napi.example.com") --
+    NOT a list. Each domain is probed on every port in `ports` (default
+    "80,443")."""
     import os as _os
     input_path = None
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:

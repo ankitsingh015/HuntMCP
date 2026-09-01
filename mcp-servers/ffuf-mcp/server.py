@@ -35,6 +35,13 @@ def _resolve_wordlist(wordlist: str) -> str:
 
 @app.tool()
 def fuzz_directory(url: str, wordlist: str = "", extensions: str = "", timeout: int = 180) -> str:
+    """Directory/file brute-force `url` with ffuf. `url` is the BASE URL
+    only -- "/FUZZ" is appended automatically, don't include it yourself.
+    `wordlist` is a filename resolved against HuntMCP's own knowledge/
+    wordlists/ first, then /usr/share/wordlists/ (or an absolute path);
+    empty defaults to knowledge/wordlists/directories.txt. `extensions` is
+    comma-separated, no leading dots (e.g. "php,bak"). 404 responses are
+    filtered out automatically."""
     wordlist = _resolve_wordlist(wordlist)
 
     args = [
@@ -58,9 +65,17 @@ def fuzz_directory(url: str, wordlist: str = "", extensions: str = "", timeout: 
         return f"Error: {e}"
 
     if not result.stdout.strip():
-        if result.stderr:
-            return f"ffuf output empty. Stderr: {result.stderr.strip()[:300]}"
-        return f"No results from ffuf for {url}/FUZZ"
+        # ffuf ALWAYS writes its banner + progress bar to stderr, even on a
+        # completely successful run that just happens to find zero matches
+        # (the common case) -- `if result.stderr:` was true on every such
+        # run, so a normal "nothing found" outcome was reported as if
+        # something had gone wrong, stderr dump and all. returncode is the
+        # actual signal for a real failure (confirmed live: a clean 5/5-
+        # words-tried, zero-matches run returns 0 with a non-empty stderr
+        # banner, identical in shape to a real crash under the old check).
+        if result.returncode != 0:
+            return f"ffuf failed (exit {result.returncode}). Stderr: {result.stderr.strip()[:300]}"
+        return f"No directories found on {url}."
 
     try:
         data = json.loads(result.stdout)
@@ -83,6 +98,12 @@ def fuzz_directory(url: str, wordlist: str = "", extensions: str = "", timeout: 
 
 @app.tool()
 def fuzz_with_data(url: str, wordlist: str = "", method: str = "POST", data_template: str = "user=FUZZ&pass=test") -> str:
+    """Fuzz a request body against `url` (e.g. brute-forcing a login
+    field or an ID in a POST body) -- `data_template` MUST contain the
+    literal word "FUZZ" exactly where each wordlist entry should be
+    substituted (default "user=FUZZ&pass=test" fuzzes the username).
+    `wordlist` resolves the same way as fuzz_directory()'s. 404 responses
+    are filtered out automatically."""
     wordlist = _resolve_wordlist(wordlist)
 
     args = [

@@ -31,9 +31,12 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from dotenv_loader import load_dotenv_if_present  # noqa: E402
 from model_gateway import PROVIDER_CHAIN, select_provider  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
+
+load_dotenv_if_present()
 
 app = FastMCP("second-opinion-mcp")
 

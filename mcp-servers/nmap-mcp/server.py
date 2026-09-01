@@ -48,6 +48,9 @@ def _parse_nmap_grepable(raw: str) -> list[dict]:
 
 @app.tool()
 def scan_ports(target: str, top_ports: int = 1000, timeout: int = 300) -> str:
+    """Fast nmap scan of the `top_ports` (default 1000) most common ports
+    on `target` -- no service-version detection, just open/closed state.
+    Use scan_deep() for -sV service fingerprinting on a specific range."""
     args = ["-T4", "--top-ports", str(top_ports), "-oG", "-", target]
     try:
         result = run_tool("nmap", args, timeout=timeout)
@@ -76,6 +79,10 @@ def scan_ports(target: str, top_ports: int = 1000, timeout: int = 300) -> str:
 
 @app.tool()
 def scan_deep(target: str, ports: str = "1-10000", timeout: int = 600) -> str:
+    """Deeper nmap scan with -sV service/version detection on `ports`
+    (default "1-10000" -- an nmap-style range or comma list, e.g.
+    "80,443,8080"). Slower than scan_ports(); narrow `ports` to what
+    scan_ports() already found open when possible."""
     args = ["-T4", "-p", ports, "-sV", "-oG", "-", target]
     try:
         result = run_tool("nmap", args, timeout=timeout)

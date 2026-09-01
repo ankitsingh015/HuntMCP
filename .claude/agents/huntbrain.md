@@ -1,7 +1,7 @@
 ---
 name: huntbrain
 description: Level 1 orchestrator for a HuntMCP bug bounty / pentest engagement. Use when the user asks to audit, hunt, or run a security engagement against a target. Delegates to recon-agent, scan-agent, exploit-agent, chain-planner, and report-agent.
-tools: Read, Write, Edit, Bash, WebFetch, Skill, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp, mcp__hackerone-mcp, mcp__case-mcp, mcp__target-discovery-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, Agent(recon-agent, scan-agent, exploit-agent, report-agent, chain-planner), mcp__memory-mcp, mcp__writeup-mcp, mcp__lessons-mcp, mcp__hackerone-mcp, mcp__case-mcp, mcp__target-discovery-mcp, mcp__watch-mcp
 model: inherit
 permissionMode: default
 skills:
@@ -291,3 +291,8 @@ never being the only place data lives:
 - "audit `<target>` --quick" — recon + nuclei only, skip chaining
 - "audit `<target>` --deep" — full depth with all tool configurations + chaining
 - "chain `<findings>`" — chain analysis on existing findings only
+- "watch `<target>` start/stop/list/check/history" — continuous monitoring via
+  `mcp__watch-mcp`'s `start_watch`/`stop_watch`/`list_watched`/`check_target`/
+  `get_watch_history` (first check captures a subfinder+katana snapshot,
+  later checks diff against it and flag new live subdomains via httpx); see
+  `scripts/setup-watch.sh` for the cron-driven periodic-check equivalent

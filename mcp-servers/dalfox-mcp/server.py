@@ -13,6 +13,9 @@ app = FastMCP("dalfox-mcp")
 
 @app.tool()
 def scan_url(url: str, timeout: int = 180) -> str:
+    """Scan `url` for reflected/DOM XSS with dalfox -- tests every query
+    parameter it finds automatically. Use scan_parameter() to target one
+    specific parameter instead of all of them."""
     args = [
         "url", url,
         "--silence",
@@ -66,6 +69,9 @@ def scan_url(url: str, timeout: int = 180) -> str:
 
 @app.tool()
 def scan_parameter(url: str, param: str, timeout: int = 180) -> str:
+    """Like scan_url(), but restricted to testing only `param` -- faster,
+    and useful when you already suspect one specific parameter (e.g. a
+    search/query field) rather than scanning every parameter on the page."""
     args = [
         "url", url,
         "--param", param,

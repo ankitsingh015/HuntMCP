@@ -26,6 +26,12 @@ def _output_dir() -> str:
 
 @app.tool()
 def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1, risk: int = 1, timeout: int = 300) -> str:
+    """Run sqlmap against `url` (GET params in the URL itself, or POST body
+    via `data` when method="POST" -- `data` is silently ignored for GET,
+    it's not appended as a query string). Also auto-detects and tests any
+    HTML forms on the page (--forms). `level`/`risk` are sqlmap's own 1-5
+    scales (higher = more payloads tried, slower). Use test_with_data() for
+    a POST-only call without the GET/forms auto-detection path."""
     with tempfile.TemporaryDirectory(dir=_output_dir()) as tmpdir:
         args = [
             "-u", url,
@@ -76,6 +82,12 @@ def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1
 
 @app.tool()
 def test_with_data(url: str, data: str, method: str = "POST", level: int = 2, timeout: int = 300) -> str:
+    """Run sqlmap against `url` with an explicit request body (`data`, e.g.
+    "username=x&password=y" for a form-encoded POST, or a JSON string sqlmap
+    can also parse). `method` is currently informational only -- sqlmap is
+    always invoked in --data mode here regardless of its value. No
+    auto-form-detection (unlike test_injection()) -- this is for a known
+    endpoint/body shape you already have."""
     with tempfile.TemporaryDirectory(dir=_output_dir()) as tmpdir:
         args = [
             "-u", url,
