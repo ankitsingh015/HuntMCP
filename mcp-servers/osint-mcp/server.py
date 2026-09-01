@@ -9,7 +9,10 @@ import sys
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 
 import osint_apis
+from dotenv_loader import load_dotenv_if_present
 from mcp.server.fastmcp import FastMCP
+
+load_dotenv_if_present()
 
 app = FastMCP("osint-mcp")
 

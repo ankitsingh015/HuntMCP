@@ -245,6 +245,10 @@ CHAIN_TEMPLATES = {
 
 @app.tool()
 def get_chain_templates() -> str:
+    """List every known vulnerability-chaining pattern (e.g.
+    "cors_xss_credential_theft"), what finding classes each requires, and
+    its severity multiplier. No arguments -- call this first to see what
+    chain_key values plan_chain() accepts."""
     keys = sorted(CHAIN_TEMPLATES.keys())
     lines = [f"Available chain templates ({len(keys)}):", ""]
     for key in keys:
@@ -259,6 +263,15 @@ def get_chain_templates() -> str:
 
 @app.tool()
 def analyze_chains(findings_json: str) -> str:
+    """Check which of get_chain_templates()'s patterns are actually
+    possible given the findings so far. findings_json is a JSON array of
+    objects, each needing "vulnerability_class" (or "class") -- e.g. "XSS",
+    "SQL Injection", "CORS Misconfiguration" -- and optionally
+    "affected_endpoint" (or "endpoint") and "confidence". A key like
+    "vuln_class" is NOT recognized and silently reads as UNKNOWN, so use
+    the exact names above. Returns every chain whose required finding
+    classes are all present, or a "no chains possible" message listing the
+    individual findings if none match yet."""
     try:
         findings = json.loads(findings_json)
     except json.JSONDecodeError as e:
@@ -331,6 +344,10 @@ def analyze_chains(findings_json: str) -> str:
 
 @app.tool()
 def plan_chain(chain_key: str, findings_json: str) -> str:
+    """Get detailed exploitation steps for one specific chain. chain_key is
+    one of get_chain_templates()'s keys (e.g. "cors_xss_credential_theft").
+    findings_json is the same finding-object-array shape analyze_chains()
+    takes ("vulnerability_class"/"class", not "vuln_class")."""
     if chain_key not in CHAIN_TEMPLATES:
         keys = sorted(CHAIN_TEMPLATES.keys())
         return f"Error: Unknown chain '{chain_key}'. Available: {', '.join(keys)}"
@@ -406,6 +423,13 @@ def plan_chain(chain_key: str, findings_json: str) -> str:
 
 @app.tool()
 def save_chain(chain_json: str) -> str:
+    """Persist a confirmed exploitation chain for this engagement. chain_json
+    must be a JSON object with these required keys: chain_type (one of
+    get_chain_templates()'s keys, e.g. "cors_xss_credential_theft"),
+    findings (list of the finding dicts that made up this chain), steps_taken
+    (list of strings, the actual steps executed), outcome (string, what was
+    achieved), severity (string, e.g. "Critical"). Unknown chain_type values
+    are still saved, with a warning."""
     try:
         chain = json.loads(chain_json)
     except json.JSONDecodeError as e:
@@ -440,6 +464,12 @@ def save_chain(chain_json: str) -> str:
 
 @app.tool()
 def suggest_next_tool(findings_json: str, current_phase: str = "") -> str:
+    """Standalone-exploitation suggestions for individual findings that
+    aren't part of a multi-step chain (e.g. "SSRF found -> probe cloud
+    metadata at 169.254.169.254"). findings_json is the same finding-
+    object-array shape analyze_chains() takes ("vulnerability_class"/
+    "class", not "vuln_class"). current_phase is optional free-text
+    context (e.g. "scan"), not currently used to filter suggestions."""
     try:
         findings = json.loads(findings_json) if findings_json else []
     except json.JSONDecodeError as e:

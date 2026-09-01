@@ -47,6 +47,13 @@ import file_lock
 # scope_guard.load_engagement's comment for the full story).
 DEFAULT_PATH = engagement_paths.resolve("work-registry.json", override_env="HUNTMCP_WORK_REGISTRY_PATH")
 
+# How long an "in_progress" entry is trusted before list_active_work()
+# treats it as abandoned rather than genuinely still running. 2 hours is
+# generous for any real specialist task (full nuclei/sqlmap runs
+# included) while still letting a session recover from a dead lock
+# within the same sitting instead of needing a manual registry reset.
+STALE_AFTER_SECONDS = int(os.getenv("HUNTMCP_WORK_STALE_AFTER_S", str(2 * 60 * 60)))
+
 
 def _resolve_path(path: str | None) -> str:
     if path is not None:
@@ -103,11 +110,27 @@ def complete_work(work_id: str, outcome: str = "", path: str | None = None) -> b
 
 def list_active_work(host: str | None = None, path: str | None = None) -> list[dict]:
     """Everything currently in_progress -- check this before spawning a
-    specialist to avoid redundant work on the same host."""
+    specialist to avoid redundant work on the same host.
+
+    An entry started more than STALE_AFTER_SECONDS ago and never marked
+    complete is excluded (not treated as still-active). Bug found live:
+    if the process that called start_work() dies mid-work -- a network
+    hang, a kill, a crash -- nothing ever calls complete_work() for it,
+    so the lock was permanent; a resumed session (which deliberately
+    skips resetting this registry, see huntbrain.md's Phase 0 -- "the
+    whole point of switching the pointer back is that the target's prior
+    state is exactly as it was left") would see that host/agent as
+    forever "already being worked on" and never retry it. Real work
+    realistically finishes well under this threshold; a stuck entry past
+    it is far more likely dead than still running."""
     path = _resolve_path(path)
     with file_lock.locked(path):
         state = _load(path)
-    items = [dict(id=k, **v) for k, v in state.items() if v["status"] == "in_progress"]
+    now = time.time()
+    items = [
+        dict(id=k, **v) for k, v in state.items()
+        if v["status"] == "in_progress" and (now - v["started_at"]) < STALE_AFTER_SECONDS
+    ]
     if host:
         items = [i for i in items if i["host"] == host]
     return items

@@ -112,6 +112,33 @@ def run_tool(
     binary = resolve_tool(name)
     kwargs.setdefault("capture_output", True)
     kwargs.setdefault("text", True)
+    # Without this, the child inherits OUR stdin file descriptor. That's
+    # harmless when this process's own stdin is a terminal or already
+    # closed, but every one of these servers normally runs as an MCP
+    # server over stdio -- its stdin is a live pipe to the MCP client that
+    # never sends EOF. Several of these binaries (httpx, subfinder,
+    # katana, nuclei -- standard ProjectDiscovery CLI convention) detect
+    # "stdin is not a terminal" and treat it as an ADDITIONAL target-list
+    # input source regardless of -l/-d being passed, so the child blocks
+    # forever trying to read hosts from a pipe that will never write or
+    # close -- a genuine deadlock, not a slow call (confirmed live:
+    # httpx-mcp's probe_hosts hung 160+s on a call that completes in <2s
+    # once stdin is closed). DEVNULL tells the child "no stdin input,
+    # ever" up front, matching what every one of these tools actually
+    # wants here (target list always comes via -l/-d/a real arg, never
+    # via interactively-piped stdin).
+    #
+    # Skip this when the caller already passed input= (watch-mcp's
+    # run_httpx(), ad-recon-mcp's kerberoast() piping a password) --
+    # subprocess.run() raises ValueError if both stdin and input are set,
+    # and input= already fully replaces stdin with controlled, finite
+    # data (Python sets stdin=PIPE internally for it), so it was never
+    # vulnerable to the live-pipe-inheritance deadlock this default
+    # exists for in the first place. Confirmed live: this collision broke
+    # watch-mcp's httpx step silently (swallowed by a broad except) and
+    # crashed ad-recon-mcp's password-authenticated Kerberoast loudly.
+    if "input" not in kwargs:
+        kwargs.setdefault("stdin", subprocess.DEVNULL)
     start = time.monotonic()
     result = subprocess.run([binary, *args], **kwargs)
 

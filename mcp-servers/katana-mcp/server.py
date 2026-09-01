@@ -12,6 +12,9 @@ app = FastMCP("katana-mcp")
 
 @app.tool()
 def crawl(url: str, depth: int = 2, delay: int = 0, timeout: int = 120) -> str:
+    """Crawl `url` with katana and return every discovered endpoint URL
+    (deduplicated, sorted). `depth` is how many link-hops deep to follow
+    (default 2). `delay` adds seconds between requests (0 = no delay)."""
     args = [
         "-u", url,
         "-d", str(depth),
@@ -45,6 +48,10 @@ def crawl(url: str, depth: int = 2, delay: int = 0, timeout: int = 120) -> str:
 
 @app.tool()
 def crawl_with_filter(url: str, depth: int = 2, extensions: str = "") -> str:
+    """Like crawl(), but `extensions` is an EXCLUDE list (katana's -ef
+    flag), not an include filter -- e.g. extensions="png,css,js" drops
+    those from the results, it doesn't restrict to only them. Comma-
+    separated, no leading dots (e.g. "png,css" not ".png,.css")."""
     args = [
         "-u", url,
         "-d", str(depth),

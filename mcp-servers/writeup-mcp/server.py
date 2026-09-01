@@ -33,6 +33,13 @@ def _embed_file(fpath: str) -> int:
 
 @app.tool()
 def query_rag(query_text: str, top_k: int = 5) -> str:
+    """Semantic search over every ingested writeup/CVE (data/writeups/,
+    embedded via reindex_all()/ingest_writeup()/fetch_cves()). query_text is
+    natural language, e.g. "SSTI in Jinja2 Flask app" or "IDOR sequential
+    integer IDs" -- not a keyword/regex match. Returns up to top_k results
+    ranked by similarity score, each with title/URL/vuln_class/tech and a
+    snippet. "No matching writeups found" if the collection is empty or
+    nothing scores above threshold."""
     emb = embed([query_text])
     results = query(emb, top_k=top_k)
     if not results or not results.get("ids") or not results["ids"][0]:
@@ -56,6 +63,12 @@ def query_rag(query_text: str, top_k: int = 5) -> str:
 
 @app.tool()
 def ingest_writeup(filepath: str) -> str:
+    """Embed a single already-on-disk writeup .md file into the RAG so it's
+    immediately searchable via query_rag() -- use this after manually
+    creating/editing one writeup file (or after scripts/ingest-writeup.sh);
+    use reindex_all() instead to re-embed every file in data/writeups/ at
+    once. filepath can be relative to data/writeups/ or absolute, but must
+    resolve inside data/writeups/ -- anything outside it is refused."""
     base = os.path.realpath(WRITEUP_DIR)
     candidate = filepath if os.path.isabs(filepath) else os.path.join(WRITEUP_DIR, filepath)
     resolved = os.path.realpath(candidate)
@@ -75,6 +88,10 @@ def ingest_writeup(filepath: str) -> str:
 
 @app.tool()
 def reindex_all() -> str:
+    """Re-embed every .md file in data/writeups/ into ChromaDB. Safe to
+    call repeatedly (upserts, doesn't duplicate) -- run this after adding
+    writeups manually, or any time query_rag() seems to be missing content
+    you know is on disk. No arguments."""
     if not os.path.isdir(WRITEUP_DIR):
         return f"Writeup directory not found: {WRITEUP_DIR}"
     md_files = sorted(f for f in os.listdir(WRITEUP_DIR) if f.endswith(".md"))
@@ -151,6 +168,9 @@ def refresh_disclosed_reports(force: bool = False) -> str:
 
 @app.tool()
 def stats() -> str:
+    """Report how many chunks are currently in the RAG's ChromaDB
+    collection. No arguments -- a quick sanity check before/after
+    reindex_all() or ingest_writeup()."""
     s = collection_stats()
     return f"Collection '{s['name']}' has {s['count']} chunks."
 

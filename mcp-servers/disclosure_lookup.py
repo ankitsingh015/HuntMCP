@@ -49,6 +49,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 import yaml
@@ -106,15 +107,23 @@ def refresh(force: bool = False) -> dict:
     os.makedirs(CACHE_DIR, exist_ok=True)
     merged: list[dict] = []
     failed: list[str] = []
-    for source, filename in SOURCE_FILES.items():
-        try:
-            companies = _fetch_yaml(filename)
-        except (urllib.error.HTTPError, urllib.error.URLError, yaml.YAMLError, TimeoutError) as e:
-            failed.append(f"{source} ({e})")
-            continue
-        for c in companies:
-            c["_source"] = source
-        merged.extend(companies)
+    # Fetched concurrently -- two independent HTTP calls that don't depend
+    # on each other, previously run one after another (worst case ~60s if
+    # both are slow) for no reason; same fix as bounty_scope.py's refresh().
+    with ThreadPoolExecutor(max_workers=len(SOURCE_FILES)) as pool:
+        futures = {
+            source: pool.submit(_fetch_yaml, filename)
+            for source, filename in SOURCE_FILES.items()
+        }
+        for source, future in futures.items():
+            try:
+                companies = future.result()
+            except (urllib.error.HTTPError, urllib.error.URLError, yaml.YAMLError, TimeoutError) as e:
+                failed.append(f"{source} ({e})")
+                continue
+            for c in companies:
+                c["_source"] = source
+            merged.extend(companies)
 
     if not merged:
         return {"refreshed": False, "reason": f"all sources failed: {failed}",

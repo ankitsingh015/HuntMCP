@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from scope_guard import NoEngagementFile, is_in_scope, load_engagement
+from scope_guard import NoEngagementFile, is_in_scope, is_safe_test_host, load_engagement
 from tool_resolver import run_tool
 
 app = FastMCP("watch-mcp")
@@ -70,7 +70,14 @@ def _scope_error(target: str) -> str | None:
     ever invoking the MCP tool), watch-mcp can be triggered unattended by cron
     (scripts/setup-watch.sh) with no agent in the loop to enforce that convention.
     The check has to live in the tool itself.
+
+    is_safe_test_host() exemption checked FIRST, same as every other Tier-2
+    tool (scope_gate_hook.py) -- this was missing here, so watch-mcp was
+    the only Tier-2 tool that couldn't be used against example.com/
+    localhost/etc. without a real engagement.yaml, confirmed live.
     """
+    if is_safe_test_host(target):
+        return None
     try:
         engagement = load_engagement()
     except (NoEngagementFile, RuntimeError) as e:
@@ -86,6 +93,12 @@ def _scope_error(target: str) -> str | None:
 
 @app.tool()
 def start_watch(target: str, interval_hours: int = 6) -> str:
+    """Start (or resume/re-interval) continuous monitoring of `target`:
+    subdomains via subfinder, live hosts via httpx, endpoints via katana.
+    Captures an initial snapshot immediately -- later check_target() calls
+    diff against it. `target` must already be in scope (same engagement.yaml
+    check every Tier-2 tool uses). Calling this again on an already-watched
+    target updates its interval and reactivates it if paused."""
     err = _scope_error(target)
     if err:
         return err
@@ -118,6 +131,9 @@ def start_watch(target: str, interval_hours: int = 6) -> str:
 
 @app.tool()
 def stop_watch(target: str) -> str:
+    """Pause monitoring for `target` (marks it inactive; doesn't delete its
+    history/snapshots -- start_watch() later resumes with everything
+    intact)."""
     conn = get_db()
     conn.execute(
         "UPDATE watched_targets SET active = 0 WHERE target = ?", (target,)
@@ -137,6 +153,8 @@ def stop_watch(target: str) -> str:
 
 @app.tool()
 def list_watched() -> str:
+    """List every target ever watched (active or paused), with interval and
+    last-check time. No arguments."""
     conn = get_db()
     rows = conn.execute(
         "SELECT target, interval_hours, last_check_at, created_at, active "
@@ -159,6 +177,12 @@ def list_watched() -> str:
 
 @app.tool()
 def check_target(target: str) -> str:
+    """Manually trigger a change check for an already-watched target (must
+    have called start_watch() first) -- re-runs subfinder+httpx+katana,
+    diffs against the last snapshot, logs any new/changed subdomains or
+    endpoints as watch events, and returns what changed (or "no changes
+    detected"). This is what the cron job (scripts/setup-watch.sh) calls
+    periodically; this tool lets you trigger the same check on demand."""
     err = _scope_error(target)
     if err:
         return err
@@ -211,6 +235,9 @@ def check_target(target: str) -> str:
 
 @app.tool()
 def get_watch_history(target: str, limit: int = 20) -> str:
+    """List past change events logged for `target` by check_target(),
+    newest first (new/removed subdomains, newly-live hosts, etc.), up to
+    `limit` (default 20)."""
     conn = get_db()
     events = conn.execute(
         "SELECT event_type, description, severity, detected_at "

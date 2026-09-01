@@ -35,6 +35,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 CACHE_DIR = os.getenv(
@@ -192,11 +193,24 @@ def refresh(force: bool = False) -> dict:
         for rows in previous.values() for row in rows
     }
 
+    # Fetched concurrently, not sequentially -- 5 independent HTTP calls,
+    # each with its own 30s timeout, previously ran one after another
+    # (worst case ~150s if several platforms are slow) for no reason: none
+    # depends on another's result. Confirmed live: this made
+    # refresh_bounty_scope() look "broken" from the caller's side simply
+    # because it blew past any reasonable client-side timeout, when the
+    # actual bottleneck was five sequential round-trips that could just as
+    # well happen at once.
     new_index: dict[str, list[dict]] = {}
     failed_platforms = []
     fetched_platforms = []
+    with ThreadPoolExecutor(max_workers=len(PLATFORMS)) as pool:
+        fetched = dict(zip(
+            PLATFORMS,
+            pool.map(lambda p: _fetch_json(f"{BASE_URL}/{p}_data.json"), PLATFORMS),
+        ))
     for platform in PLATFORMS:
-        data = _fetch_json(f"{BASE_URL}/{platform}_data.json")
+        data = fetched[platform]
         if data is None:
             failed_platforms.append(platform)
             continue
