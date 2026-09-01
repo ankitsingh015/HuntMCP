@@ -91,7 +91,11 @@ opencode run "HuntMCP audit testphp.vulnweb.com --quick"
   the same Repeater/proxy-replay validation role via its own MCP-compatible
   plugin — point exploit-agent at whichever one you have running locally,
   neither is a hard requirement (the proof-capsule validation in
-  `exploit-agent.md` works with plain curl too, just more manually)
+  `exploit-agent.md` works with plain curl too, just more manually). Once
+  the extension is installed and started in Burp, run
+  `./scripts/connect-burp.sh` to register the bridge (personal
+  `--scope local` MCP config, not tracked in this repo), then restart your
+  session
 - Python 3.10+
 - Go toolchain (for security tools)
 

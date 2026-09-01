@@ -356,6 +356,20 @@ Burp Suite integration (Repeater/Collaborator validation) is an optional enhance
 entirely on the open-source tool chain. Out-of-band confirmation (blind SSRF/XXE/SQLi/RCE) is
 already covered without Burp via `oob-mcp` (wraps `interactsh-client`).
 
+If you do have Burp Suite, wiring it up as a *live* MCP integration (real proxy history,
+Repeater, Collaborator, Scanner issues — 27 tools total) takes one command:
+
+```bash
+# In Burp: Extensions tab > BApp Store > install "MCP Server" > start it.
+./scripts/connect-burp.sh          # registers the bridge, then restart your session
+./scripts/connect-burp.sh --remove # undo
+```
+
+This is a personal `--scope local` MCP registration (your own `~/.claude.json`), not
+something the repo forces on every clone — it only works while Burp is open on your
+machine with the extension running. This is separate from `burp-import-mcp` (always
+available, no Burp needed — reads a manually-exported HTTP-history XML file).
+
 ---
 
 ## 🌐 Model Providers
