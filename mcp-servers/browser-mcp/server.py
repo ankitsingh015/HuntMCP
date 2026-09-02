@@ -212,6 +212,61 @@ async def screenshot(url: str, wait_ms: int = 1000, cookie_header: str = "",
     return f"data:image/png;base64,{r['screenshot_base64']}"
 
 
+@app.tool()
+async def start_manual_intervention(url: str, session_file: str) -> str:
+    """Open a REAL, VISIBLE browser window at url and leave it open -- for
+    whatever blocks every other tool in this server: a CAPTCHA, an unusual
+    multi-step login, anything that genuinely needs a human's own hands.
+    This does NOT solve anything itself; a human does, in the window it
+    opens. Requires a real display on whatever machine runs this MCP
+    server -- fails in a headless CI/sandbox environment with nowhere to
+    show a window; run it from your own machine's session. Call
+    finish_manual_intervention(session_file) once the human is done --
+    every other browser-mcp/obscura-mcp tool that accepts session_file
+    then resumes from whatever state was left behind. Requires scope-gate
+    clearance first (Tier-2)."""
+    r = await browser_confirm.start_manual_intervention(url, session_file)
+    if r.get("error"):
+        return f"Error: {r['error']}"
+    return r["message"]
+
+
+@app.tool()
+async def finish_manual_intervention(session_file: str) -> str:
+    """Capture the session state from a window opened by
+    start_manual_intervention(session_file=...), save it to session_file,
+    and close the window. Every other browser-mcp/obscura-mcp tool that
+    accepts session_file resumes from exactly this state on its next
+    call."""
+    r = await browser_confirm.finish_manual_intervention(session_file)
+    if r.get("error"):
+        return f"Error: {r['error']}"
+    return f"Closed. Final URL: {r['final_url']!r}, title: {r['final_title']!r}. Session saved to {session_file!r}."
+
+
+@app.tool()
+async def list_open_interventions() -> str:
+    """List every manual intervention currently open (started via
+    start_manual_intervention, not yet finished) and how long each has
+    been open -- so a stale one nobody remembered to finish is
+    discoverable instead of silently leaking an open browser window.
+    Flags one as likely abandoned once it's been open past
+    browser_confirm.INTERVENTION_STALE_AFTER_SECONDS (30 min default) --
+    not auto-closed, just surfaced, since a human may genuinely still be
+    mid-CAPTCHA/mid-login."""
+    items = await browser_confirm.list_open_interventions()
+    if not items:
+        return "No manual interventions currently open."
+    lines = [f"{len(items)} open manual intervention(s):"]
+    for it in items:
+        if it.get("status") == "starting":
+            lines.append(f"  {it['session_file']} -- still starting up")
+            continue
+        marker = " [LIKELY ABANDONED]" if it["likely_abandoned"] else ""
+        lines.append(f"  {it['session_file']} -- open {it['open_seconds']:.0f}s{marker}")
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     print("browser-mcp starting...", file=sys.stderr)
     app.run(transport="stdio")
