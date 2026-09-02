@@ -1,7 +1,7 @@
 ---
 name: recon-agent
 description: Level 2 specialist — discovers attack surface (subdomains, live hosts, endpoints, ports) for a HuntMCP engagement. Spawned by huntbrain, never invoked directly against an unconfirmed target.
-tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp, mcp__browser-mcp, mcp__writeup-mcp, mcp__osint-mcp, mcp__github-security-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp, mcp__browser-mcp, mcp__obscura-mcp, mcp__writeup-mcp, mcp__osint-mcp, mcp__github-security-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -63,10 +63,17 @@ not just once for the root domain.
    right here rather than waiting for scan-agent to do it — you have the
    version string the moment httpx returns it, scan-agent only sees
    whatever you chose to carry forward in your summary.
+4. Call `mcp__httpx-mcp` `screenshot_hosts(domains)` on the live hosts from
+   step 2 — a visual gallery of what each host actually looks like is real
+   recon signal (admin panels, login forms, default install pages, staging
+   banners) that status codes/titles alone miss, and it costs one extra
+   call. Skip only if the host count is large enough that it would blow
+   past the tool's own timeout (narrow to a representative subset instead
+   of dropping this step entirely).
 
 ## Phase 3 — Endpoint discovery
 
-4. `mcp__katana-mcp` crawl on each live, in-scope host. Collect endpoints,
+5. `mcp__katana-mcp` crawl on each live, in-scope host. Collect endpoints,
    parameters, JS file paths -- katana-mcp itself only returns this as
    text, it does not save anything to disk. If you want secrets-mcp to
    scan the actual JS content (not just paths), download it yourself: run
@@ -96,7 +103,7 @@ not just once for the root domain.
 
 ## Phase 4 — Port scanning
 
-5. `mcp__nmap-mcp` on the root domain and any unique in-scope IPs. Top 1000
+6. `mcp__nmap-mcp` on the root domain and any unique in-scope IPs. Top 1000
    ports by default; `--deep` uses 1-10000.
 
 ## Return to HuntBrain

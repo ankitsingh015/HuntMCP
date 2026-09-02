@@ -96,6 +96,22 @@ TIER2_MCP_SERVERS = {
     "subfinder-mcp", "httpx-mcp", "katana-mcp", "nmap-mcp",
     "nuclei-mcp", "sqlmap-mcp", "dalfox-mcp", "ffuf-mcp", "watch-mcp",
     "waf-bypass-mcp", "browser-mcp", "playwright-mcp", "idor-mcp",
+    # obscura-mcp is the same live-target-touching browser-automation role
+    # as browser-mcp/playwright-mcp above -- added here so it gets the
+    # identical structural scope-gate, not just the documented-convention
+    # one. NOTE (corrected after initially overclaiming this): only
+    # browser_navigate(url) actually carries a HOST_ARG_KEYS-matching
+    # param, per obscura's real MCP tool schema -- browser_screenshot/
+    # browser_evaluate/browser_click/etc. act on the already-navigated
+    # page's current state and take no url, so they aren't independently
+    # re-gated. This isn't a live bypass today (there's no host to check
+    # on those calls), but it does mean scope enforcement for an obscura
+    # session lives entirely at its one browser_navigate call -- an
+    # in-page redirect or a followed link that lands somewhere out of
+    # scope is not itself re-checked. connect-obscura.sh's own printed
+    # instructions tell agents to always browser_navigate to the exact
+    # intended URL rather than relying on in-page navigation.
+    "obscura-mcp",
     # ad-recon-mcp's kerberoast_tool/asreproast_tool both take a `domain`
     # param (an AD domain, e.g. "corp.local") -- unlike aws/azure/
     # gcp-postexploit-mcp (which take a credential, not a domain, and are
