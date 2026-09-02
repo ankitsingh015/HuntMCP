@@ -78,6 +78,8 @@ import os
 import re
 import sys
 
+import file_lock
+
 # Anchored to the repo root, NOT the caller's cwd. Bug found live
 # (2026-08-31, coderabbit.ai engagement): a subagent whose cwd had drifted
 # into a tool's own mcp-servers/<tool>/ subdirectory (working around the
@@ -143,18 +145,27 @@ def set_active_target(target: str, pointer_path: str | None = None,
     (confirmed live: a session switched straight to a new target with
     `set`, no `check`, silently pointing every subsequent tool call at the
     wrong engagement's state until this was noticed by hand). Pass
-    force=True to switch anyway once you've decided that's what you want."""
+    force=True to switch anyway once you've decided that's what you want.
+
+    The check-then-write is done under file_lock on the pointer path, the
+    same protection budget_guard.py/work_registry.py/dedupe_check.py
+    already use for their own read-modify-write state -- without it, two
+    processes calling set_active_target() at nearly the same instant could
+    both pass the conflict check before either writes, and one write
+    silently clobbers the other (this file was the one piece of shared
+    state in this module that didn't already have this)."""
     pointer_path = ACTIVE_POINTER if pointer_path is None else pointer_path
     engagements_root = ENGAGEMENTS_ROOT if engagements_root is None else engagements_root
-    if not force:
-        warning = check_conflict(target, pointer_path, engagements_root)
-        if warning:
-            raise ActiveEngagementConflict(warning)
-    slug = slugify(target)
-    os.makedirs(os.path.dirname(pointer_path) or ".", exist_ok=True)
-    with open(pointer_path, "w") as f:
-        f.write(slug)
-    os.makedirs(os.path.join(engagements_root, slug), exist_ok=True)
+    with file_lock.locked(pointer_path):
+        if not force:
+            warning = check_conflict(target, pointer_path, engagements_root)
+            if warning:
+                raise ActiveEngagementConflict(warning)
+        slug = slugify(target)
+        os.makedirs(os.path.dirname(pointer_path) or ".", exist_ok=True)
+        with open(pointer_path, "w") as f:
+            f.write(slug)
+        os.makedirs(os.path.join(engagements_root, slug), exist_ok=True)
     return slug
 
 

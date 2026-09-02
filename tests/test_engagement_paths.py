@@ -2,6 +2,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 
 import engagement_paths
 
@@ -126,6 +128,58 @@ def test_set_active_target_allows_switching_after_previous_marked_complete(tmp_p
     # target-a is done -- switching away without force must be allowed.
     engagement_paths.set_active_target("target-b.com", pointer, root)
     assert engagement_paths.get_active_target(pointer) == "target-b-com"
+
+
+def test_set_active_target_is_safe_under_concurrent_calls(monkeypatch, tmp_path):
+    """Regression for the check-then-write race: without file_lock around
+    the whole check_conflict()+write critical section, two threads calling
+    set_active_target() for two DIFFERENT targets at nearly the same
+    instant could both pass the "nothing active yet" check before either
+    writes -- both would believe they succeeded cleanly with no conflict,
+    even though only one target can really be active. Widen the race
+    window artificially (like test_work_registry.py's own concurrency
+    test) so this fails reliably without file_lock: sleep inside
+    check_conflict, after it has read state but before set_active_target
+    writes anything.
+    """
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    orig_check_conflict = engagement_paths.check_conflict
+
+    def slow_check_conflict(*args, **kwargs):
+        result = orig_check_conflict(*args, **kwargs)
+        time.sleep(0.02)
+        return result
+
+    monkeypatch.setattr(engagement_paths, "check_conflict", slow_check_conflict)
+
+    n = 20
+    successes: list[str] = []
+    conflicts: list[str] = []
+    lock = threading.Lock()
+
+    def _try_set(i):
+        try:
+            slug = engagement_paths.set_active_target(f"target-{i}.com", pointer, root)
+            with lock:
+                successes.append(slug)
+        except engagement_paths.ActiveEngagementConflict:
+            with lock:
+                conflicts.append(f"target-{i}-com")
+
+    threads = [threading.Thread(target=_try_set, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Exactly one thread should win the race and set the pointer (nothing
+    # was active before any of them ran) -- every other thread must
+    # correctly see that winner as already-active and refuse, never both
+    # silently "succeeding" for two different targets at once.
+    assert len(successes) == 1, f"expected exactly 1 success, got {successes}"
+    assert len(conflicts) == n - 1
+    assert engagement_paths.get_active_target(pointer) == successes[0]
 
 
 def test_cli_set_refuses_without_force_and_exits_3(tmp_path):
