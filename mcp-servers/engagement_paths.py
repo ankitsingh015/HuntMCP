@@ -95,8 +95,29 @@ ACTIVE_POINTER = os.getenv("HUNTMCP_ACTIVE_POINTER", os.path.join(_REPO_ROOT, "d
 ENGAGEMENTS_ROOT = os.getenv("HUNTMCP_ENGAGEMENTS_ROOT", os.path.join(_REPO_ROOT, "data/engagements"))
 
 
+class ActiveEngagementConflict(Exception):
+    """Raised by set_active_target() when switching would silently drop a
+    different, not-yet-complete engagement without the caller deciding
+    that's what they want. .args[0] is the human-readable warning."""
+
+
 def slugify(target: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", target.strip().lower()).strip("-")
+    # Strip scheme/www/path/query/port before slugifying -- otherwise
+    # "iisc.ac.in", "https://iisc.ac.in", "www.iisc.ac.in", and
+    # "http://iisc.ac.in/" each produced a DIFFERENT slug (confirmed live:
+    # "https-iisc-ac-in" vs "iisc-ac-in"), silently fragmenting one real
+    # target's case.db/budget/scope state across multiple engagement
+    # folders depending on exactly how it was typed. This only normalizes
+    # the host part -- a genuinely different host (a subdomain, a
+    # different TLD) still gets its own distinct slug, since that may be a
+    # deliberately separate scope, not typo/variant noise.
+    host = target.strip().lower()
+    host = re.sub(r"^[a-z][a-z0-9+.-]*://", "", host)  # strip any scheme, not just http(s)
+    host = host.split("/", 1)[0].split("?", 1)[0]        # drop path/query
+    host = host.split(":", 1)[0]                          # drop :port
+    if host.startswith("www."):
+        host = host[len("www."):]
+    slug = re.sub(r"[^a-z0-9]+", "-", host).strip("-")
     return slug or "unnamed-target"
 
 
@@ -110,12 +131,25 @@ def get_active_target(pointer_path: str | None = None) -> str | None:
 
 
 def set_active_target(target: str, pointer_path: str | None = None,
-                       engagements_root: str | None = None) -> str:
+                       engagements_root: str | None = None, force: bool = False) -> str:
     """Point the active pointer at target's directory, creating it if new.
     Never touches files already inside an existing target directory --
-    switching back to a paused target is always safe."""
+    switching back to a paused target is always safe.
+
+    Refuses (raises ActiveEngagementConflict) instead of silently
+    overwriting the pointer when a DIFFERENT, not-yet-complete target is
+    already active -- this used to be a separate `check` step callers had
+    to remember to run before `set`, which meant it was easy to skip
+    (confirmed live: a session switched straight to a new target with
+    `set`, no `check`, silently pointing every subsequent tool call at the
+    wrong engagement's state until this was noticed by hand). Pass
+    force=True to switch anyway once you've decided that's what you want."""
     pointer_path = ACTIVE_POINTER if pointer_path is None else pointer_path
     engagements_root = ENGAGEMENTS_ROOT if engagements_root is None else engagements_root
+    if not force:
+        warning = check_conflict(target, pointer_path, engagements_root)
+        if warning:
+            raise ActiveEngagementConflict(warning)
     slug = slugify(target)
     os.makedirs(os.path.dirname(pointer_path) or ".", exist_ok=True)
     with open(pointer_path, "w") as f:
@@ -293,9 +327,16 @@ def _cli() -> None:
         print("ok")
     elif cmd == "set":
         if len(sys.argv) < 3:
-            print("usage: engagement_paths.py set <target>", file=sys.stderr)
+            print("usage: engagement_paths.py set <target> [--force]", file=sys.stderr)
             sys.exit(2)
-        slug = set_active_target(sys.argv[2])
+        force = "--force" in sys.argv[3:]
+        try:
+            slug = set_active_target(sys.argv[2], force=force)
+        except ActiveEngagementConflict as e:
+            print(e.args[0], file=sys.stderr)
+            print(f"\nRun with --force if you're sure: engagement_paths.py set {sys.argv[2]!r} --force",
+                  file=sys.stderr)
+            sys.exit(3)
         print(slug)
     elif cmd == "complete":
         slug = mark_complete()

@@ -77,6 +77,14 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    `audit_log.py`) at `data/engagements/<slug>/` instead of the repo
    root, so this target's state can never mix with another target's if
    you switch targets mid-session (see "Multi-target hunting" below).
+   `set` itself runs the same conflict check as step 2 and refuses (exit
+   3, same warning) if a different, not-yet-complete target is still
+   active — this is a second line of defense, not a redundant step to
+   skip: it's what catches the case where `set` gets called directly
+   without `check` having run first. If the user already chose "continue
+   this target in THIS chat" in step 2, add `--force` here (`scripts/
+   switch-engagement.sh set <target> --force`) — you already have their
+   decision, so this isn't asking again, it's the command executing it.
    Then write `engagement.yaml` inside that directory — NOT the repo
    root — in the format shown in `engagement.yaml.example` (Write's
    target path is now `data/engagements/<slug>/engagement.yaml`; ask
