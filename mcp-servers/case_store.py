@@ -89,6 +89,32 @@ def _band_for_score(score: int) -> str:
     return "LOW"
 
 
+def _row_exists(conn: sqlite3.Connection, table: str, row_id: int) -> bool:
+    # table is always one of the two hardcoded literals passed by this
+    # module's own callers below, never caller-controlled input.
+    return conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (row_id,)).fetchone() is not None
+
+
+def _missing_fk_error(what: str) -> dict:
+    """`what` e.g. "hypothesis with id 3" or "finding(s) with id [5, 9]".
+
+    Confirmed live: an agent working on target A while the active
+    engagement pointer is still target B's case.db gets a raw "FOREIGN KEY
+    constraint failed" from sqlite with zero indication of *why* -- the id
+    is real, just real in a DIFFERENT engagement's case.db. Pre-checking
+    and naming the actual active engagement here turns that into an
+    actionable message instead of an opaque sqlite3 exception."""
+    active = engagement_paths.get_active_target()
+    active_desc = f"active engagement is currently {active!r}" if active else "no engagement is currently active"
+    return {
+        "error": (
+            f"no {what} in this engagement's case.db ({active_desc}). "
+            f"If you intended a different target, check `scripts/switch-engagement.sh current` "
+            f"and switch with `scripts/switch-engagement.sh set <target>` before retrying."
+        )
+    }
+
+
 def _evidence_dir(db_path: str | None = None) -> str:
     # add_evidence() (this function's only caller) now defaults its own
     # db_path to None too -- resolve it here the same way _get_conn() does,
@@ -227,16 +253,21 @@ def add_evidence(type: str, content: str, hypothesis_id: int | None = None,
     if hypothesis_id is None and finding_id is None:
         return {"error": "add_evidence needs at least one of hypothesis_id/finding_id"}
 
-    content_bytes = content.encode("utf-8")
-    content_hash = hashlib.sha256(content_bytes).hexdigest()
-    ev_dir = _evidence_dir(db_path)
-    content_ref = os.path.join(ev_dir, content_hash)
-    if not os.path.isfile(content_ref):
-        with open(content_ref, "wb") as f:
-            f.write(content_bytes)
-
     conn = _get_conn(db_path)
     try:
+        if hypothesis_id is not None and not _row_exists(conn, "hypotheses", hypothesis_id):
+            return _missing_fk_error(f"hypothesis with id {hypothesis_id}")
+        if finding_id is not None and not _row_exists(conn, "findings", finding_id):
+            return _missing_fk_error(f"finding with id {finding_id}")
+
+        content_bytes = content.encode("utf-8")
+        content_hash = hashlib.sha256(content_bytes).hexdigest()
+        ev_dir = _evidence_dir(db_path)
+        content_ref = os.path.join(ev_dir, content_hash)
+        if not os.path.isfile(content_ref):
+            with open(content_ref, "wb") as f:
+                f.write(content_bytes)
+
         cur = conn.execute(
             "INSERT INTO evidence (hypothesis_id, finding_id, type, content_hash, content_ref) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -255,6 +286,10 @@ def log_experiment(tool: str, input: str, target: str, result: str = "", cost: i
                     status: str = "done", db_path: str | None = None) -> dict:
     conn = _get_conn(db_path)
     try:
+        if hypothesis_id is not None and not _row_exists(conn, "hypotheses", hypothesis_id):
+            return _missing_fk_error(f"hypothesis with id {hypothesis_id}")
+        if finding_id is not None and not _row_exists(conn, "findings", finding_id):
+            return _missing_fk_error(f"finding with id {finding_id}")
         cur = conn.execute(
             "INSERT INTO experiments (hypothesis_id, finding_id, tool, input, target, result, cost, status) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -284,6 +319,8 @@ def create_finding(vuln_class: str, endpoint: str, parameter: str = "",
                     hypothesis_id: int | None = None, db_path: str | None = None) -> dict:
     conn = _get_conn(db_path)
     try:
+        if hypothesis_id is not None and not _row_exists(conn, "hypotheses", hypothesis_id):
+            return _missing_fk_error(f"hypothesis with id {hypothesis_id}")
         cur = conn.execute(
             "INSERT INTO findings (vuln_class, endpoint, parameter, hypothesis_id) VALUES (?, ?, ?, ?)",
             (vuln_class, endpoint, parameter, hypothesis_id),
@@ -359,7 +396,7 @@ def group_root_cause(finding_ids: list[int], description: str, db_path: str | No
         found_ids = {r["id"] for r in rows}
         missing = [fid for fid in finding_ids if fid not in found_ids]
         if missing:
-            return {"error": f"no finding(s) with id {missing}"}
+            return _missing_fk_error(f"finding(s) with id {missing}")
         cur = conn.execute("INSERT INTO root_causes (description) VALUES (?)", (description,))
         root_cause_id = cur.lastrowid
         conn.executemany(

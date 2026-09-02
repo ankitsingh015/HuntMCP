@@ -72,6 +72,66 @@ def test_add_evidence_requires_a_link(tmp_path):
     assert "error" in result
 
 
+# ---- Cross-engagement FK mismatch: clear error, not a raw sqlite crash -------
+#
+# Regression for a live incident: an agent working on target B (whose
+# hypothesis/finding ids are real) got a raw, uncaught
+# sqlite3.IntegrityError: FOREIGN KEY constraint failed when the active
+# engagement pointer still resolved to target A's case.db -- the id was
+# real, just real in a DIFFERENT engagement's database. These prove the
+# pre-check returns a clean, actionable {"error": ...} dict instead.
+
+def test_add_evidence_rejects_unknown_hypothesis_id(tmp_path):
+    db = _db(tmp_path)
+    result = case_store.add_evidence("metadata", "x", hypothesis_id=999, db_path=db)
+    assert "error" in result
+    assert "999" in result["error"]
+
+
+def test_add_evidence_rejects_unknown_finding_id(tmp_path):
+    db = _db(tmp_path)
+    result = case_store.add_evidence("metadata", "x", finding_id=999, db_path=db)
+    assert "error" in result
+    assert "999" in result["error"]
+
+
+def test_log_experiment_rejects_unknown_hypothesis_id(tmp_path):
+    db = _db(tmp_path)
+    result = case_store.log_experiment("dig", "dig TXT example.com", "example.com", hypothesis_id=999, db_path=db)
+    assert "error" in result
+    assert "999" in result["error"]
+
+
+def test_create_finding_rejects_unknown_hypothesis_id(tmp_path):
+    db = _db(tmp_path)
+    result = case_store.create_finding("SSRF", "/api/fetch", hypothesis_id=999, db_path=db)
+    assert "error" in result
+    assert "999" in result["error"]
+
+
+def test_cross_engagement_hypothesis_id_gives_clean_error_not_a_crash(tmp_path):
+    # Exactly the real incident: hypothesis id 3 is real, just in a
+    # DIFFERENT engagement's case.db than the one currently active.
+    db_a = str(tmp_path / "hellomatik-com-case.db")
+    db_b = str(tmp_path / "iisc-ac-in-case.db")
+    for i in range(3):
+        case_store.log_hypothesis(f"obs {i}", f"hyp {i}", db_path=db_b)
+    # db_a has zero hypotheses -- id 3 only exists in db_b.
+    result = case_store.log_experiment(
+        "dig", "dig TXT iisc.ac.in", "iisc.ac.in", hypothesis_id=3, db_path=db_a,
+    )
+    assert "error" in result
+    assert "3" in result["error"]
+
+
+def test_group_root_cause_rejects_unknown_finding_id_with_clear_message(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    result = case_store.group_root_cause([f["id"], 999], "shared root cause", db_path=db)
+    assert "error" in result
+    assert "999" in result["error"]
+
+
 # ---- Findings: the evidence gate ---------------------------------------------
 
 def test_confirmed_transition_blocked_without_evidence(tmp_path):
