@@ -19,6 +19,22 @@ Run `scripts/check-scope.sh <host>` via Bash first. If it exits non-zero,
 (no LLM reasoning, plain local lookup) — run it per new host you discover,
 not just once for the root domain.
 
+## subfinder-mcp/httpx-mcp/katana-mcp/nmap-mcp run in the background — start, then poll
+
+`run_subfinder`, `probe_hosts`/`screenshot_hosts`, `crawl`/`crawl_with_filter`,
+and `scan_ports`/`scan_deep` no longer return their results directly from the
+call that starts them — a full subdomain sweep, host probe, crawl, or port
+scan can take longer than this MCP session's own per-call timeout, so the
+start call returns a `job_id` immediately instead of blocking. Every one of
+these servers also exposes `check_scan(job_id)` — call it every ~10-15s
+until it stops reporting `status=running`, then read its formatted result
+(a rate-limit/WAF block gets surfaced there too, as a prefix on the text, if
+one happened mid-run). Don't call the start tool a second time for the same
+target while a poll is still returning "running" — that launches a second
+concurrent run against the same live host instead of just checking on the
+first one. `list_scans()` on each server shows what's still running (and
+flags anything abandoned for 30+ minutes).
+
 ## Phase 0 — Burp import (optional, if the user already has one)
 
 0. If the user mentions a Burp Suite HTTP-history export (a saved XML
@@ -36,8 +52,9 @@ not just once for the root domain.
 
 ## Phase 1 — Subdomain enumeration
 
-1. `mcp__subfinder-mcp` to find subdomains of the in-scope root domain(s).
-   Once you have the list, call `Skill` `reconnaissance` and `Skill`
+1. `mcp__subfinder-mcp` `run_subfinder(domain)` to find subdomains of the
+   in-scope root domain(s) -- returns a `job_id`; poll `check_scan(job_id)`
+   for the list. Once you have it, call `Skill` `reconnaissance` and `Skill`
    `osint-and-secret-hunting` — don't wait until something looks
    interesting to load these, they cover exactly this phase (JS-mining
    checklist, dork patterns, cloud-storage/Wayback pivots) and are cheap
@@ -49,8 +66,9 @@ not just once for the root domain.
 
 ## Phase 2 — HTTP probing
 
-2. Scope-check each subdomain, then `mcp__httpx-mcp` to probe live hosts.
-   Default ports 80,443; add 8080,8443,3000 for `--deep`.
+2. Scope-check each subdomain, then `mcp__httpx-mcp` `probe_hosts(domains)`
+   to probe live hosts -- returns a `job_id`; poll `check_scan(job_id)` for
+   the results. Default ports 80,443; add 8080,8443,3000 for `--deep`.
 3. Record live hosts, status codes, titles, tech stack, web server headers.
    As soon as a tech stack/CMS/framework shows up in this output, call
    `Skill` `cms-and-framework-specific` and `Skill` `information-
@@ -67,13 +85,17 @@ not just once for the root domain.
    step 2 — a visual gallery of what each host actually looks like is real
    recon signal (admin panels, login forms, default install pages, staging
    banners) that status codes/titles alone miss, and it costs one extra
-   call. Skip only if the host count is large enough that it would blow
-   past the tool's own timeout (narrow to a representative subset instead
-   of dropping this step entirely).
+   job. Returns a `job_id`; poll `check_scan(job_id)` for the gallery path
+   once it's done (headless-browser downloads on first run can take
+   several minutes -- exactly why this is backgrounded rather than
+   blocking). Skip only if the host count would make even a backgrounded
+   run impractically slow (narrow to a representative subset instead of
+   dropping this step entirely).
 
 ## Phase 3 — Endpoint discovery
 
-5. `mcp__katana-mcp` crawl on each live, in-scope host. Collect endpoints,
+5. `mcp__katana-mcp` `crawl(url)` on each live, in-scope host -- returns a
+   `job_id`; poll `check_scan(job_id)` for the result. Collect endpoints,
    parameters, JS file paths -- katana-mcp itself only returns this as
    text, it does not save anything to disk. If you want secrets-mcp to
    scan the actual JS content (not just paths), download it yourself: run
@@ -103,8 +125,10 @@ not just once for the root domain.
 
 ## Phase 4 — Port scanning
 
-6. `mcp__nmap-mcp` on the root domain and any unique in-scope IPs. Top 1000
-   ports by default; `--deep` uses 1-10000.
+6. `mcp__nmap-mcp` `scan_ports(target)` on the root domain and any unique
+   in-scope IPs -- returns a `job_id`; poll `check_scan(job_id)` for the
+   result. Top 1000 ports by default; `--deep` uses `scan_deep(target,
+   "1-10000")` instead (also backgrounded the same way).
 
 ## Return to HuntBrain
 

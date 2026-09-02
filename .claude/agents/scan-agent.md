@@ -18,6 +18,25 @@ Run `scripts/check-scope.sh <host>` via Bash first. If it exits non-zero,
 stop and skip that host — report the block to HuntBrain, do not test it
 anyway.
 
+## Every scan tool below runs in the background — start, then poll
+
+`mcp__nuclei-mcp`, `mcp__sqlmap-mcp`, `mcp__dalfox-mcp`, and `mcp__ffuf-mcp`
+no longer return findings directly from the call that starts a scan — a full
+template/injection/XSS/fuzz run can take longer than this MCP session's own
+per-call timeout, so the start call (`scan_target`, `test_injection`,
+`scan_url`/`scan_parameter`, `fuzz_directory`/`fuzz_with_data`) returns a
+`job_id` immediately instead of blocking. Every one of those servers also
+exposes `check_scan(job_id)` — call it every ~10-15s until it stops
+reporting `status=running`, then read its findings-formatted text (that's
+where a rate-limit/WAF block gets surfaced too, if one happened mid-scan —
+see the WAF escalation section below). Don't call the start tool a second
+time for the same target while a poll is still returning "running" — that
+launches a second concurrent scan against the same live host instead of
+just checking on the first one. If a session ends or you move on before a
+scan finishes, `list_scans()` on that server shows what's still running (and
+flags anything abandoned for 30+ minutes) — useful to check at the start of
+a fresh session before assuming a target hasn't been scanned yet.
+
 ## Phase 0 — Strategy
 
 1. Identify tech stack from recon data.
@@ -86,10 +105,11 @@ principle as `knowledge/master-pentest-prompt.md`.
 
 ## WAF escalation — when a tool call comes back blocked, not clean
 
-`tool_resolver.run_tool()` (which every MCP tool above goes through)
-inspects output for a WAF/bot-detection block signature and returns it as
-such rather than silently treating it as "no findings." When you see that
-signal on a URL you actually need to test, call `mcp__waf-bypass-mcp`
+Every MCP tool above inspects output for a WAF/bot-detection block signature
+and surfaces it (as a `[RATE_LIMIT BLOCK DETECTED...]`/`[WAF BLOCK
+DETECTED...]` prefix on `check_scan()`'s result) rather than silently
+treating it as "no findings." When you see that signal on a URL you actually
+need to test, call `mcp__waf-bypass-mcp`
 `attempt_bypass(url, baseline_status=<the block's status code>)` — it
 automates Tiers 1-4 of the master prompt's Phase 0.6 guide (header/UA
 spoofing, path manipulation, method switching, HTTP version tricks) in one

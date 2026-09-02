@@ -1,6 +1,5 @@
 import importlib.util
 import os
-from dataclasses import dataclass, field
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -11,13 +10,6 @@ sqlmap_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sqlmap_server)
 
 import engagement_paths
-
-
-@dataclass
-class _FakeResult:
-    stdout: str
-    stderr: str = ""
-    returncode: int = 0
 
 
 SQLMAP_OUTPUT = """\
@@ -34,16 +26,63 @@ def test_injection_type_not_truncated_to_one_char(monkeypatch, tmp_path):
     # on one line -- the old lazy-quantifier-plus-optional-groups regex
     # captured just the first character ("b") of the type instead of the
     # full "boolean-based blind" string.
-    monkeypatch.setattr(sqlmap_server, "run_tool", lambda *a, **k: _FakeResult(stdout=SQLMAP_OUTPUT))
+    #
+    # test_injection() now only *starts* a background job (see
+    # mcp-servers/job_runtime.py) -- fake start_job()/poll_job() rather
+    # than run_tool(), which sqlmap-mcp no longer calls directly.
     # No active engagement in this test's isolated cwd, so _output_dir()
     # falls back to its legacy /tmp path -- point that fallback at tmp_path
     # instead, so the test doesn't touch the real /tmp/huntmcp-sqlmap.
     fake_out_dir = tmp_path / "sqlmap-out"
     fake_out_dir.mkdir()
     monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
-    out = sqlmap_server.test_injection("https://example.com/?id=1")
+    monkeypatch.setattr(
+        sqlmap_server.job_runtime, "start_job",
+        lambda *a, **k: {"job_id": "job-1", "status": "running", "tool": "sqlmap"},
+    )
+    start_msg = sqlmap_server.test_injection("https://example.com/?id=1")
+    assert "job-1" in start_msg
+
+    monkeypatch.setattr(
+        sqlmap_server.job_runtime, "poll_job",
+        lambda job_id, jobs: {
+            "status": "done", "job_id": job_id, "returncode": 0,
+            "stdout": SQLMAP_OUTPUT, "stderr": "", "elapsed_s": 1.0, "block": None,
+        },
+    )
+    out = sqlmap_server.check_scan("job-1")
     assert "Type: boolean-based blind" in out
     assert "Type: b\n" not in out
+
+
+def test_check_scan_actually_removes_the_scratch_tmpdir_from_disk(monkeypatch, tmp_path):
+    # test_injection()'s scratch --output-dir used to be a
+    # `with tempfile.TemporaryDirectory(...)` context manager, guaranteed
+    # cleaned up on scope exit. The backgrounded version creates it with
+    # mkdtemp() and removes it manually in check_scan() instead -- confirm
+    # that actually happens on disk, not just that the formatted text
+    # looks right (which wouldn't catch a dropped/reordered rmtree()).
+    fake_out_dir = tmp_path / "sqlmap-out"
+    fake_out_dir.mkdir()
+    monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
+    monkeypatch.setattr(
+        sqlmap_server.job_runtime, "start_job",
+        lambda *a, **k: {"job_id": "job-cleanup", "status": "running", "tool": "sqlmap"},
+    )
+    sqlmap_server.test_injection("https://example.com/?id=1")
+    tmpdir = sqlmap_server._meta["job-cleanup"]["tmpdir"]
+    assert os.path.isdir(tmpdir)
+
+    monkeypatch.setattr(
+        sqlmap_server.job_runtime, "poll_job",
+        lambda job_id, jobs: {
+            "status": "done", "job_id": job_id, "returncode": 0,
+            "stdout": SQLMAP_OUTPUT, "stderr": "", "elapsed_s": 1.0, "block": None,
+        },
+    )
+    sqlmap_server.check_scan("job-cleanup")
+    assert not os.path.isdir(tmpdir)
+    assert "job-cleanup" not in sqlmap_server._meta
 
 
 def test_output_dir_scopes_under_active_engagement(monkeypatch, tmp_path):

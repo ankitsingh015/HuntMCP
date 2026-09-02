@@ -1,14 +1,18 @@
 import os
 import re
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from tool_resolver import run_tool  # noqa: E402
+import job_runtime  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("nmap-mcp")
+
+# See dalfox-mcp/server.py for the full rationale -- same background-job
+# pattern, same per-process-only job storage.
+_jobs: dict = {}
+_targets: dict[str, str] = {}
 
 
 def _parse_nmap_grepable(raw: str) -> list[dict]:
@@ -46,25 +50,11 @@ def _parse_nmap_grepable(raw: str) -> list[dict]:
     return hosts
 
 
-@app.tool()
-def scan_ports(target: str, top_ports: int = 1000, timeout: int = 300) -> str:
-    """Fast nmap scan of the `top_ports` (default 1000) most common ports
-    on `target` -- no service-version detection, just open/closed state.
-    Use scan_deep() for -sV service fingerprinting on a specific range."""
-    args = ["-T4", "--top-ports", str(top_ports), "-oG", "-", target]
-    try:
-        result = run_tool("nmap", args, timeout=timeout)
-    except FileNotFoundError:
-        return "Error: nmap not found. Install with: apt install nmap"
-    except subprocess.TimeoutExpired:
-        return f"Error: nmap timed out after {timeout}s"
-    except Exception as e:
-        return f"Error: {e}"
+def _format_findings(stdout: str, returncode: int, stderr: str) -> str:
+    if returncode != 0:
+        return f"nmap failed (exit {returncode}): {stderr.strip()}"
 
-    if result.returncode != 0:
-        return f"nmap failed (exit {result.returncode}): {result.stderr.strip()}"
-
-    hosts = _parse_nmap_grepable(result.stdout)
+    hosts = _parse_nmap_grepable(stdout)
     if not hosts:
         return "No hosts found."
 
@@ -77,35 +67,83 @@ def scan_ports(target: str, top_ports: int = 1000, timeout: int = 300) -> str:
     return "\n".join(lines)
 
 
-@app.tool()
-def scan_deep(target: str, ports: str = "1-10000", timeout: int = 600) -> str:
-    """Deeper nmap scan with -sV service/version detection on `ports`
-    (default "1-10000" -- an nmap-style range or comma list, e.g.
-    "80,443,8080"). Slower than scan_ports(); narrow `ports` to what
-    scan_ports() already found open when possible."""
-    args = ["-T4", "-p", ports, "-sV", "-oG", "-", target]
+def _start(target: str, args: list[str], timeout: int) -> str:
     try:
-        result = run_tool("nmap", args, timeout=timeout)
+        result = job_runtime.start_job("nmap", args, timeout, _jobs)
     except FileNotFoundError:
-        return "Error: nmap not found."
-    except subprocess.TimeoutExpired:
-        return f"Error: nmap timed out after {timeout}s"
+        return "Error: nmap not found. Install with: apt install nmap"
     except Exception as e:
         return f"Error: {e}"
+    job_id = result["job_id"]
+    _targets[job_id] = target
+    return (f"Started nmap scan of {target} (job_id=\"{job_id}\"). "
+            f"Poll check_scan(\"{job_id}\") until it reports status=done "
+            f"(allow up to {timeout}s).")
 
-    if result.returncode != 0:
-        return f"nmap failed (exit {result.returncode}): {result.stderr.strip()}"
 
-    hosts = _parse_nmap_grepable(result.stdout)
-    if not hosts:
-        return "No hosts found."
+@app.tool()
+def scan_ports(target: str, top_ports: int = 1000, timeout: int = 300) -> str:
+    """Start a fast nmap scan of the `top_ports` (default 1000) most
+    common ports on `target` -- no service-version detection, just
+    open/closed state -- in the background, returning immediately with a
+    job_id. A full top-ports sweep can take longer than an MCP client's
+    own per-call timeout, so this never blocks waiting for nmap to finish.
+    Poll check_scan(job_id) for the result. Use scan_deep() for -sV
+    service fingerprinting on a specific range."""
+    args = ["-T4", "--top-ports", str(top_ports), "-oG", "-", target]
+    return _start(target, args, timeout)
 
-    lines = []
-    for h in hosts:
-        lines.append(f"Host: {h['host']} ({h['status']})")
-        for p in h.get("ports", []):
-            lines.append(f"  {p['port']}/{p['proto']}  {p['state']}  {p['service']}")
-        lines.append("")
+
+@app.tool()
+def scan_deep(target: str, ports: str = "1-10000", timeout: int = 600) -> str:
+    """Start a deeper nmap scan with -sV service/version detection on
+    `ports` (default "1-10000" -- an nmap-style range or comma list, e.g.
+    "80,443,8080") in the background. Slower than scan_ports(); narrow
+    `ports` to what scan_ports() already found open when possible. Poll
+    check_scan(job_id) for the result."""
+    args = ["-T4", "-p", ports, "-sV", "-oG", "-", target]
+    return _start(target, args, timeout)
+
+
+@app.tool()
+def check_scan(job_id: str) -> str:
+    """Poll a scan started by scan_ports()/scan_deep(). Returns "status:
+    running (Xs elapsed)" while nmap is still working, or the same
+    host/port-formatted text those tools used to return directly once
+    it's done. Keep polling every ~10-15s until it stops saying
+    "running"."""
+    result = job_runtime.poll_job(job_id, _jobs)
+    if "status" not in result:
+        # Only the true "no such job" case has no status key at all --
+        # a "timeout" status also carries an "error" key (alongside
+        # stdout/stderr/elapsed_s), and must fall through to the
+        # cleanup below rather than returning early and leaking it.
+        return result["error"]
+
+    if result["status"] == "running":
+        return f"Still running -- {result['elapsed_s']}s elapsed so far. Poll again shortly."
+
+    _targets.pop(job_id, None)
+    if result["status"] == "timeout":
+        return result["error"]
+    formatted = _format_findings(result["stdout"], result["returncode"], result["stderr"])
+    return job_runtime.block_prefix(result) + formatted
+
+
+@app.tool()
+def list_scans() -> str:
+    """List nmap scans still running in this session -- job_id, target,
+    elapsed time, and whether a scan has been running long enough
+    (30+ min) that it's likely been abandoned rather than genuinely still
+    busy."""
+    jobs = job_runtime.list_jobs(_jobs)
+    if not jobs:
+        return "No nmap scans currently running."
+    lines = ["Running nmap scans:", ""]
+    for j in jobs:
+        target = _targets.get(j["job_id"], "?")
+        marker = " [LIKELY ABANDONED]" if j["likely_abandoned"] else ""
+        lines.append(f"  {j['job_id']}  {target}  {j['elapsed_s']}s{marker}")
     return "\n".join(lines)
 
 
