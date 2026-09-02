@@ -59,10 +59,16 @@ def find_browser_executable() -> str | None:
     return None
 
 
-def launch_kwargs() -> dict:
+def launch_kwargs(headless: bool = True) -> dict:
+    # headless=False is for browser_confirm.py's start_manual_intervention()
+    # only -- a real, visible window a human can actually see and click in,
+    # for whatever blocks scripted automation entirely (a CAPTCHA, an
+    # unusual login flow). Every other caller in this repo wants headless
+    # (no display needed, and the default), so this stays True unless a
+    # caller explicitly asks otherwise.
     executable = find_browser_executable()
     kwargs: dict = {
-        "headless": True,
+        "headless": headless,
         "args": ["--no-sandbox", "--disable-dev-shm-usage", *STEALTH_ARGS],
     }
     if executable:

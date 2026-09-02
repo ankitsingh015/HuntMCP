@@ -64,6 +64,7 @@ import json
 import os
 import sys
 import time
+from typing import NamedTuple
 from urllib.parse import urljoin
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -98,11 +99,15 @@ async def _new_page(browser, url: str, cookie_header: str | None,
       call ended -- the next call started logged-out again, no way to
       carry a session across separate tool calls at all. Every function
       below saves the context's current storage_state back to this same
-      path in its `finally` block (if session_file was given), so
-      passing the SAME path across multiple calls makes them share one
-      continuously-updated session -- log in once (e.g. via
-      fill_and_submit with a session_file set), then every later call
-      with that same session_file resumes already-authenticated. Use a
+      path in its `finally` block (if session_file was given) -- except
+      start_manual_intervention(), which deliberately defers the save to
+      a separate finish_manual_intervention() call, since its whole point
+      is keeping the context open and unsaved across the gap where a
+      human is still acting in it -- so passing the SAME path across
+      multiple calls makes them share one continuously-updated session --
+      log in once (e.g. via fill_and_submit with a session_file set), then
+      every later call with that same session_file resumes already-
+      authenticated. Use a
       different path per identity (e.g. one file per test account) for
       a role-diff check across full rendered pages, not just raw HTTP
       (idor-mcp's owner/other credentials cover the raw-HTTP case).
@@ -390,6 +395,199 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
     _log_call("browser-mcp", [url, submit_selector], returncode=None,
               duration_ms=(time.monotonic() - start) * 1000, block=None)
     return result
+
+
+class _LiveIntervention(NamedTuple):
+    """One open start_manual_intervention() session, tracked by session_file
+    in _live_interventions below -- a NamedTuple instead of a bare tuple so
+    every read/write site is self-documenting instead of everyone having to
+    remember (and get right) five positional slots."""
+    playwright: object
+    browser: object
+    context: object
+    page: object
+    opened_at: float
+
+
+# _PENDING is a reservation placeholder, not a real intervention -- see
+# start_manual_intervention()'s own comment on why it's written into
+# _live_interventions BEFORE the first `await`, synchronously.
+_PENDING = object()
+
+# Module-level registry of live interventions, keyed by session_file -- the
+# ONLY state that needs to survive between two separate MCP tool calls
+# (start_manual_intervention / finish_manual_intervention). Every other
+# function in this module deliberately launches-and-closes a browser within
+# a single call; this pair is the one legitimate exception, since the whole
+# point is to leave a real window open across the gap where a human is
+# doing something in it by hand. Lives only in this process's memory -- an
+# MCP server restart loses track of (and orphans) any still-open window,
+# same tradeoff as any other in-memory-only session state in this repo.
+_live_interventions: dict[str, _LiveIntervention | object] = {}
+
+# How long an open intervention is trusted before list_open_interventions()
+# flags it as likely abandoned rather than genuinely still in progress --
+# same STALE_AFTER_SECONDS pattern work_registry.py uses for the identical
+# root problem (a human/process never called the completion function), but
+# NOT auto-closed the way a stale work-registry lock is auto-excluded: a
+# human is actively meant to be looking at this window, and force-closing
+# it mid-CAPTCHA/mid-login would destroy real progress (and could itself
+# look like automated tampering to the target's anti-bot layer). 30 minutes
+# is generous for a genuine manual step while still flagging a window that
+# was clearly left open and forgotten.
+INTERVENTION_STALE_AFTER_SECONDS = 30 * 60
+
+
+async def start_manual_intervention(url: str, session_file: str,
+                                     timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
+    """Launch a REAL, VISIBLE (non-headless) browser window and navigate to
+    url, then leave it open for a human to interact with directly --
+    for whatever blocks every other tool in this module: a CAPTCHA, an
+    unusual multi-step login, anything that genuinely needs a human's own
+    hands, not scripted automation pretending to be one. This tool does
+    NOT solve anything itself; a human does, in the real window it opens.
+    Its only job is keeping that window open across the gap between this
+    call and finish_manual_intervention(session_file), which captures
+    whatever session state the human's actions left behind.
+
+    Before using this for a CAPTCHA/anti-bot challenge specifically, check
+    the program's own scope policy first (same reasoning as playwright-
+    mcp's solve_js_challenge -- CAPTCHA/Turnstile automation and bot-score
+    disputes are frequently explicitly out of scope; the anti-bot layer is
+    infrastructure the customer chose to deploy, not attack surface, unless
+    the program says otherwise). "Blocked by an out-of-scope anti-bot
+    layer" is itself a complete, valid, reportable outcome -- not something
+    this tool exists to push past regardless of scope.
+
+    Requires a real display on whatever machine actually runs this MCP
+    server -- a headless CI box or remote dev sandbox has nowhere to show
+    a window at all and this will fail there; run it from your own
+    machine's session, same as scripts/connect-burp.sh's own
+    "Burp must already be open" constraint.
+
+    Call finish_manual_intervention(session_file) once the human is done
+    -- every other browser-mcp/obscura-mcp tool that accepts session_file
+    can then resume from exactly that state (see _new_page()'s docstring
+    for the full session_file mechanism; this pair is the one exception to
+    its "every function below saves in its own finally block" claim --
+    saving is deliberately deferred to finish_manual_intervention here)."""
+    _enforce_budget("browser-mcp")
+    if session_file in _live_interventions:
+        return {
+            "error": (
+                f"a manual intervention is already open for session_file={session_file!r} "
+                "-- call finish_manual_intervention(session_file) first, or use a different "
+                "session_file for a second, independent intervention"
+            )
+        }
+    # Reserve the slot SYNCHRONOUSLY, before any `await` -- this is what
+    # actually closes the race two concurrent calls for the same
+    # session_file would otherwise hit (both could pass the membership
+    # check above before either finished launching a browser, since
+    # FastMCP dispatches tool calls as separate asyncio tasks on one loop;
+    # nothing else here awaits between the check and this line, so no
+    # other task can interleave in between).
+    _live_interventions[session_file] = _PENDING
+    start = time.monotonic()
+    from playwright.async_api import async_playwright
+
+    p = await async_playwright().start()
+    browser = None
+    try:
+        browser = await p.chromium.launch(**_launch_kwargs(headless=False))
+        context, page = await _new_page(browser, url, None, None, None, session_file)
+        await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+    except Exception as e:
+        del _live_interventions[session_file]  # release the reservation
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass  # already dead / never fully came up -- nothing more to clean up
+        await p.stop()
+        return {"error": str(e)}
+
+    _live_interventions[session_file] = _LiveIntervention(p, browser, context, page, time.monotonic())
+    _log_call("browser-mcp", ["start_manual_intervention", url], returncode=None,
+              duration_ms=(time.monotonic() - start) * 1000, block=None)
+    return {
+        "status": "open", "url": url, "session_file": session_file,
+        "message": (
+            "Browser window open. Solve whatever's blocking by hand, then call "
+            f"finish_manual_intervention(session_file={session_file!r}) when done."
+        ),
+    }
+
+
+async def finish_manual_intervention(session_file: str) -> dict:
+    """Capture the current session state (cookies/localStorage) from a
+    window opened by start_manual_intervention(session_file=...), save it
+    to session_file, and close the window. Every other browser-mcp/
+    obscura-mcp tool that accepts session_file resumes from exactly this
+    state on its next call -- whatever the human's manual solving left
+    behind (a cleared CAPTCHA cookie, a completed login, an MFA-passed
+    session) is what those calls now see."""
+    entry = _live_interventions.get(session_file)
+    if entry is None:
+        return {
+            "error": (
+                f"no open manual intervention for session_file={session_file!r} -- "
+                "call start_manual_intervention(url, session_file) first"
+            )
+        }
+    if entry is _PENDING:
+        return {"error": f"session_file={session_file!r} is still starting up -- try again shortly"}
+    p, browser, context, page, opened_at = _live_interventions.pop(session_file)
+    start = time.monotonic()
+    result = {"session_file": session_file, "final_url": None, "final_title": None, "error": None}
+    try:
+        result["final_url"] = page.url
+        result["final_title"] = await page.title()
+        await _save_session(context, session_file)
+    except Exception as e:
+        result["error"] = str(e)
+    # Close/stop guarded separately from the state-capture above -- a human
+    # closing the real window by hand instead of leaving it open (a very
+    # plausible thing to do once done) makes browser.close()/p.stop()
+    # themselves raise on an already-dead connection. That must not skip
+    # the other cleanup step or propagate out of this function -- the
+    # _live_interventions entry is already popped either way, so silently
+    # continuing past an already-closed browser is correct here, not a
+    # swallowed real error.
+    try:
+        await browser.close()
+    except Exception:
+        pass
+    try:
+        await p.stop()
+    except Exception:
+        pass
+    _log_call("browser-mcp", ["finish_manual_intervention", session_file], returncode=None,
+              duration_ms=(time.monotonic() - start) * 1000, block=None)
+    return result
+
+
+async def list_open_interventions() -> list[dict]:
+    """Every manual intervention currently open (started via
+    start_manual_intervention, not yet finished) -- how long each has been
+    open, and whether it's past INTERVENTION_STALE_AFTER_SECONDS and
+    likely just forgotten rather than someone still actively working in
+    it. Not auto-closed (see INTERVENTION_STALE_AFTER_SECONDS's own
+    comment for why) -- this is a discoverability aid, so a genuinely
+    stuck one doesn't blend in with a normal in-progress one."""
+    now = time.monotonic()
+    out = []
+    for sf, entry in _live_interventions.items():
+        if entry is _PENDING:
+            out.append({"session_file": sf, "open_seconds": 0.0, "likely_abandoned": False, "status": "starting"})
+            continue
+        open_seconds = now - entry.opened_at
+        out.append({
+            "session_file": sf,
+            "open_seconds": round(open_seconds, 1),
+            "likely_abandoned": open_seconds > INTERVENTION_STALE_AFTER_SECONDS,
+        })
+    return out
 
 
 async def screenshot_base64(url: str, wait_ms: int = 1000,
