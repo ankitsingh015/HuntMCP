@@ -40,18 +40,115 @@ def test_switching_target_does_not_touch_other_targets_files(tmp_path):
     with open(a_budget, "w") as f:
         json.dump({"calls": 42}, f)
 
-    engagement_paths.set_active_target("target-b.com", pointer, root)
+    # force=True: these are deliberate switches this test is exercising --
+    # target-a is never marked complete, so without force the conflict
+    # guard below would (correctly) refuse both of these.
+    engagement_paths.set_active_target("target-b.com", pointer, root, force=True)
     b_budget = engagement_paths.resolve("budget.json", pointer_path=pointer, engagements_root=root)
     assert b_budget != a_budget
     assert not os.path.isfile(b_budget)
 
     # resuming target-a later is just switching the pointer back --
     # its budget.json is untouched by anything that happened on target-b
-    engagement_paths.set_active_target("target-a.com", pointer, root)
+    engagement_paths.set_active_target("target-a.com", pointer, root, force=True)
     resumed_budget = engagement_paths.resolve("budget.json", pointer_path=pointer, engagements_root=root)
     assert resumed_budget == a_budget
     with open(resumed_budget) as f:
         assert json.load(f)["calls"] == 42
+
+
+# ---- URL/target-string normalization -----------------------------------------
+# Regression: "iisc.ac.in", "https://iisc.ac.in", "www.iisc.ac.in", and
+# "http://iisc.ac.in/" each used to produce a DIFFERENT slug, silently
+# fragmenting one real target's case.db/budget/scope state across multiple
+# engagement folders depending on exactly how it was typed.
+
+def test_slugify_collapses_url_variants_to_the_same_slug():
+    variants = [
+        "iisc.ac.in",
+        "https://iisc.ac.in",
+        "http://iisc.ac.in/",
+        "www.iisc.ac.in",
+        "IISC.AC.IN",
+        "https://iisc.ac.in:443/some/path?x=1",
+    ]
+    slugs = {engagement_paths.slugify(v) for v in variants}
+    assert slugs == {"iisc-ac-in"}
+
+
+def test_slugify_keeps_a_genuinely_different_subdomain_distinct():
+    # A subdomain may deliberately be a separate scope -- normalization
+    # only collapses scheme/www/path/port noise, never a different host.
+    assert engagement_paths.slugify("ee.iisc.ac.in") != engagement_paths.slugify("iisc.ac.in")
+
+
+# ---- set_active_target() conflict guard ---------------------------------------
+# Regression: `set` used to switch the pointer unconditionally, with no
+# warning, even when a different not-yet-complete engagement was active --
+# check_conflict() existed but only ran if a caller remembered to invoke
+# `check` separately first, which was easy to skip (confirmed live).
+
+def test_set_active_target_refuses_when_different_target_active(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    try:
+        engagement_paths.set_active_target("target-b.com", pointer, root)
+        assert False, "expected ActiveEngagementConflict"
+    except engagement_paths.ActiveEngagementConflict as e:
+        assert "target-a-com" in str(e)
+    # The pointer must be untouched -- the refused switch never happened.
+    assert engagement_paths.get_active_target(pointer) == "target-a-com"
+
+
+def test_set_active_target_force_switches_despite_conflict(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    engagement_paths.set_active_target("target-b.com", pointer, root, force=True)
+    assert engagement_paths.get_active_target(pointer) == "target-b-com"
+
+
+def test_set_active_target_allows_resuming_the_same_target_without_force(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    # Same target again -- not a real conflict, must not raise.
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    assert engagement_paths.get_active_target(pointer) == "target-a-com"
+
+
+def test_set_active_target_allows_switching_after_previous_marked_complete(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    engagement_paths.mark_complete(pointer, root)
+    # target-a is done -- switching away without force must be allowed.
+    engagement_paths.set_active_target("target-b.com", pointer, root)
+    assert engagement_paths.get_active_target(pointer) == "target-b-com"
+
+
+def test_cli_set_refuses_without_force_and_exits_3(tmp_path):
+    pointer = "data/.active-engagement"
+    root = str(tmp_path / "engagements")
+    env = {"HUNTMCP_ACTIVE_POINTER": pointer, "HUNTMCP_ENGAGEMENTS_ROOT": root}
+    _run_cli(["set", "target-a.com"], env, cwd=tmp_path)
+    result = subprocess.run(
+        [sys.executable, _ENGAGEMENT_PATHS_CLI, "set", "target-b.com"],
+        cwd=tmp_path, env={**os.environ, **env}, capture_output=True, text=True,
+    )
+    assert result.returncode == 3
+    assert "target-a-com" in result.stderr
+    assert "--force" in result.stderr
+
+
+def test_cli_set_force_flag_switches_despite_conflict(tmp_path):
+    pointer = "data/.active-engagement"
+    root = str(tmp_path / "engagements")
+    env = {"HUNTMCP_ACTIVE_POINTER": pointer, "HUNTMCP_ENGAGEMENTS_ROOT": root}
+    _run_cli(["set", "target-a.com"], env, cwd=tmp_path)
+    result = _run_cli(["set", "target-b.com", "--force"], env, cwd=tmp_path)
+    assert "target-b-com" in result.stdout
 
 
 def test_resolve_falls_back_to_legacy_when_no_active_target(tmp_path):

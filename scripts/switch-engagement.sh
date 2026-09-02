@@ -3,7 +3,10 @@
 # engagement as a plain command -- this is what makes multi-target hunting
 # safe: state for a target not currently active is never touched.
 # Usage:
-#   scripts/switch-engagement.sh set <target>   -> prints the target's slug
+#   scripts/switch-engagement.sh set <target>   -> prints the target's slug.
+#       Refuses (exit 3) instead of silently switching if a DIFFERENT,
+#       not-yet-complete target is already active -- add --force to switch
+#       anyway once you've decided that's what you want.
 #   scripts/switch-engagement.sh current        -> prints the active slug+dir
 #   scripts/switch-engagement.sh list           -> JSON, every known engagement
 #   scripts/switch-engagement.sh sessions       -> copy-paste-ready
