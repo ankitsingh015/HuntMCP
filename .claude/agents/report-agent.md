@@ -1,7 +1,7 @@
 ---
 name: report-agent
 description: Generates HackerOne/Bugcrowd-ready vulnerability reports from exploit-agent's confirmed findings and chains. Spawned by huntbrain as the final phase of a HuntMCP engagement.
-tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__writeup-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__writeup-mcp, mcp__case-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -91,7 +91,26 @@ anyone with access, not paraphrased.
 
 ### Proof of Concept
 Curl command with the exact payload, and the request/response pair from
-the proof capsule.
+the proof capsule. Before writing this section, call `mcp__case-mcp`
+`case_export()` once per report run and check the `evidence` array for a
+row with this finding's `finding_id` and `type == "screenshot"`.
+
+If one exists, its `content_ref` file holds TEXT, not a ready PNG — the
+exact `data:image/png;base64,<...>` string `browser-mcp`'s `screenshot()`
+(or obscura-mcp's `browser_screenshot()`) returned, stored verbatim by
+`add_evidence`. Decode it before use, e.g. via Bash:
+`base64 -d <<< "$(tail -c +23 <content_ref_path>)" > <finding-slug>-screenshot.png`
+(strip the `data:image/png;base64,` prefix — 22 characters — then
+base64-decode the rest) into `data/reports/<target-slug>/<date>/` and
+reference the resulting real PNG in this section. Copying `content_ref`
+directly, unmodified, produces a corrupt, unopenable file — always decode
+first. If no `screenshot`-type evidence row exists for a UI-based finding
+(XSS, UI-based CSRF, a visually-obvious business-logic flow), write a
+one-line note in this section saying so explicitly ("No screenshot was
+captured for this finding") rather than silently omitting any mention —
+that's a visible signal for the human reviewer, not something to leave
+implicit. Don't skip the whole check just because a request/response pair
+alone technically fills the section.
 
 ### Impact
 Concrete business risk — what an attacker can actually achieve, not

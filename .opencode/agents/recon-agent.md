@@ -23,7 +23,9 @@ permission:
 You receive a target domain from HuntBrain. Your job is to discover the full attack surface.
 
 Available MCPs: subfinder-mcp, httpx-mcp, katana-mcp, nmap-mcp, secrets-mcp,
-burp-import-mcp, writeup-mcp, osint-mcp, github-security-mcp.
+burp-import-mcp, browser-mcp, obscura-mcp, writeup-mcp, osint-mcp,
+github-security-mcp. (browser-mcp/obscura-mcp were missing from this list
+before -- both were already available, just undocumented here.)
 
 osint-mcp (Shodan/VirusTotal/Censys/SecurityTrails) is NOT scope-gated --
 every lookup queries a third-party database ABOUT the target, never the
@@ -102,15 +104,21 @@ new host discovered.
    6.2" -- not just a generic stack name), also call writeup-mcp
    `fetch_cves(keyword)` right here rather than waiting for scan-agent --
    you have the version string the moment httpx returns it.
+5. Call httpx-mcp `screenshot_hosts(domains)` on the live hosts from step
+   3 -- a visual gallery is real recon signal (admin panels, login forms,
+   default install pages, staging banners) that status codes/titles alone
+   miss, for one extra call. Skip only if the host count would blow past
+   the tool's timeout (narrow to a representative subset instead of
+   dropping this step).
 
 ## Phase 3 — Endpoint Discovery
 
-5. Call katana-mcp `crawl(url)` on each live host.
-6. Collect all discovered endpoints, parameters, and JS file paths.
+6. Call katana-mcp `crawl(url)` on each live host.
+7. Collect all discovered endpoints, parameters, and JS file paths.
 
 ## Phase 4 — Port Scanning
 
-7. Call nmap-mcp `scan_ports(target)` on the root domain and any unique IPs.
+8. Call nmap-mcp `scan_ports(target)` on the root domain and any unique IPs.
    - Top 1000 ports by default.
    - For `--deep`: call `scan_deep(target, "1-10000")` for a thorough scan.
 

@@ -206,6 +206,15 @@ go install github.com/hahwul/dalfox/v2@latest
 go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest
 # nmap via your OS package manager (apt/brew/...)
 
+# Obscura (optional) -- lighter/faster headless-browser alternative to
+# browser-mcp's Playwright/Chromium, ships its own MCP server (`obscura
+# mcp`). Grab a release binary from
+# https://github.com/h4ckf0r0day/obscura/releases (verify its checksum)
+# and put it on PATH, or: cargo install --git https://github.com/h4ckf0r0day/obscura
+# Then: ./scripts/connect-obscura.sh -- personal --scope local registration,
+# same reasoning as Burp below (see that section for the full "why not
+# tracked config" rationale).
+
 # Initialize local databases
 ./scripts/setup-db.sh
 ```
@@ -369,6 +378,22 @@ This is a personal `--scope local` MCP registration (your own `~/.claude.json`),
 something the repo forces on every clone — it only works while Burp is open on your
 machine with the extension running. This is separate from `burp-import-mcp` (always
 available, no Burp needed — reads a manually-exported HTTP-history XML file).
+
+Same pattern for [Obscura](https://github.com/h4ckf0r0day/obscura) (a lighter/faster
+headless-browser alternative to `browser-mcp`'s Playwright/Chromium — its own native
+MCP server, ~32 tools):
+
+```bash
+./scripts/connect-obscura.sh          # registers the bridge, then restart your session
+./scripts/connect-obscura.sh --remove # undo
+```
+
+Also a personal `--scope local` registration, not tracked config — its own compiled
+binary is its MCP server (nothing for this repo to wrap in a Python FastMCP server the
+way every other tool-backed MCP server here is), so its calls don't pass through
+`tool_resolver.py`'s shared budget/audit logic the way a wrapped tool's would. Scope-gated
+the same way `browser-mcp`/`playwright-mcp` are either way — see `scripts/hooks/
+scope_gate_hook.py`'s `TIER2_MCP_SERVERS`.
 
 ---
 

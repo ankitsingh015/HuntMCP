@@ -372,6 +372,15 @@ def test_main_gates_tier2_mcp_server(monkeypatch):
     assert _run_main(monkeypatch, payload) == 2
 
 
+def test_main_gates_obscura_mcp(monkeypatch):
+    # Regression: obscura-mcp touches the live target the same way
+    # browser-mcp/playwright-mcp already do (browser_navigate(url) etc.),
+    # so it must get the identical structural scope-gate, not just the
+    # documented-convention one.
+    payload = {"tool_name": "mcp__obscura-mcp__browser_navigate", "tool_input": {"url": "https://realtarget-corp.com"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
 @pytest.mark.parametrize("tool_name", ["WebFetch", "webfetch"])
 def test_main_never_gates_webfetch_regardless_of_scope_or_host(monkeypatch, tmp_path, tool_name):
     """Regression: WebFetch was briefly scope-gated the same way as Bash's

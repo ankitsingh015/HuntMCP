@@ -92,7 +92,22 @@ For each finding, generate:
 ### Proof of Concept
 - Curl command with the exact payload
 - HTTP request/response pair
-- Screenshot placeholder (if UI-based)
+- Real screenshot, not a placeholder, for any UI-based finding: before
+  writing this section, call case-mcp `case_export()` once per report run
+  and check the `evidence` array for a row with this finding's
+  `finding_id` and `type == "screenshot"`.
+  - If one exists, its `content_ref` file holds TEXT, not a ready PNG --
+    the exact `data:image/png;base64,<...>` string browser-mcp's
+    `screenshot()` (or obscura-mcp's `browser_screenshot()`) returned,
+    stored verbatim. Decode before use, e.g. via Bash:
+    `base64 -d <<< "$(tail -c +23 <content_ref_path>)" > <finding-slug>-screenshot.png`
+    (strips the 22-char `data:image/png;base64,` prefix, decodes the
+    rest) into `data/reports/<target-slug>/<date>/`, then reference the
+    real PNG here. Copying `content_ref` directly produces a corrupt,
+    unopenable file -- always decode first.
+  - If no `screenshot`-type row exists for a UI-based finding, write a
+    one-line note here saying so explicitly ("No screenshot was captured
+    for this finding") instead of silently omitting any mention.
 
 ### Impact
 - Concrete business risk
