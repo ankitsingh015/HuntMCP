@@ -1,5 +1,10 @@
 """Background subprocess execution for scan tools whose runs can
-legitimately take minutes -- nuclei, sqlmap, nmap, dalfox.
+legitimately take minutes -- nuclei, sqlmap, nmap, dalfox, ffuf, httpx,
+subfinder, katana. Also provides a thread-based variant (start_thread_job/
+poll_thread_job/list_thread_jobs) for a composite operation that chains
+several such calls together rather than being a single subprocess -- see
+watch-mcp's start_watch()/check_target(), which run subfinder -> httpx ->
+katana as one logical unit.
 
 ## Why this exists
 
@@ -40,12 +45,15 @@ silently retrying.
 
 ## Job storage
 
-Each MCP server module owns its own `jobs: dict[str, _Job]` and passes it
-into every call here -- job ids are therefore scoped per server process,
-never shared or persisted across a restart. A Popen handle and open file
-paths aren't meaningfully picklable to disk anyway (browser-mcp's
-_live_interventions dict uses the same in-process-only pattern for its
-own long-lived-across-calls state, for the same reason).
+Each MCP server module owns its own `jobs: dict[str, _Job | _ThreadJob]`
+and passes it into every call here -- job ids are therefore scoped per
+server process, never shared or persisted across a restart. A Popen
+handle, open file paths, and a live Thread object aren't meaningfully
+picklable to disk anyway (browser-mcp's _live_interventions dict uses the
+same in-process-only pattern for its own long-lived-across-calls state,
+for the same reason). A server should use one dict per job KIND (all
+_Job, or all _ThreadJob) rather than mixing both in one dict -- poll_job()/
+poll_thread_job() each assume every entry they see is their own kind.
 """
 
 from __future__ import annotations
@@ -53,9 +61,10 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
-from typing import NamedTuple
+from typing import Any, Callable, NamedTuple
 
 from audit_log import log_call as _log_call
 from budget_guard import enforce as _enforce_budget
@@ -118,7 +127,7 @@ def start_job(tool_name: str, args: list[str], max_wall_seconds: int, jobs: dict
                 pass
         raise
 
-    job_id = uuid.uuid4().hex[:12]
+    job_id = _new_job_id()
     jobs[job_id] = _Job(
         proc=proc, tool_name=tool_name, args=args,
         stdout_path=stdout_path, stderr_path=stderr_path,
@@ -222,14 +231,24 @@ def poll_job(job_id: str, jobs: dict) -> dict:
     }
 
 
-def list_jobs(jobs: dict) -> list[dict]:
-    """Non-destructive snapshot of everything still running -- does not
-    poll/collect/kill anything, just reports elapsed time so an abandoned
-    job (agent stopped polling, session ended) is discoverable instead of
-    silently running against the target forever with nobody watching."""
+def _snapshot_jobs(jobs: dict) -> list[dict]:
+    """Shared elapsed/likely_abandoned computation for list_jobs()/
+    list_thread_jobs() -- both _Job and _ThreadJob expose the same
+    tool_name/started_monotonic fields, so one implementation covers
+    either job kind (never mixed in the same dict -- see this module's
+    "Job storage" docstring section).
+
+    Iterates over a snapshot copy (list(...)), not `jobs` itself: this can
+    run concurrently with poll_job()/poll_thread_job() popping a DIFFERENT
+    job_id out of the same dict from another thread if the MCP transport
+    ever dispatches two tool calls in parallel (plausible now that
+    check_status()/check_scan() polling and other tool calls can genuinely
+    overlap in time, unlike before this module existed) -- iterating the
+    live dict directly would risk "RuntimeError: dictionary changed size
+    during iteration" if that happens mid-loop."""
     now = time.monotonic()
     out = []
-    for job_id, job in jobs.items():
+    for job_id, job in list(jobs.items()):
         elapsed = now - job.started_monotonic
         out.append({
             "job_id": job_id,
@@ -238,6 +257,130 @@ def list_jobs(jobs: dict) -> list[dict]:
             "likely_abandoned": elapsed > JOB_STALE_AFTER_SECONDS,
         })
     return out
+
+
+def list_jobs(jobs: dict) -> list[dict]:
+    """Non-destructive snapshot of everything still running -- does not
+    poll/collect/kill anything, just reports elapsed time so an abandoned
+    job (agent stopped polling, session ended) is discoverable instead of
+    silently running against the target forever with nobody watching."""
+    return _snapshot_jobs(jobs)
+
+
+def _new_job_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+class _ThreadJob(NamedTuple):
+    tool_name: str
+    started_monotonic: float
+    result: dict  # mutable holder: {"done": bool, "value": Any, "error": str | None}
+    # No Thread object stored here -- nothing ever reads it (the thread is
+    # daemonic and self-contained; its outcome is read via `result`, not
+    # by holding a reference to the Thread itself), so keeping one around
+    # was dead state.
+
+
+def start_thread_job(tool_name: str, fn: Callable[..., Any], jobs: dict,
+                      *args, **kwargs) -> dict:
+    """Like start_job() above, but for a job whose work is an arbitrary
+    Python callable rather than a single subprocess -- e.g. watch-mcp's
+    check_target()/start_watch(), each of which chains several sequential
+    tool_resolver.run_tool() calls (subfinder -> httpx -> katana) into one
+    logical operation, too composite to represent as a single Popen the
+    way start_job() wants.
+
+    Why a thread instead of the Popen approach: `fn` isn't one external
+    process this module can hold a handle to and kill -- it's Python code
+    that makes its OWN run_tool() calls internally. A background thread
+    lets it keep running exactly as it would synchronously, just off the
+    calling MCP request. There's no wall-clock kill ceiling here the way
+    poll_job() enforces one for a real subprocess (Python threads can't be
+    safely force-killed) -- instead this relies on `fn` already being
+    self-bounding, since each run_tool() call inside it carries its own
+    `timeout=`. That means the thread is guaranteed to finish on its own
+    even if nobody ever polls it, just without an externally-imposed cap
+    on the total.
+
+    Deliberately does NOT call budget_guard.enforce() itself -- unlike
+    start_job(), which wraps exactly the one external subprocess it
+    charges for, `fn` here makes its own real run_tool() calls, and each
+    of those already enforces budget individually inside tool_resolver.
+    An extra charge here for the composite operation itself would inflate
+    the count relative to the actual external calls made, for an
+    operation that (unlike a subprocess) doesn't touch the target on its
+    own.
+
+    Considered and rejected: chaining watch-mcp's three sub-calls through
+    start_job()/poll_job() directly instead (three separate Popen-backed
+    jobs, with the calling agent or a `next_step` field in watch.db driving
+    the handoff between them) -- that would have reused the actually-
+    killable, already-audited Popen path instead of introducing threading
+    (a first for this otherwise single-threaded-per-process codebase).
+    Rejected because it pushes a 3-stage state machine onto every caller
+    (the interactive agent AND scripts/setup-watch.sh's cron wrapper), for
+    a chain that's cheap and safe to run as a single Python function given
+    it's already subprocess-timeout-bounded at every step -- the actual
+    concurrency risks that introduces (shared-dict mutation, real
+    concurrent SQLite writers) are addressed directly (see watch-mcp/
+    server.py's per-target in-flight guard and get_db()'s busy timeout)
+    rather than by avoiding threads altogether."""
+    result = {"done": False, "value": None, "error": None}
+
+    def _run():
+        try:
+            result["value"] = fn(*args, **kwargs)
+        except Exception as e:
+            result["error"] = str(e)
+        finally:
+            result["done"] = True
+
+    job_id = _new_job_id()
+    jobs[job_id] = _ThreadJob(tool_name, time.monotonic(), result)
+    threading.Thread(target=_run, daemon=True).start()
+    return {"job_id": job_id, "status": "running", "tool": tool_name}
+
+
+def poll_thread_job(job_id: str, jobs: dict) -> dict:
+    """Check on a job started by start_thread_job(). Never blocks: checks
+    Thread.is_alive() (via the result holder's "done" flag) rather than
+    Thread.join(). Pops the job out of `jobs` once it's done, so a second
+    poll on the same job_id cleanly reports "no job" instead of
+    re-returning a stale result."""
+    job = jobs.get(job_id)
+    if job is None:
+        return {"error": f"no job with job_id={job_id!r} -- either it was already "
+                          f"collected by an earlier poll, or this job_id was never started"}
+
+    elapsed = time.monotonic() - job.started_monotonic
+    if not job.result["done"]:
+        return {"status": "running", "job_id": job_id, "elapsed_s": round(elapsed, 1)}
+
+    jobs.pop(job_id, None)
+    if job.result["error"] is not None:
+        return {"status": "error", "job_id": job_id, "error": job.result["error"],
+                "elapsed_s": round(elapsed, 1)}
+    return {"status": "done", "job_id": job_id, "value": job.result["value"],
+            "elapsed_s": round(elapsed, 1)}
+
+
+def list_thread_jobs(jobs: dict) -> list[dict]:
+    """Non-destructive snapshot, same shape/purpose as list_jobs() above."""
+    return _snapshot_jobs(jobs)
+
+
+def peek_thread_job_done(job_id: str, jobs: dict) -> bool | None:
+    """Non-destructive check of whether a thread job has finished, WITHOUT
+    popping it out of `jobs` the way poll_thread_job() does. Returns None
+    if job_id isn't in `jobs` at all (already collected via a real poll,
+    or never started). Lets a caller (e.g. a per-target in-flight guard
+    like watch-mcp's) distinguish "genuinely still running" from "finished
+    but nobody has called poll_thread_job() to collect it yet" without
+    accidentally collecting it itself as a side effect of checking."""
+    job = jobs.get(job_id)
+    if job is None:
+        return None
+    return job.result["done"]
 
 
 def block_prefix(result: dict) -> str:

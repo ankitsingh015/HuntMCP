@@ -24,6 +24,13 @@ Watch a target for changes over time. Detects new subdomains, new endpoints, and
 4. All changes are logged to the watch database.
 5. Critical changes (new live subdomains) are flagged with higher severity.
 
+`start`/`check` run in the background (subfinder->httpx->katana chained
+together can take longer than one MCP call is safely allowed to block) and
+come back with a `job_id` immediately rather than the final result -- poll
+`check_status(job_id)` every ~10-15s until it reports done. Running
+`start`/`check` again for a target that already has a job in flight reuses
+that job instead of starting a second, racing one.
+
 ## Cron Setup
 
 For automatic periodic checks, run:
@@ -38,11 +45,20 @@ This adds a cron entry that checks all active watched targets every 6 hours (con
 
 ```bash
 /openwatch start example.com --interval 6
-# → Started watching example.com (interval: 6h)
+# → Started watching example.com (interval: 6h). Initial snapshot running
+#   in background (job_id="..."). Poll check_status("...") until it
+#   reports status=done.
+
+# Poll until the snapshot is ready
+/openwatch check_status <job_id>
+# → Snapshot captured for example.com: 12 subdomain(s), 40 endpoint(s).
 
 # Check manually
 /openwatch check example.com
-# → Changes detected: 2 new subdomains, 5 new endpoints
+# → Started change check for example.com (job_id="..."). Poll
+#   check_status("...") until it reports status=done.
+/openwatch check_status <job_id>
+# → Changes detected on example.com (2 event(s)): 2 new subdomains
 
 # View history
 /openwatch history example.com
