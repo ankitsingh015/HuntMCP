@@ -48,6 +48,7 @@ cd "$PROJECT_DIR"
 "$PYTHON" -c "
 import sqlite3
 import sys
+import time
 sys.path.insert(0, 'mcp-servers/watch-mcp')
 import server
 
@@ -56,9 +57,31 @@ conn = sqlite3.connect(server.DB_PATH)
 targets = [r[0] for r in conn.execute('SELECT target FROM watched_targets WHERE active = 1')]
 conn.close()
 
+# check_target() now backgrounds its work on a daemon thread and returns a
+# job_id immediately (mcp-servers/job_runtime.py's thread-job mechanism --
+# subfinder->httpx->katana chained can take longer than an MCP client's
+# own per-call timeout). Daemon threads are killed outright the instant
+# this one-shot process's main thread exits, with zero chance to finish --
+# unlike an interactive MCP session (where an agent stays around to poll
+# check_status()), this cron wrapper has nothing else to do anyway, so it
+# explicitly waits for each job here instead of firing check_target() and
+# exiting, which would otherwise silently stop continuous monitoring from
+# ever completing a single real check.
 for t in targets:
     print(f'--- {t} ---')
-    print(server.check_target(t))
+    start_msg = server.check_target(t)
+    print(start_msg)
+    if 'job_id=\"' in start_msg:
+        job_id = start_msg.split('job_id=\"')[1].split('\"')[0]
+        # Generous ceiling: subfinder/httpx/katana are each individually
+        # timeout-bounded at 120s inside check_target(), so ~360s is the
+        # real worst case -- this just needs to be comfortably above that.
+        deadline = time.time() + 600
+        result = server.check_status(job_id)
+        while 'Still running' in result and time.time() < deadline:
+            time.sleep(5)
+            result = server.check_status(job_id)
+        print(result)
 " >> "$LOG" 2>&1
 
 echo "[$(date)] Watch cron: done." >> "$LOG"

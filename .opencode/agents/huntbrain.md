@@ -124,6 +124,16 @@ complete/incomplete status.
 - "watch <target> start/stop/list/check/history" — continuous monitoring via
   watch-mcp's `start_watch`/`stop_watch`/`list_watched`/`check_target`/
   `get_watch_history` (first check captures a subfinder+katana snapshot,
-  later checks diff against it and flag new live subdomains via httpx); see
+  later checks diff against it and flag new live subdomains via httpx).
+  `start_watch`/`check_target` run in the background (subfinder->httpx->
+  katana chained can take longer than this MCP session's own per-call
+  timeout) and return a `job_id` immediately instead of the result directly
+  -- poll `check_status(job_id)` until it reports `status=done`, and
+  `list_checks()` shows what's still running. Calling `start_watch`/
+  `check_target` again for a target that already has one in flight returns
+  the existing `job_id` instead of racing a second check against it. See
   `scripts/setup-watch.sh` for the cron-driven periodic-check equivalent
+  (its generated wrapper already waits on `check_status` for each target
+  before exiting -- a one-shot cron process can't rely on a background
+  thread surviving past its own exit the way an interactive session can)
 - "/chain <findings>" — chain analysis on existing findings

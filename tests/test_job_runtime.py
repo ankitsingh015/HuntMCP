@@ -1,6 +1,7 @@
 import importlib.util
 import os
 import sys
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -198,3 +199,125 @@ def test_budget_is_enforced_exactly_once_per_start_job_not_per_poll(monkeypatch)
     # Polling (running or done) must never call budget_guard again --
     # only the original start_job() call should have.
     assert calls == ["true"]
+
+
+# ---- Thread-based jobs (start_thread_job/poll_thread_job/list_thread_jobs) --
+# for a composite operation (several sequential run_tool() calls) rather
+# than a single subprocess -- see watch-mcp's start_watch()/check_target().
+
+def _poll_thread_until_done(job_id, jobs, timeout_s=5):
+    deadline = time.monotonic() + timeout_s
+    result = job_runtime.poll_thread_job(job_id, jobs)
+    while result["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(0.01)
+        result = job_runtime.poll_thread_job(job_id, jobs)
+    return result
+
+
+def test_start_thread_job_returns_immediately_with_running_status():
+    jobs = {}
+    done = threading.Event()
+
+    def slow_fn():
+        done.wait(timeout=5)
+        return "finished"
+
+    result = job_runtime.start_thread_job("watch-check", slow_fn, jobs)
+    try:
+        assert result["status"] == "running"
+        assert result["job_id"] in jobs
+    finally:
+        done.set()
+
+
+def test_poll_thread_job_reports_done_with_return_value():
+    jobs = {}
+    result = job_runtime.start_thread_job("watch-check", lambda: "the actual result text", jobs)
+    job_id = result["job_id"]
+
+    final = _poll_thread_until_done(job_id, jobs)
+    assert final["status"] == "done"
+    assert final["value"] == "the actual result text"
+    # Must be popped -- a second poll reports "no job".
+    assert job_id not in jobs
+    again = job_runtime.poll_thread_job(job_id, jobs)
+    assert "status" not in again
+    assert "no job" in again["error"]
+
+
+def test_poll_thread_job_surfaces_exception_as_error_status():
+    jobs = {}
+
+    def boom():
+        raise ValueError("something inside fn broke")
+
+    result = job_runtime.start_thread_job("watch-check", boom, jobs)
+    job_id = result["job_id"]
+
+    final = _poll_thread_until_done(job_id, jobs)
+    assert final["status"] == "error"
+    assert "something inside fn broke" in final["error"]
+    assert job_id not in jobs
+
+
+def test_start_thread_job_passes_args_and_kwargs_through_to_fn():
+    jobs = {}
+    result = job_runtime.start_thread_job(
+        "watch-check", lambda a, b, c=None: f"{a}-{b}-{c}", jobs, "x", "y", c="z",
+    )
+    final = _poll_thread_until_done(result["job_id"], jobs)
+    assert final["value"] == "x-y-z"
+
+
+def test_start_thread_job_does_not_call_budget_guard_itself(monkeypatch):
+    # Unlike start_job() (which wraps exactly the one subprocess it
+    # charges for), start_thread_job()'s fn makes its own real run_tool()
+    # calls, each of which already enforces budget individually -- an
+    # extra charge here for the composite operation itself would inflate
+    # the count relative to actual external calls made.
+    calls = []
+    monkeypatch.setattr(job_runtime, "_enforce_budget", lambda name: calls.append(name))
+    jobs = {}
+    result = job_runtime.start_thread_job("watch-check", lambda: "ok", jobs)
+    _poll_thread_until_done(result["job_id"], jobs)
+    assert calls == []
+
+
+def test_list_thread_jobs_reports_elapsed_time_and_flags_abandoned():
+    jobs = {}
+    done = threading.Event()
+    result = job_runtime.start_thread_job("watch-initial-snapshot", lambda: done.wait(timeout=5), jobs)
+    job_id = result["job_id"]
+    try:
+        listed = job_runtime.list_thread_jobs(jobs)
+        assert len(listed) == 1
+        assert listed[0]["job_id"] == job_id
+        assert listed[0]["tool"] == "watch-initial-snapshot"
+        assert listed[0]["likely_abandoned"] is False
+
+        job = jobs[job_id]
+        jobs[job_id] = job._replace(started_monotonic=time.monotonic() - job_runtime.JOB_STALE_AFTER_SECONDS - 1)
+        listed = job_runtime.list_thread_jobs(jobs)
+        assert listed[0]["likely_abandoned"] is True
+    finally:
+        done.set()
+
+
+def test_peek_thread_job_done_reports_false_while_running_true_once_finished_none_if_absent():
+    jobs = {}
+    done = threading.Event()
+    result = job_runtime.start_thread_job("watch-check", lambda: done.wait(timeout=5), jobs)
+    job_id = result["job_id"]
+
+    assert job_runtime.peek_thread_job_done(job_id, jobs) is False
+    done.set()
+    deadline = time.time() + 5
+    while job_runtime.peek_thread_job_done(job_id, jobs) is False and time.time() < deadline:
+        time.sleep(0.005)
+    assert job_runtime.peek_thread_job_done(job_id, jobs) is True
+
+    # And critically: peeking must NOT have popped the job the way
+    # poll_thread_job() does -- it's still there, still peekable.
+    assert job_id in jobs
+
+    assert job_runtime.peek_thread_job_done("no-such-job", jobs) is None
