@@ -69,6 +69,22 @@ exits non-zero, stop on that host and report the block to HuntBrain — never
 work around it. This is a cheap local check (no LLM call), safe to run per
 new host discovered.
 
+## subfinder-mcp/httpx-mcp/katana-mcp/nmap-mcp run in the background — start, then poll
+
+`run_subfinder`, `probe_hosts`/`screenshot_hosts`, `crawl`/`crawl_with_filter`,
+and `scan_ports`/`scan_deep` no longer return their results directly from the
+call that starts them — a full subdomain sweep, host probe, crawl, or port
+scan can take longer than this MCP session's own per-call timeout, so the
+start call returns a `job_id` immediately instead of blocking. Every one of
+these servers also exposes `check_scan(job_id)` — call it every ~10-15s
+until it stops reporting `status=running`, then read its formatted result
+(a rate-limit/WAF block gets surfaced there too, as a prefix on the text, if
+one happened mid-run). Don't call the start tool a second time for the same
+target while a poll is still returning "running" — that launches a second
+concurrent run against the same live host instead of just checking on the
+first one. `list_scans()` on each server shows what's still running (and
+flags anything abandoned for 30+ minutes).
+
 ## Phase 0 — Burp import (optional, only if the user has one)
 
 0. If the user mentions a Burp Suite HTTP-history export (a saved XML file
@@ -83,7 +99,8 @@ new host discovered.
 
 ## Phase 1 — Subdomain Enumeration
 
-1. Call subfinder-mcp `run_subdomain(domain)` to find subdomains.
+1. Call subfinder-mcp `run_subfinder(domain)` to find subdomains -- returns
+   a `job_id`; poll `check_scan(job_id)` for the list.
 2. Collect all subdomains found. Then use the `skill` tool to load
    `reconnaissance`, `osint-and-secret-hunting`, and `subdomain-takeover`
    — don't wait for something interesting to show up first, all three
@@ -93,7 +110,9 @@ new host discovered.
 
 ## Phase 2 — HTTP Probing
 
-3. Call httpx-mcp `probe_hosts(domains)` with the discovered subdomains plus the root domain.
+3. Call httpx-mcp `probe_hosts(domains)` with the discovered subdomains plus
+   the root domain -- returns a `job_id`; poll `check_scan(job_id)` for the
+   probe results.
    - Default ports: 80,443. Add 8080,8443,3000 if `--deep`.
 4. Record: live hosts, status codes, page titles, detected technologies, web servers.
    As soon as a tech stack/CMS/framework shows up here, load `skill`
@@ -107,20 +126,26 @@ new host discovered.
 5. Call httpx-mcp `screenshot_hosts(domains)` on the live hosts from step
    3 -- a visual gallery is real recon signal (admin panels, login forms,
    default install pages, staging banners) that status codes/titles alone
-   miss, for one extra call. Skip only if the host count would blow past
-   the tool's timeout (narrow to a representative subset instead of
-   dropping this step).
+   miss, for one extra job. Returns a `job_id`; poll `check_scan(job_id)`
+   for the gallery path once it's done (headless-browser downloads on
+   first run can take several minutes -- exactly why this is backgrounded
+   rather than blocking). Skip only if the host count would make even a
+   backgrounded run impractically slow (narrow to a representative subset
+   instead of dropping this step).
 
 ## Phase 3 — Endpoint Discovery
 
-6. Call katana-mcp `crawl(url)` on each live host.
+6. Call katana-mcp `crawl(url)` on each live host -- returns a `job_id`;
+   poll `check_scan(job_id)` for the endpoint list.
 7. Collect all discovered endpoints, parameters, and JS file paths.
 
 ## Phase 4 — Port Scanning
 
-8. Call nmap-mcp `scan_ports(target)` on the root domain and any unique IPs.
+8. Call nmap-mcp `scan_ports(target)` on the root domain and any unique IPs
+   -- returns a `job_id`; poll `check_scan(job_id)` for the port list.
    - Top 1000 ports by default.
-   - For `--deep`: call `scan_deep(target, "1-10000")` for a thorough scan.
+   - For `--deep`: call `scan_deep(target, "1-10000")` for a thorough scan
+     (also backgrounded the same way).
 
 ## Return to HuntBrain
 
