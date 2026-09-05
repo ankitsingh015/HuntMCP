@@ -93,6 +93,46 @@ classify() signature); any claim that an "interacting"-flagged condition is
 necessary (interacting and necessary are orthogonal -- C6 never calls classify() or
 classify_race() at all); real network/DB/budget_guard/MCP access.
 
+C6 addendum -- mutual AND-necessity detection (retrospective audit fix, human-
+approved 2026-09-05, Option 2 of 3 presented): the audit found that Rule 1/Rule 2
+above cannot detect a pure "both conditions strictly required together" pattern
+(e.g. role_admin AND flag_on) -- PHASE1-PLAN.md's own Rule 2 wording ("a pair whose
+joint removal flips the oracle while neither single removal does") is the exact
+mathematical signature of OR-REDUNDANCY (either alone still works), not AND-
+necessity (neither alone works) -- for a genuine AND, neither condition ever enters
+`droppable_singly` in the first place, so Rule 1/Rule 2 structurally cannot fire on
+it, by design, not by bug. `find_alternate_condition_sets` itself is UNTOUCHED by
+this fix (byte-for-byte unchanged: same Rule 1/Rule 2 logic, same fields, same
+tests, same values it always produced) -- AND-necessity is a SEPARATE, additive
+detection path: `AndNecessityGroup` + `find_and_necessity_groups()`, a new pure
+post-processing function over the SAME `minimal_sets` list `find_alternate_
+condition_sets` already returns, needing zero additional `is_interesting` calls
+(the signal is already implicit in 1-minimality: any recovered minimal set with
+>=2 members means, by ddmin's own termination condition, that removing any single
+member -- with everything else already perturbed away -- breaks the effect; that
+IS mutual AND-necessity, already proven by the search that found it).
+
+Representation and how it coexists with `necessary` (the exact design decision):
+AND-necessity is reported as membership in an `AndNecessityGroup` (a condition-
+NAME-only frozenset, mirroring `InteractionEvidence`'s existing pair-evidence
+shape, generalized from a pair to an n-ary group) -- a STRUCTURAL annotation
+about a *recovered minimal set*, never a verdict string and never a replacement
+for one. `classify()` (task C3) is not modified, not called by this addition, and
+keeps computing "necessary" for role_admin and flag_on exactly as it always did
+under the one-variable-at-a-time protocol (removing either alone, holding the
+other fixed at baseline, breaks the capability -- that IS "necessary" under C3's
+own literal contract, correctly). A future synthesis layer (not built here) can
+present BOTH facts side by side for the same two conditions -- "role_admin:
+necessary", "flag_on: necessary", AND "and_necessity_groups: [{role_admin,
+flag_on}]" -- without either fact overriding the other. This is deliberately the
+narrowest fix that satisfies "detect the signal" without touching classify()'s
+verdict vocabulary, the `cem_verdicts` schema's single-`verdict`-column semantics,
+or any existing OR-redundancy test/behavior (Option 1 -- rewriting the benchmark's
+ground truth to expect two `necessary`s instead of `interacting` -- and Option 3
+-- redefining what `interacting` means bundle-wide -- were both presented and NOT
+chosen; wiring this new signal into the benchmark's answer key / a bundle field is
+explicitly future work, not part of this fix).
+
 Task C7: minimize_poc -- PoC minimization. PHASE1-PLAN.md sec 12: "PoC minimization
 reuses the SAME ddmin with the oracle as interestingness" -- so minimize_poc() calls
 minimal_condition_sets() (C5) directly, never reimplementing ddmin a second time.
@@ -124,8 +164,14 @@ only. There is no function anywhere in this module that derives a SuccessSignatu
 baseline response, a status code, a finding's vuln_class, or any other heuristic --
 SuccessSignature can only be built by a caller passing every matcher value itself, and
 construction is refused (ValueError, at both direct-dataclass-construction and from_dict
-time) if zero matchers are set, so an "empty" signature can never silently behave as an
-always-true oracle.
+time) if zero matchers are set. "Zero matchers set" is not the only way to construct a
+vacuously always-true oracle, though -- a *set* matcher can still be individually vacuous
+(retrospective audit finding, fixed): `body_contains=""` (`"" in body` is True for every
+body) and `similarity_to_baseline.threshold<=0.0` (`SequenceMatcher.ratio()` is never
+negative) both used to pass construction while always evaluating True regardless of the
+target's actual response. Both are now refused at construction (ValueError) for the same
+reason as the zero-matchers case: an oracle that always fires is exactly as unable to
+distinguish "the capability fired" from "it didn't" as an oracle with nothing to check.
 
 similarity_to_baseline contract note: PHASE1-PLAN.md D5 sketches signatures as a flat
 `{status_in:[...], body_contains/body_regex, or similarity_to_baseline >= t}` dict, but
@@ -160,14 +206,26 @@ rather than accepted as a separate caller-supplied field, so the two can never
 silently disagree. `finding_id` is included for bundle identity/traceability but is
 not one of the 15 sec-2.8 fields -- a 16th key.
 
-Redaction: `redact_text` (redact.py, reused as-is, unmodified) operates on one
-string at a time only; the recursive dict/list walk that applies it to every string
-leaf of the assembled bundle (`_redact_recursive` below) is bundle-assembly logic
-and stays in this module rather than redact.py. Applied exactly once, at the end,
-to the whole assembled dict, so no field can be assembled after the redaction pass
-and left raw. `k` (an int, field 14) is never redacted -- `_redact_recursive`
-already leaves every non-string leaf (int/float/bool/None) untouched, so this falls
-out for free rather than needing a special case.
+Redaction: `redact_text` (redact.py) operates on one string at a time only; the
+recursive dict/list walk that applies it to every string leaf of the assembled
+bundle (`_redact_recursive` below) is bundle-assembly logic and stays in this
+module rather than redact.py. Applied exactly once, at the end, to the whole
+assembled dict, so no field can be assembled after the redaction pass and left
+raw. `k` (an int, field 14) is never redacted -- `_redact_recursive` already
+leaves every non-string leaf (int/float/bool/None) untouched, so this falls out
+for free rather than needing a special case.
+
+Retrospective audit fix: redact_text()'s two name-based rules need the secret's
+key NAME embedded in the same string as the value (a flat "Authorization: xyz"
+line, or a "token=xyz" pair) -- a dict walk that redacts values in isolation from
+their keys can never satisfy that, so only the two VALUE-SHAPE rules (JWT, card
+number) ever fired on a dict value. `_redact_recursive` now also checks each
+dict KEY against `redact.KNOWN_SECRET_HEADER_NAMES` (the same 4 names
+`_HEADER_LINE_RE` already recognizes) before recursing into its value, and
+redacts the whole value via the newly-public `redact.redacted()` when it
+matches -- exact (case-insensitive) match only, so real CEM condition names
+like "session_cookie"/"auth_cookie" (substrings of "cookie"/"auth" but never
+equal to them) are never wrongly caught.
 
 Deliberately NOT here: intervention execution, perturbation, replication beyond
 what the caller already computed, confounder pinning, database writes, model
@@ -185,7 +243,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from http_probe import DEFAULT_TIMEOUT_S, FetchResult
-from redact import redact_text
+from redact import KNOWN_SECRET_HEADER_NAMES, redact_text, redacted
 
 _VALID_SIGNATURE_KEYS = {"status_in", "body_contains", "body_regex", "similarity_to_baseline"}
 _VALID_SIMILARITY_KEYS = {"body", "threshold"}
@@ -194,8 +252,11 @@ _VALID_SIMILARITY_KEYS = {"body", "threshold"}
 @dataclass
 class SimilarityToBaseline:
     """The reference body a response is diffed against, plus the minimum
-    difflib.SequenceMatcher ratio (0.0-1.0, inclusive) required to count as a match --
-    same ratio mechanism idor_sweep.py already uses for owner-vs-other comparison."""
+    difflib.SequenceMatcher ratio (>0.0-1.0, inclusive of 1.0) required to count as a
+    match -- same ratio mechanism idor_sweep.py already uses for owner-vs-other
+    comparison. threshold=0.0 is refused (see below), not just "the loosest legal
+    value": SequenceMatcher.ratio() is never negative, so a 0.0 threshold would match
+    literally any body, silently behaving as an always-true oracle."""
     body: str
     threshold: float
 
@@ -206,8 +267,14 @@ class SimilarityToBaseline:
             raise TypeError(
                 f"similarity_to_baseline.threshold must be a number, got {type(self.threshold).__name__}"
             )
-        if not (0.0 <= self.threshold <= 1.0):
-            raise ValueError(f"similarity_to_baseline.threshold must be in [0, 1], got {self.threshold!r}")
+        if not (0.0 < self.threshold <= 1.0):
+            raise ValueError(
+                f"similarity_to_baseline.threshold must be > 0 and <= 1, got {self.threshold!r} -- "
+                "a threshold of exactly 0.0 (or below) would always match, since "
+                "difflib.SequenceMatcher.ratio() is never negative, silently behaving "
+                "as an always-true oracle regardless of the compared body (UD-3 forbids "
+                "a vacuous oracle, not just an empty one)"
+            )
 
 
 @dataclass
@@ -231,8 +298,16 @@ class SuccessSignature:
                 raise TypeError(f"status_in must be a list of ints, got {self.status_in!r}")
             if len(self.status_in) == 0:
                 raise ValueError("status_in must not be empty")
-        if self.body_contains is not None and not isinstance(self.body_contains, str):
-            raise TypeError(f"body_contains must be a string, got {type(self.body_contains).__name__}")
+        if self.body_contains is not None:
+            if not isinstance(self.body_contains, str):
+                raise TypeError(f"body_contains must be a string, got {type(self.body_contains).__name__}")
+            if self.body_contains == "":
+                raise ValueError(
+                    "body_contains must not be an empty string -- \"\" in result.body is "
+                    "True for every possible body, silently behaving as an always-true "
+                    "oracle regardless of what the target actually returns (UD-3 forbids "
+                    "a vacuous oracle, not just an empty one)"
+                )
         if self.body_regex is not None:
             if not isinstance(self.body_regex, str):
                 raise TypeError(f"body_regex must be a string, got {type(self.body_regex).__name__}")
@@ -725,6 +800,80 @@ def find_alternate_condition_sets(
 
 
 @dataclass
+class AndNecessityGroup:
+    """One recovered minimal set whose members are mutually AND-necessary
+    (C6 addendum, retrospective audit fix): every member was individually
+    required to keep the set 1-minimal, so removing ANY single member --
+    with everything else already perturbed away -- breaks the effect. Evidence
+    only, mirroring InteractionEvidence's existing pair-evidence shape
+    (generalized here from a pair to an n-ary group, since a genuine mutual-
+    AND relationship is not inherently pairwise -- see ANY_TWO_OF_THREE's
+    3-member groups in the test suite). Never a verdict string and never a
+    substitute for classify()'s own "necessary" verdict on each member --
+    the two facts coexist (see find_and_necessity_groups' docstring)."""
+    members: frozenset[str]
+
+
+def find_and_necessity_groups(minimal_sets: list[frozenset[str]]) -> list[AndNecessityGroup]:
+    """C6 addendum (retrospective audit fix, human-approved Option 2 of 3
+    presented, 2026-09-05): detect mutual AND-necessity as a signal SEPARATE
+    from find_alternate_condition_sets' existing Rule 1/Rule 2 (which detect
+    OR-redundancy -- "individually droppable but present in every recovered
+    set" / "joint removal flips, neither single removal does"). Neither rule
+    can fire on a pure AND-both-required pattern (PHASE1-PLAN.md's own /merge
+    example): if role_admin and flag_on are both strictly required, removing
+    EITHER alone already breaks the effect, so neither ever enters Rule 1/
+    Rule 2's `droppable_singly` candidate pool in the first place -- by
+    design, not by bug (confirmed: find_alternate_condition_sets is not
+    modified by this addendum, not even by one line; its own pre-existing
+    test section is the proof, run unmodified).
+
+    The signal is already implicit in what ddmin's own termination condition
+    proves: minimal_condition_sets() (C5) guarantees that for every element e
+    of a returned 1-minimal set M, removing e (with everything outside M
+    already perturbed away) is NOT interesting -- i.e. every member of an
+    M with len(M) >= 2 is, by construction, jointly/mutually required
+    together with the rest of M. Detecting this needs ZERO additional
+    is_interesting() calls: it is pure post-processing over the `minimal_sets`
+    list find_alternate_condition_sets (or minimal_condition_sets) already
+    returns -- this function takes exactly that list, nothing else.
+
+    Coexistence with `necessary` (the exact representation decision, see the
+    module docstring's "C6 addendum" section for the full rationale): an
+    AndNecessityGroup is a structural annotation over condition NAMES only --
+    it never calls classify()/classify_race(), never produces or touches a
+    verdict string, and is not a replacement for classify()'s own per-
+    condition "necessary" verdict (which keeps being computed the same way
+    it always was, under the one-variable-at-a-time protocol, and correctly
+    still says "necessary" for role_admin and flag_on individually). A single
+    -member set (a genuine OR-redundant path, e.g. {"header"} alone) is never
+    flagged -- only sets with 2+ members carry a mutual-necessity relationship
+    to report. Duplicate groups (the same members appearing more than once in
+    the input) are reported once, in first-seen order -- mirroring how
+    find_alternate_condition_sets itself already dedupes `minimal_sets`.
+
+    No fetch, no HTTP, no DB, no budget_guard/MCP access, no modification of
+    minimal_condition_sets/find_alternate_condition_sets/classify/
+    classify_race/evaluate_signature/SuccessSignature (all reused unmodified
+    or untouched)."""
+    if not isinstance(minimal_sets, list):
+        raise TypeError(f"minimal_sets must be a list, got {type(minimal_sets).__name__}")
+    for s in minimal_sets:
+        if not isinstance(s, frozenset):
+            raise TypeError(f"minimal_sets must contain only frozensets, got {type(s).__name__}")
+        if not all(isinstance(c, str) for c in s):
+            raise TypeError(f"every minimal set must contain only strings, got {s!r}")
+
+    groups: list[AndNecessityGroup] = []
+    seen: list[frozenset[str]] = []
+    for s in minimal_sets:
+        if len(s) >= 2 and s not in seen:
+            seen.append(s)
+            groups.append(AndNecessityGroup(members=s))
+    return groups
+
+
+@dataclass
 class PocMinimizationResult:
     """Outcome of one minimize_poc() run (task C7): the minimal condition
     set found via ddmin (minimal_condition_sets(), reused directly, never
@@ -801,11 +950,56 @@ def _redact_recursive(value):
     no isinstance(value, str) branch for them, so this is automatic rather
     than a special case. Frozensets are never passed in here directly:
     assemble_bundle already converts every frozenset-derived value to a
-    sorted list before handing the assembled dict to this helper."""
+    sorted list before handing the assembled dict to this helper.
+
+    Retrospective audit fix: redact_text()'s two name-based rules (header
+    line, key=value) both require the secret's KEY NAME to be embedded in
+    the SAME STRING as the value -- but a dict walk redacts each VALUE in
+    isolation, stripped of its key. That meant only JWT- or card-shaped
+    secrets (the two rules keyed on VALUE SHAPE alone) ever actually got
+    caught here; an opaque bearer token or API key stored the natural way
+    for HTTP headers -- {"Authorization": "Bearer <opaque>"} -- passed
+    straight through unredacted, since the value string alone never
+    contains "authorization" or "=". Before recursing into a dict value,
+    check whether ITS KEY is an exact (case-insensitive) match for one of
+    KNOWN_SECRET_HEADER_NAMES -- the same 4 names redact_text()'s own
+    _HEADER_LINE_RE already treats as unconditionally secret-by-name in the
+    flat-text case -- and if so, redact the value directly via redacted()
+    rather than recursing into it. Exact match, not substring: real CEM
+    condition names used elsewhere in this codebase (session_cookie,
+    auth_cookie) contain "cookie"/"auth" as substrings but are never
+    literally equal to "cookie"/"authorization", so they are never wrongly
+    caught by this narrower, name-exact check.
+
+    Second-audit fix: a secret-carrying header can legitimately be a LIST of
+    values, not just a scalar string -- multiple Set-Cookie lines being the
+    realistic case (a dict value shape http.client/requests-style header
+    capture can produce). The scalar-only check above missed this: a list
+    value fell through to the generic per-element walk below, so an opaque
+    (non-JWT, non-"key=value"-shaped) element sitting in that list still
+    leaked. When a secret-named key's value is a list/tuple of ALL strings,
+    redact each non-empty element the same way the scalar case already does
+    (same redacted()/"header-value" convention, so both shapes look uniform
+    in the bundle) -- empty elements stay empty, matching the scalar case's
+    own "don't mark nothing as redacted" rule. Any other shape under a
+    secret-named key (not a plain string, not a list purely of strings --
+    e.g. a stray non-string element, or a nested dict) falls back to the
+    ordinary recursive walk rather than guessing: this fix covers exactly
+    the two realistic header-value shapes, not every conceivable structure."""
     if isinstance(value, str):
         return redact_text(value)
     if isinstance(value, dict):
-        return {k: _redact_recursive(v) for k, v in value.items()}
+        result = {}
+        for k, v in value.items():
+            is_secret_key = isinstance(k, str) and k.lower() in KNOWN_SECRET_HEADER_NAMES
+            if is_secret_key and isinstance(v, str) and v:
+                result[k] = redacted(v, "header-value")
+            elif (is_secret_key and isinstance(v, (list, tuple))
+                    and all(isinstance(item, str) for item in v)):
+                result[k] = [redacted(item, "header-value") if item else item for item in v]
+            else:
+                result[k] = _redact_recursive(v)
+        return result
     if isinstance(value, (list, tuple)):
         return [_redact_recursive(v) for v in value]
     return value

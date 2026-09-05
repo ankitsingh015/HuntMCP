@@ -106,3 +106,37 @@ def test_hash_value_is_deterministic():
 
 def test_hash_value_differs_for_different_inputs():
     assert hash_value("secret123") != hash_value("secret124")
+
+
+# ---------------------------------------------------------------------------
+# Public surface reused by cem_engine._redact_recursive (audit fix): the same
+# header-name list _HEADER_LINE_RE is built from, and the same replacement-
+# text builder _header_sub/_kv_sub/_jwt_sub/_card_sub all call internally --
+# exported so a dict-aware caller can redact a value it already knows came
+# from a secret-carrying header KEY, without redact_text ever needing to
+# accept a structured dict itself (this module's own documented boundary).
+# ---------------------------------------------------------------------------
+
+from redact import KNOWN_SECRET_HEADER_NAMES, redacted
+
+
+def test_known_secret_header_names_matches_what_header_line_redaction_covers():
+    # regression guard: if this list ever changes, _HEADER_LINE_RE's actual
+    # coverage changes with it (the regex is built FROM this constant) --
+    # pin the exact set so a silent narrowing/widening doesn't go unnoticed.
+    assert set(KNOWN_SECRET_HEADER_NAMES) == {"authorization", "cookie", "set-cookie", "x-api-key"}
+
+
+def test_redacted_matches_the_flat_text_header_line_format_exactly():
+    # same value, same reason -- a dict-value caller (cem_engine) building
+    # its own replacement via redacted() must produce byte-identical output
+    # to what redact_text() already produces for the equivalent flat text,
+    # so a bundle mixing both redaction paths looks uniform.
+    flat = redact_text(f"Authorization: {FAKE_JWT}")
+    _, _, flat_value = flat.partition(": ")
+    assert redacted(FAKE_JWT, "header-value") == flat_value
+
+
+def test_redacted_hash_is_of_the_original_value():
+    result = redacted("supersecret", "header-value")
+    assert result == f"[REDACTED:header-value sha256:{hash_value('supersecret')}]"

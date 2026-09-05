@@ -160,6 +160,7 @@ import json
 import pytest
 from cem_engine import (
     AlternateSetsResult,
+    AndNecessityGroup,
     DeterminismResult,
     InteractionEvidence,
     MinimalSetResult,
@@ -173,6 +174,7 @@ from cem_engine import (
     determinism_gate,
     evaluate_signature,
     find_alternate_condition_sets,
+    find_and_necessity_groups,
     minimal_condition_sets,
     minimize_poc,
 )
@@ -337,6 +339,21 @@ def test_body_contains_rejects_non_string():
         SuccessSignature(body_contains=12345)
 
 
+def test_body_contains_rejects_empty_string_as_vacuous():
+    # "" in result.body is True for ANY body -- an empty body_contains would
+    # silently behave as an always-true oracle, exactly what UD-3 forbids.
+    with pytest.raises(ValueError, match="empty"):
+        SuccessSignature(body_contains="")
+
+
+def test_body_contains_empty_string_is_rejected_even_alongside_another_matcher():
+    # a vacuous field must be refused regardless of what else is set on the
+    # same signature -- AND semantics means an always-true field silently
+    # weakens the whole signature to whatever the OTHER fields alone decide.
+    with pytest.raises(ValueError, match="empty"):
+        SuccessSignature(status_in=[200], body_contains="")
+
+
 def test_body_regex_rejects_invalid_pattern():
     with pytest.raises(ValueError, match="regular expression"):
         SuccessSignature(body_regex="(unclosed[")
@@ -354,6 +371,24 @@ def test_similarity_to_baseline_rejects_threshold_out_of_range():
         SimilarityToBaseline(body="x", threshold=-0.1)
 
 
+def test_similarity_to_baseline_rejects_zero_threshold_as_vacuous():
+    # difflib.SequenceMatcher.ratio() is never negative, so "ratio >= 0.0" is
+    # true for every possible body -- a threshold of exactly 0.0 would
+    # silently behave as an always-true oracle, exactly what UD-3 forbids.
+    with pytest.raises(ValueError, match="vacuous|always match|> 0"):
+        SimilarityToBaseline(body="reference body text", threshold=0.0)
+
+
+def test_similarity_to_baseline_zero_threshold_never_reaches_evaluate_signature():
+    # confirm the rejection happens at construction, not evaluation -- an
+    # unrelated body must never even get a chance to "match".
+    with pytest.raises(ValueError):
+        sig = SuccessSignature(similarity_to_baseline=SimilarityToBaseline(
+            body="reference body text", threshold=0.0,
+        ))
+        evaluate_signature(FetchResult(status=200, body="completely unrelated content xyz"), sig)
+
+
 def test_similarity_to_baseline_rejects_non_numeric_threshold():
     with pytest.raises(TypeError):
         SimilarityToBaseline(body="x", threshold="high")
@@ -364,6 +399,17 @@ def test_from_dict_similarity_to_baseline_requires_body_and_threshold():
         SuccessSignature.from_dict({"similarity_to_baseline": {"body": "x"}})
     with pytest.raises(ValueError):
         SuccessSignature.from_dict({"similarity_to_baseline": {"threshold": 0.9}})
+
+
+def test_from_dict_rejects_vacuous_matchers_the_same_as_direct_construction():
+    # from_dict funnels through the same __post_init__ validation -- a
+    # persisted (JSON round-tripped) signature can't smuggle in a vacuous
+    # matcher just by arriving via the dict path instead of direct
+    # construction.
+    with pytest.raises(ValueError):
+        SuccessSignature.from_dict({"body_contains": ""})
+    with pytest.raises(ValueError):
+        SuccessSignature.from_dict({"similarity_to_baseline": {"body": "x", "threshold": 0.0}})
 
 
 # ---------------------------------------------------------------------------
@@ -1299,6 +1345,181 @@ def test_c6_signature_is_conditions_is_interesting_max_trials():
 
 
 # ---------------------------------------------------------------------------
+# find_and_necessity_groups (C6 addendum -- mutual AND-necessity, retrospective
+# audit fix, human-approved Option 2 of 3 presented, 2026-09-05)
+#
+# Ruling: Rule 1/Rule 2 above cannot detect a pure AND-both-required pattern
+# (neither condition is ever individually droppable, so neither rule's own
+# precondition is met -- confirmed by test_c6_never_infers_interaction_from_
+# pure_necessity_with_no_redundancy above, unmodified). This is a SEPARATE,
+# additive detection path over the SAME `minimal_sets` list C6 already
+# computes -- find_alternate_condition_sets itself is untouched (not one
+# line changed; its own test section above is the proof, run unmodified).
+# classify()/C3 is not called here and not altered anywhere in this file --
+# "necessary" verdicts for role_admin/flag_on stay exactly what C3 already
+# and correctly produces under one-variable-at-a-time testing. This addendum
+# reports an ADDITIONAL, orthogonal fact -- that a recovered minimal set's
+# members are jointly required as a unit -- never a replacement verdict.
+# ---------------------------------------------------------------------------
+
+def test_and_necessity_returns_andnecessitygroup_instances():
+    groups = find_and_necessity_groups([frozenset({"role_admin", "flag_on"})])
+    assert all(isinstance(g, AndNecessityGroup) for g in groups)
+
+
+# ---- 1. Pure AND interaction (mirrors /merge: role_admin AND flag_on).
+
+def test_and_necessity_detects_pure_and_from_direct_input():
+    groups = find_and_necessity_groups([frozenset({"role_admin", "flag_on"})])
+    assert groups == [AndNecessityGroup(members=frozenset({"role_admin", "flag_on"}))]
+
+
+def test_and_necessity_detects_pure_and_end_to_end_from_real_c6_output():
+    # full pipeline: the SAME find_alternate_condition_sets() call the
+    # existing (unmodified) C6 test suite already asserts sets_found=1,
+    # minimal_sets=[{role_admin, flag_on}], interacting=frozenset() for --
+    # feeding its real minimal_sets straight into the new function.
+    c6_result = find_alternate_condition_sets(["role_admin", "flag_on"], _and_no_redundancy, 100)
+    groups = find_and_necessity_groups(c6_result.minimal_sets)
+    assert groups == [AndNecessityGroup(members=frozenset({"role_admin", "flag_on"}))]
+    # coexistence: C6's own existing OR-redundancy signal is untouched --
+    # this pure-AND scenario correctly has NO Rule 1/Rule 2 interacting flag.
+    assert c6_result.interacting == frozenset()
+
+
+# ---- 2. Pure OR-redundancy (mirrors /report: header OR cookie) -- must NOT
+#         be misdetected as AND-necessity; existing interacting flag intact.
+
+def test_and_necessity_finds_nothing_for_pure_or_redundancy_from_direct_input():
+    groups = find_and_necessity_groups([frozenset({"header"}), frozenset({"cookie"})])
+    assert groups == []
+
+
+def test_and_necessity_finds_nothing_for_pure_or_redundancy_end_to_end_from_real_c6_output():
+    c6_result = find_alternate_condition_sets(["header", "cookie"], _or_header_cookie, 100)
+    groups = find_and_necessity_groups(c6_result.minimal_sets)
+    assert groups == []
+    # coexistence: C6's own existing Rule 2 OR-redundancy signal is untouched.
+    assert c6_result.interacting == frozenset({"header", "cookie"})
+
+
+# ---- 3. Mixed / negative cases.
+
+def test_and_necessity_mixed_input_flags_only_the_and_group_not_the_singleton():
+    # (a AND b) OR c -- one singleton (OR path), one 2-element AND group,
+    # in the SAME minimal_sets list. Only the AND group is flagged.
+    groups = find_and_necessity_groups([frozenset({"c"}), frozenset({"a", "b"})])
+    assert groups == [AndNecessityGroup(members=frozenset({"a", "b"}))]
+
+
+def test_and_necessity_end_to_end_multiple_simultaneous_and_groups_any_two_of_three():
+    # real C6 output for ANY_TWO_OF_THREE: 3 distinct 3-element minimal sets
+    # (gate + any 2 of p/q/r), each independently 1-minimal -- so all 3 are
+    # genuine AND-necessity groups, coexisting with C6's own existing Rule 2
+    # OR-redundancy flag on p/q/r (an "any 2 of 3" shape is legitimately
+    # BOTH: redundant across p/q/r as a family, AND each chosen pair is
+    # jointly required together with gate within its own recovered set).
+    c6_result = find_alternate_condition_sets(["gate", "q", "r", "p"], _any_two_of_three, 100)
+    groups = find_and_necessity_groups(c6_result.minimal_sets)
+    assert {g.members for g in groups} == {
+        frozenset({"gate", "p", "r"}),
+        frozenset({"gate", "q", "r"}),
+        frozenset({"gate", "q", "p"}),
+    }
+    assert c6_result.interacting == frozenset({"p", "q", "r"})  # untouched
+
+
+def test_and_necessity_negative_empty_minimal_sets_list():
+    assert find_and_necessity_groups([]) == []
+
+
+def test_and_necessity_negative_all_singletons_no_and_groups():
+    assert find_and_necessity_groups([frozenset({"a"}), frozenset({"b"}), frozenset()]) == []
+
+
+def test_and_necessity_deduplicates_the_same_group_appearing_twice():
+    groups = find_and_necessity_groups([
+        frozenset({"role_admin", "flag_on"}), frozenset({"role_admin", "flag_on"}),
+    ])
+    assert groups == [AndNecessityGroup(members=frozenset({"role_admin", "flag_on"}))]
+
+
+# ---- 4. Existing C1-C7 behavior unchanged (structural + regression guards;
+#         the full untouched C1-C7 test sections above/below are the primary
+#         proof -- these are additional, targeted sentinels colocated here).
+
+def test_and_necessity_never_calls_classify_or_classify_race(monkeypatch):
+    import cem_engine
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("find_and_necessity_groups must never call classify/classify_race")
+
+    monkeypatch.setattr(cem_engine, "classify", _forbidden)
+    monkeypatch.setattr(cem_engine, "classify_race", _forbidden)
+    groups = find_and_necessity_groups([frozenset({"role_admin", "flag_on"})])
+    assert groups == [AndNecessityGroup(members=frozenset({"role_admin", "flag_on"}))]
+
+
+def test_and_necessity_never_touches_the_real_http_probe_fetch(monkeypatch):
+    import http_probe
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("find_and_necessity_groups must never call the real http_probe.fetch")
+
+    monkeypatch.setattr(http_probe, "fetch", _forbidden)
+    groups = find_and_necessity_groups([frozenset({"role_admin", "flag_on"})])
+    assert groups == [AndNecessityGroup(members=frozenset({"role_admin", "flag_on"}))]
+
+
+def test_and_necessity_result_has_no_verdict_field_mimicking_classify():
+    # structural guard mirroring test_c6_result_has_no_verdict_field_
+    # mimicking_classify: AndNecessityGroup carries only condition NAMES,
+    # never a necessary/apparently_not_necessary/inconclusive/probabilistic
+    # verdict string -- this addendum is orthogonal to C3's verdict vocabulary.
+    import dataclasses
+    field_names = {f.name for f in dataclasses.fields(AndNecessityGroup)}
+    assert field_names == {"members"}
+
+
+def test_alternatesetsresult_fields_unchanged_by_this_addendum():
+    # AlternateSetsResult itself is untouched -- same 6 fields, same meaning,
+    # as test_c6_result_has_no_verdict_field_mimicking_classify already pins.
+    import dataclasses
+    field_names = {f.name for f in dataclasses.fields(AlternateSetsResult)}
+    assert field_names == {
+        "minimal_sets", "interacting", "interacting_pairs",
+        "sets_found", "trials_used", "bounded",
+    }
+
+
+def test_and_necessity_rejects_non_list_input():
+    with pytest.raises(TypeError):
+        find_and_necessity_groups(frozenset({"role_admin", "flag_on"}))
+
+
+def test_and_necessity_rejects_non_frozenset_element():
+    with pytest.raises(TypeError):
+        find_and_necessity_groups([{"role_admin", "flag_on"}])  # plain set, not frozenset
+
+
+def test_and_necessity_rejects_non_string_members():
+    with pytest.raises(TypeError):
+        find_and_necessity_groups([frozenset({1, 2})])
+
+
+def test_and_necessity_is_deterministic_across_repeated_calls():
+    minimal_sets = [frozenset({"c"}), frozenset({"a", "b"}), frozenset({"role_admin", "flag_on"})]
+    results = [find_and_necessity_groups(minimal_sets) for _ in range(10)]
+    for r in results[1:]:
+        assert r == results[0]
+
+
+def test_and_necessity_signature_is_minimal_sets_only():
+    sig = inspect.signature(find_and_necessity_groups)
+    assert list(sig.parameters) == ["minimal_sets"]
+
+
+# ---------------------------------------------------------------------------
 # minimize_poc (C7)
 # ---------------------------------------------------------------------------
 
@@ -1706,6 +1927,129 @@ def test_assemble_bundle_redacts_secret_in_audit_trail_entry():
     trail = [{"call": "fetch", "raw_response_headers": f"Authorization: Bearer {_FAKE_SECRET_JWT}"}]
     bundle = assemble_bundle(**_minimal_bundle_kwargs(audit_trail=trail))
     assert _FAKE_SECRET_JWT not in json.dumps(bundle)
+
+
+# ---- Retrospective audit fix: redaction must also cover an OPAQUE (non-JWT,
+# non-card-shaped) secret stored as a plain header dict VALUE -- the shape
+# http_probe.fetch's own `headers: dict` param naturally produces, and the
+# gap the original 27-test C8 suite missed because its only fixture was
+# JWT-shaped (shape-matched regardless of dict-vs-flat-text context).
+
+_OPAQUE_BEARER_TOKEN = "sk-live-abcdef0123456789ZZYYXXWWnotAJwtNotACard"
+
+
+def test_opaque_bearer_fixture_is_not_jwt_or_card_shaped():
+    # non-vacuousness proof, mirroring test_fake_secret_jwt_fixture_is_non_vacuous:
+    # confirm this fixture is genuinely NOT caught by the two shape-based
+    # rules, so the test below can only pass because of the new dict-key-
+    # aware path, never by accidental shape-match.
+    assert redact_text(_OPAQUE_BEARER_TOKEN) == _OPAQUE_BEARER_TOKEN
+
+
+def test_assemble_bundle_redacts_opaque_bearer_token_stored_as_a_header_dict_value():
+    baseline = {"headers": {"Authorization": f"Bearer {_OPAQUE_BEARER_TOKEN}"}}
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(original_baseline=baseline))
+    assert _OPAQUE_BEARER_TOKEN not in json.dumps(bundle)
+
+
+def test_assemble_bundle_redacts_opaque_cookie_value_stored_as_a_header_dict_value():
+    # "session=<opaque>" would ALSO be caught by the pre-existing key=value
+    # rule (has its own "="), so use a cookie value shape with no "=" at all
+    # to isolate what the NEW dict-key-aware path is responsible for.
+    baseline = {"headers": {"Cookie": _OPAQUE_BEARER_TOKEN}}
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(original_baseline=baseline))
+    assert _OPAQUE_BEARER_TOKEN not in json.dumps(bundle)
+
+
+def test_assemble_bundle_redacts_opaque_api_key_dict_value_in_controls():
+    controls = {"X-Api-Key": _OPAQUE_BEARER_TOKEN}
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(controls=controls))
+    assert _OPAQUE_BEARER_TOKEN not in json.dumps(bundle)
+
+
+def test_assemble_bundle_header_dict_key_match_is_case_insensitive():
+    baseline = {"headers": {"AUTHORIZATION": _OPAQUE_BEARER_TOKEN}}
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(original_baseline=baseline))
+    assert _OPAQUE_BEARER_TOKEN not in json.dumps(bundle)
+
+
+def test_assemble_bundle_redacted_header_dict_value_matches_the_flat_text_convention():
+    # the dict-value redaction path must produce the SAME replacement text
+    # redact_text() already produces for the equivalent flat "name: value"
+    # line, so a bundle mixing both redaction paths looks uniform.
+    from redact import hash_value
+    baseline = {"headers": {"Authorization": _OPAQUE_BEARER_TOKEN}}
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(original_baseline=baseline))
+    assert bundle["original_baseline"]["headers"]["Authorization"] == (
+        f"[REDACTED:header-value sha256:{hash_value(_OPAQUE_BEARER_TOKEN)}]"
+    )
+
+
+def test_assemble_bundle_empty_header_value_is_left_alone_not_marked_redacted():
+    baseline = {"headers": {"Authorization": ""}}
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(original_baseline=baseline))
+    assert bundle["original_baseline"]["headers"]["Authorization"] == ""
+
+
+# ---- Second-audit fix: a secret-carrying header can legitimately be a LIST
+# of values (multiple Set-Cookie lines being the realistic case) -- the first
+# redaction fix only handled a scalar string dict value, so an opaque (non-
+# JWT, non-"key=value"-shaped) element sitting in such a list still leaked.
+
+def test_assemble_bundle_redacts_every_opaque_element_in_a_list_valued_secret_header():
+    baseline = {"headers": {"Set-Cookie": [f"session={_OPAQUE_BEARER_TOKEN}", _OPAQUE_BEARER_TOKEN]}}
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(original_baseline=baseline))
+    assert _OPAQUE_BEARER_TOKEN not in json.dumps(bundle)
+
+
+def test_assemble_bundle_list_valued_secret_header_uses_the_same_redaction_convention():
+    from redact import hash_value
+    baseline = {"headers": {"Set-Cookie": [_OPAQUE_BEARER_TOKEN]}}
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(original_baseline=baseline))
+    assert bundle["original_baseline"]["headers"]["Set-Cookie"] == [
+        f"[REDACTED:header-value sha256:{hash_value(_OPAQUE_BEARER_TOKEN)}]"
+    ]
+
+
+def test_assemble_bundle_list_valued_secret_header_preserves_empty_elements():
+    baseline = {"headers": {"Set-Cookie": ["", _OPAQUE_BEARER_TOKEN]}}
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(original_baseline=baseline))
+    assert bundle["original_baseline"]["headers"]["Set-Cookie"][0] == ""
+    assert _OPAQUE_BEARER_TOKEN not in bundle["original_baseline"]["headers"]["Set-Cookie"][1]
+
+
+def test_assemble_bundle_list_valued_non_secret_header_key_is_unaffected():
+    # collision guard, list form: a non-secret key's list value must still go
+    # through ordinary recursion (each element redact_text'd independently),
+    # not be wholesale-redacted just because it happens to be a list.
+    matrix = [{"perturbation_history": ["step-one", "step-two"]}]
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(intervention_matrix=matrix))
+    assert bundle["intervention_matrix"] == matrix
+
+
+def test_assemble_bundle_list_with_a_non_string_element_falls_back_to_ordinary_recursion():
+    # a malformed/unexpected shape (a list mixing strings and non-strings
+    # under a secret key) must not crash -- fall back to the generic
+    # per-element walk rather than assuming a uniform list-of-strings shape.
+    baseline = {"headers": {"Set-Cookie": [_OPAQUE_BEARER_TOKEN, 123]}}
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(original_baseline=baseline))
+    assert bundle["original_baseline"]["headers"]["Set-Cookie"][1] == 123
+
+
+def test_assemble_bundle_does_not_wrongly_redact_a_condition_named_after_a_secret_header():
+    # collision guard: "session_cookie"/"auth_cookie" are real CEM condition
+    # NAMES used elsewhere in this codebase's own benchmark scenarios -- they
+    # must NOT be treated as secret header keys just because they contain
+    # "cookie"/"auth" as a substring. Only an EXACT match against
+    # KNOWN_SECRET_HEADER_NAMES triggers dict-value redaction.
+    verdict_labels = {"session_cookie": "necessary", "auth_cookie": "necessary"}
+    inconclusive = {"session_cookie": "throttled during trial 3"}
+    bundle = assemble_bundle(**_minimal_bundle_kwargs(
+        verdict_labels=verdict_labels, inconclusive_experiments=inconclusive,
+    ))
+    assert bundle["verdict_labels"] == verdict_labels
+    assert bundle["inconclusive_experiments"] == inconclusive
+    assert "REDACTED" not in json.dumps(bundle)
 
 
 # ---- Non-string values survive the redaction walk untouched.
