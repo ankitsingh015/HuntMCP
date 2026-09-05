@@ -48,11 +48,22 @@ _KEY_VALUE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Header names treated as unconditionally secret-by-name, regardless of value
+# shape. Public (not `_`-prefixed) so a caller that already knows a value came
+# from one of these header KEYS -- e.g. cem_engine._redact_recursive walking a
+# {"Authorization": "Bearer ..."} dict, where the key and value are already
+# split apart and can never be recombined into one "name: value" text line for
+# _HEADER_LINE_RE to match -- can redact that value via `redacted()` below
+# without redact_text() ever needing to accept a structured dict itself (this
+# module's own documented boundary, see the module docstring).
+KNOWN_SECRET_HEADER_NAMES = ("authorization", "cookie", "set-cookie", "x-api-key")
+
 # Well-known secret-carrying HTTP header lines, redact the value after the
 # colon, keep the header name. Matches within a larger text blob (e.g. a
 # raw request/response dump), one line at a time.
 _HEADER_LINE_RE = re.compile(
-    r"(?im)^(?P<name>authorization|cookie|set-cookie|x-api-key)(?P<sep>:\s*)(?P<value>.+)$"
+    r"(?im)^(?P<name>" + "|".join(re.escape(n) for n in KNOWN_SECRET_HEADER_NAMES) + r")"
+    r"(?P<sep>:\s*)(?P<value>.+)$"
 )
 
 # JWTs always start with "eyJ" (base64 of `{"`) for their header segment in
@@ -85,7 +96,14 @@ def hash_value(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:12]
 
 
-def _redacted(value: str, reason: str) -> str:
+def redacted(value: str, reason: str) -> str:
+    """Build the `[REDACTED:<reason> sha256:<hash12>]` replacement text for a
+    value already known to be a secret -- the single place this format is
+    built, reused internally by redact_text()'s own regex substitutions below
+    AND externally by any caller (e.g. cem_engine._redact_recursive) that
+    already knows a value is secret by some other means (its dict KEY, not
+    redact_text()'s own text-shape matching) and just needs the same
+    replacement-text convention applied to it."""
     return f"[REDACTED:{reason} sha256:{hash_value(value)}]"
 
 
@@ -100,19 +118,19 @@ def redact_text(text: str) -> str:
         return text
 
     def _header_sub(m: re.Match) -> str:
-        return f"{m.group('name')}{m.group('sep')}{_redacted(m.group('value'), 'header-value')}"
+        return f"{m.group('name')}{m.group('sep')}{redacted(m.group('value'), 'header-value')}"
 
     def _kv_sub(m: re.Match) -> str:
-        return f"{m.group('key')}{m.group('sep')}{_redacted(m.group('value'), m.group('key').lower())}"
+        return f"{m.group('key')}{m.group('sep')}{redacted(m.group('value'), m.group('key').lower())}"
 
     def _jwt_sub(m: re.Match) -> str:
-        return _redacted(m.group(0), "jwt")
+        return redacted(m.group(0), "jwt")
 
     def _card_sub(m: re.Match) -> str:
         digits = re.sub(r"[ -]", "", m.group(0))
         if len(digits) < 13 or len(digits) > 19 or not _luhn_valid(digits):
             return m.group(0)
-        return _redacted(m.group(0), "card-number")
+        return redacted(m.group(0), "card-number")
 
     text = _HEADER_LINE_RE.sub(_header_sub, text)
     text = _KEY_VALUE_RE.sub(_kv_sub, text)
