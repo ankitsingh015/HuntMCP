@@ -29,11 +29,11 @@ tool for when a *rendered page* needs to be diffed across roles instead).
 from __future__ import annotations
 
 import difflib
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 
-DEFAULT_TIMEOUT_S = 15
+from http_probe import DEFAULT_TIMEOUT_S, FetchResult
+from http_probe import build_headers as _build_headers
+from http_probe import fetch as _fetch
 
 # Thresholds against difflib.SequenceMatcher's ratio() (0.0-1.0) comparing
 # the owner's own response body to the other identity's response body for
@@ -54,13 +54,6 @@ OWNER_BASELINE_FAILURE_WARNING_RATIO = 0.8
 # a couple of genuinely bad ids in a small batch as a systemic credential
 # problem -- not enough signal to call it out as a warning either way.
 OWNER_BASELINE_FAILURE_MIN_SAMPLE = 3
-
-
-@dataclass
-class FetchResult:
-    status: int | None
-    body: str
-    error: str | None = None
 
 
 @dataclass
@@ -110,31 +103,6 @@ class SweepResult:
             "owner_bearer_token, not N separately nonexistent object ids -- verify the owner "
             "credential is still valid and re-run before trusting any verdict in this sweep."
         )
-
-
-def _build_headers(cookie_header: str | None, bearer_token: str | None) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    if cookie_header:
-        headers["Cookie"] = cookie_header
-    if bearer_token:
-        headers["Authorization"] = f"Bearer {bearer_token}"
-    return headers
-
-
-def _fetch(url: str, method: str, headers: dict[str, str], body: str | None,
-           timeout_s: float) -> FetchResult:
-    data = body.encode() if body else None
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            return FetchResult(status=resp.status, body=resp.read().decode(errors="replace"))
-    except urllib.error.HTTPError as e:
-        # A 401/403/404 (the exact protected-vs-leaked signal we care
-        # about) raises HTTPError in urllib rather than returning
-        # normally -- still a real, meaningful response, not a failure.
-        return FetchResult(status=e.code, body=e.read().decode(errors="replace"))
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        return FetchResult(status=None, body="", error=str(e))
 
 
 def _classify(owner: FetchResult, other: FetchResult) -> tuple[str, float | None, str]:
