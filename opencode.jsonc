@@ -21,6 +21,49 @@
       "*": "allow"
     }
   },
+  // Option A (per-agent MCP tool scoping): globally hide ALL MCP tool
+  // schemas from the model context. Each agent re-enables ONLY the MCP
+  // servers it actually uses, via a `tools:` allowlist in its own
+  // .opencode/agents/*.md frontmatter. Servers stay CONNECTED (this is
+  // the documented `tools` mechanism, not `enabled:false`); this only
+  // removes their schemas from agents that did not opt in. Verified on
+  // OpenCode 1.18.29: agent-level `server*: true` overrides this global
+  // `false`. Removing a server here without re-enabling it on its owning
+  // agent WILL break that capability -- see the ownership matrix in the
+  // implementation note.
+  "tools": {
+    "writeup-mcp*": false,
+    "memory-mcp*": false,
+    "lessons-mcp*": false,
+    "subfinder-mcp*": false,
+    "httpx-mcp*": false,
+    "katana-mcp*": false,
+    "nmap-mcp*": false,
+    "nuclei-mcp*": false,
+    "sqlmap-mcp*": false,
+    "dalfox-mcp*": false,
+    "ffuf-mcp*": false,
+    "chainer-mcp*": false,
+    "watch-mcp*": false,
+    "oob-mcp*": false,
+    "waf-bypass-mcp*": false,
+    "browser-mcp*": false,
+    "playwright-mcp*": false,
+    "hackerone-mcp*": false,
+    "target-discovery-mcp*": false,
+    "osint-mcp*": false,
+    "github-security-mcp*": false,
+    "secrets-mcp*": false,
+    "second-opinion-mcp*": false,
+    "burp-import-mcp*": false,
+    "case-mcp*": false,
+    "idor-mcp*": false,
+    "azure-postexploit-mcp*": false,
+    "aws-postexploit-mcp*": false,
+    "gcp-postexploit-mcp*": false,
+    "local-privesc-mcp*": false,
+    "ad-recon-mcp*": false
+  },
   "mcp": {
     "writeup-mcp": {
       "type": "local",

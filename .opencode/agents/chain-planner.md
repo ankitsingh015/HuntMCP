@@ -1,6 +1,12 @@
 ---
 description: Analyzes scan findings, identifies chainable vulnerability combinations, and produces DAG-based attack chain plans for maximum severity impact.
 mode: subagent
+tools:
+  # Option A per-agent MCP scoping: only the MCP servers this agent uses.
+  # Global default (opencode.jsonc) disables all MCP tools; these re-enable.
+  "chainer-mcp*": true
+  "memory-mcp*": true
+  "writeup-mcp*": true
 permission:
   edit: allow
   # rm **/rm deny below is defense-in-depth, not the real enforcement --

@@ -1,6 +1,16 @@
 ---
 description: Detects vulnerabilities across 30+ classes using nuclei, sqlmap, dalfox, and ffuf.
 mode: subagent
+tools:
+  # Option A per-agent MCP scoping: only the MCP servers this agent uses.
+  # Global default (opencode.jsonc) disables all MCP tools; these re-enable.
+  "nuclei-mcp*": true
+  "sqlmap-mcp*": true
+  "dalfox-mcp*": true
+  "ffuf-mcp*": true
+  "writeup-mcp*": true
+  "waf-bypass-mcp*": true
+  "playwright-mcp*": true
 permission:
   edit: allow
   # webfetch is deliberately NOT scope-gated (unlike bash) -- its real
