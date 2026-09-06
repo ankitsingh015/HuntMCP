@@ -1,4 +1,13 @@
-"""A4: harness isolation + tamper detection + no-CEM-production guard."""
+"""A4: harness isolation + tamper detection.
+
+test_no_cem_production_logic_exists (the pre-G0 "no CEM production code yet" tripwire)
+was retired 2026-09-04 after human G0 approval + PHASE1-EXECUTION-PLAN.md task B2
+legitimately added CEM production symbols (cem_conditions/cem_trials/cem_verdicts/
+success_signature) to case_store.py -- its guarded precondition (no G0 approval) no
+longer holds by design, not by regression. The other harness-security properties
+(loopback-only, tamper detection, benchmark-blindness) are unaffected and still
+enforced below.
+"""
 import os
 import sys
 
@@ -40,17 +49,6 @@ def test_real_fixture_integrity_holds():
     for name in ("scenarios.py", "answer_key.py"):
         ok, msg = integrity.verify(os.path.join(FIX, name))
         assert ok, msg
-
-
-def test_no_cem_production_logic_exists():
-    # cem_engine.py must not exist yet
-    assert not os.path.isfile(os.path.join(ROOT, "mcp-servers", "cem_engine.py"))
-    # case-mcp / case_store must carry no CEM symbols yet
-    for rel in ("mcp-servers/case-mcp/server.py", "mcp-servers/case_store.py"):
-        src = open(os.path.join(ROOT, rel)).read().lower()
-        for sym in ("def define_conditions", "def run_counterfactual", "def determinism_gate",
-                    "cem_conditions", "cem_trials", "cem_verdicts", "success_signature"):
-            assert sym not in src, f"CEM production symbol {sym!r} leaked into {rel}"
 
 
 def test_benchmark_target_does_not_import_answers():
