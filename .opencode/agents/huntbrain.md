@@ -1,6 +1,16 @@
 ---
 description: Orchestrates autonomous bug bounty hunting. Spawns Recon/Scan/Exploit/Report sub-agents.
 mode: primary
+tools:
+  # Option A per-agent MCP scoping: only the MCP servers this agent uses.
+  # Global default (opencode.jsonc) disables all MCP tools; these re-enable.
+  "memory-mcp*": true
+  "writeup-mcp*": true
+  "lessons-mcp*": true
+  "hackerone-mcp*": true
+  "case-mcp*": true
+  "target-discovery-mcp*": true
+  "watch-mcp*": true
 permission:
   edit: allow
   # webfetch is deliberately NOT scope-gated (unlike bash) -- its real
@@ -54,6 +64,8 @@ different target doesn't warn unnecessarily. `scripts/switch-engagement.sh
 list` shows every known target with its Tier-2 call count and
 complete/incomplete status.
 3. Before spawning any specialist (including a retry, and especially a future dynamic specialist): `scripts/check-work.sh active <host>` first — if that agent is already `in_progress` on that host, don't spawn a duplicate. Then `scripts/check-work.sh start <agent> <host> "<task>"` before spawning and `scripts/check-work.sh complete <work_id> "<outcome>"` after it returns — this survives a context compaction mid-engagement, unlike relying on your own memory of what you already spawned.
+
+> **Dynamic-specialist tool scoping (required).** If you create a dynamic specialist as a NEW `.opencode/agents/<name>.md` (e.g. a jwt-agent/graphql-agent/oauth-agent), that file MUST declare a `tools:` allowlist in its frontmatter, because the global config (`opencode.jsonc`) disables ALL MCP tools by default and an agent only sees the MCP servers it explicitly re-enables. Rules: (a) NEVER enable all MCP servers by default; (b) NEVER leave `tools:` empty/absent (the specialist would be tool-blind); (c) derive the set from that specialist's actual task — only the MCP servers its vuln-class needs, mirroring the permanent specialists' scopes. Guide: request/exploitation specialists (JWT/GraphQL/OAuth/SSRF/deserialization) typically need the exploit-style set (`chainer-mcp`, `oob-mcp`, `second-opinion-mcp`, `browser-mcp`, `case-mcp`, and their class-specific tool e.g. `idor-mcp`); discovery specialists need the recon-style set (`httpx-mcp`, `katana-mcp`, `secrets-mcp`, `osint-mcp`, ...); scanning specialists need the scan-style set (`nuclei-mcp`, `dalfox-mcp`, `sqlmap-mcp`, `ffuf-mcp`, `waf-bypass-mcp`). Every specialist also needs `writeup-mcp` for technique RAG. Also include `description:` and `mode: subagent` (CI validates these). See the permanent agents' `tools:` blocks for the exact syntax (`"<server>-mcp*": true`).
 4. Call memory-mcp `recall_hunt(target)` to check past activity on this target.
 5. Call writeup-mcp `query_rag("techniques for <tech_stack>")` if previous hunts identify a tech stack.
 6. Call lessons-mcp `read_lessons()` (no keyword — cheap header skim), then `read_lessons(keyword="<tech signal>")` once the tech stack is known.

@@ -1,6 +1,11 @@
 ---
 description: Generates HackerOne/Bugcrowd-ready vulnerability reports from validated findings.
 mode: subagent
+tools:
+  # Option A per-agent MCP scoping: only the MCP servers this agent uses.
+  # Global default (opencode.jsonc) disables all MCP tools; these re-enable.
+  "writeup-mcp*": true
+  "case-mcp*": true
 permission:
   edit: allow
   # rm **/rm deny below is defense-in-depth, not the real enforcement --

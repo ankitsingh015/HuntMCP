@@ -1,6 +1,19 @@
 ---
 description: Discovers attack surface via subdomains, live hosts, endpoints, and port scanning.
 mode: subagent
+tools:
+  # Option A per-agent MCP scoping: only the MCP servers this agent uses.
+  # Global default (opencode.jsonc) disables all MCP tools; these re-enable.
+  "subfinder-mcp*": true
+  "httpx-mcp*": true
+  "katana-mcp*": true
+  "nmap-mcp*": true
+  "secrets-mcp*": true
+  "burp-import-mcp*": true
+  "browser-mcp*": true
+  "writeup-mcp*": true
+  "osint-mcp*": true
+  "github-security-mcp*": true
 permission:
   edit: allow
   # webfetch is deliberately NOT scope-gated (unlike bash) -- its real
