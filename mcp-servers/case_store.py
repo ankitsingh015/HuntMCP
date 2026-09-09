@@ -35,6 +35,13 @@ Schema, in read order:
   experiments -- one row per test run, so check_experiment_exists() can
                  stop an agent repeating an identical test.
   root_causes -- groups multiple findings under one underlying flaw.
+  cem_meta / cem_conditions / cem_trials / cem_verdicts -- Phase-1 Counterfactual
+                 Evidence Minimization state for an already-CONFIRMED finding
+                 (see PHASE1-EXECUTION-PLAN.md sec 4): the base request + caller-
+                 supplied success_signature oracle, candidate conditions, per-trial
+                 observations, and per-condition verdicts. Each table's finding_id
+                 FK is ON DELETE CASCADE (not SET NULL like the tables above), so
+                 CEM state is wiped with its finding. Read/write helpers: task B2.
 
 update_finding_status() is the one enforcement point: it refuses to move a
 finding to CONFIRMED or IMPACT_PROVEN if it has zero linked evidence rows.
@@ -78,6 +85,13 @@ FINDING_STATUSES = {
 }
 EVIDENCE_GATED_STATUSES = {"CONFIRMED", "IMPACT_PROVEN"}
 EVIDENCE_TYPES = {"request", "response", "callback", "screenshot", "dns", "source", "metadata"}
+
+# Phase-1 CEM (PHASE1-EXECUTION-PLAN.md sec 4/D2). CEM_TRIAL_ARMS/CEM_VERDICTS mirror
+# this file's existing HYPOTHESIS_STATUSES/FINDING_STATUSES-style enum validation.
+CEM_TRIAL_ARMS = {"baseline", "perturbed"}
+CEM_VERDICTS = {
+    "necessary", "apparently_not_necessary", "inconclusive", "interacting", "probabilistic",
+}
 
 CONFIDENCE_BANDS = [(80, "CONFIRMED"), (60, "HIGH"), (30, "MEDIUM"), (0, "LOW")]
 
@@ -207,6 +221,51 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE SET NULL,
             FOREIGN KEY (finding_id) REFERENCES findings(id) ON DELETE SET NULL
         );
+        CREATE TABLE IF NOT EXISTS cem_meta (
+            finding_id INTEGER PRIMARY KEY,
+            base_request TEXT NOT NULL,
+            success_signature TEXT NOT NULL,
+            determinism_status TEXT NOT NULL DEFAULT 'UNTESTED',
+            cem_status TEXT NOT NULL DEFAULT 'DEFINED',
+            k INTEGER NOT NULL DEFAULT 5,
+            incomplete INTEGER NOT NULL DEFAULT 0,
+            nonidempotent_approval TEXT,
+            FOREIGN KEY (finding_id) REFERENCES findings(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS cem_conditions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            finding_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            baseline_value TEXT,
+            perturbation TEXT NOT NULL,
+            FOREIGN KEY (finding_id) REFERENCES findings(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS cem_trials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            finding_id INTEGER NOT NULL,
+            condition_id INTEGER,
+            arm TEXT NOT NULL,
+            k_index INTEGER NOT NULL,
+            http_status INTEGER,
+            oracle_hit INTEGER NOT NULL,
+            request_evidence_hash TEXT,
+            response_evidence_hash TEXT,
+            controls TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (finding_id) REFERENCES findings(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS cem_verdicts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            finding_id INTEGER NOT NULL,
+            condition_id INTEGER,
+            verdict TEXT NOT NULL,
+            k INTEGER NOT NULL,
+            controls TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (finding_id) REFERENCES findings(id) ON DELETE CASCADE
+        );
     """)
 
 
@@ -327,6 +386,18 @@ def create_finding(vuln_class: str, endpoint: str, parameter: str = "",
         )
         conn.commit()
         return {"id": cur.lastrowid, "status": "DISCOVERED"}
+    finally:
+        conn.close()
+
+
+def get_finding(finding_id: int, db_path: str | None = None) -> dict | None:
+    """Read one finding row as a dict (id, vuln_class, endpoint, parameter,
+    status, confidence_score, confidence_band, hypothesis_id, root_cause_id,
+    created_at, updated_at), or None if there is no finding with that id."""
+    conn = _get_conn(db_path)
+    try:
+        row = conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,)).fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 
@@ -524,5 +595,178 @@ def case_export(db_path: str | None = None) -> str:
             "experiments": _all("experiments"),
             "root_causes": _all("root_causes"),
         }, indent=2)
+    finally:
+        conn.close()
+
+
+# ---- CEM (Phase 1) -----------------------------------------------------------
+# PHASE1-EXECUTION-PLAN.md task B2. Pure persistence, same conventions as the rest of
+# this module (FK checks via _row_exists/_missing_fk_error, enum validation, {"error":
+# ...} on failure rather than raising). No CEM logic (oracle evaluation, determinism
+# gate, intervention execution) lives here -- that's cem_engine.py's job (task C/D;
+# C1-C8 implemented, D pending).
+
+def cem_define(finding_id: int, base_request: dict, success_signature: dict,
+                conditions: list[dict], k: int = 5,
+                nonidempotent_approval: dict | None = None,
+                db_path: str | None = None) -> dict:
+    """One-shot per finding: persist the base request + the caller-supplied
+    success_signature oracle (UD-3 -- explicit only, never auto-derived from a
+    baseline response anywhere in this codebase) plus one cem_conditions row per
+    candidate condition. Each condition dict: {name, category, baseline_value,
+    perturbation}. baseline_value is optional; the other three keys are required.
+
+    `nonidempotent_approval` (F3b/UD-4): an optional pre-validated authorization
+    object stored verbatim in `cem_meta.nonidempotent_approval` (NULL when
+    absent). This layer does NOT interpret it -- the caller (case-mcp
+    `define_conditions`) validates its shape via
+    `cem_engine.validate_nonidempotent_approval`, and every read re-validates it
+    at the policy gate, so a tampered row still fails closed."""
+    if not success_signature:
+        return {"error": "cem_define requires a non-empty success_signature (UD-3: "
+                          "caller-supplied, never auto-derived)"}
+    if not conditions:
+        return {"error": "cem_define requires at least one condition"}
+    if nonidempotent_approval is not None and not isinstance(nonidempotent_approval, dict):
+        return {"error": "nonidempotent_approval must be a JSON object or omitted"}
+
+    conn = _get_conn(db_path)
+    try:
+        if not _row_exists(conn, "findings", finding_id):
+            return _missing_fk_error(f"finding with id {finding_id}")
+        if conn.execute("SELECT 1 FROM cem_meta WHERE finding_id = ?", (finding_id,)).fetchone():
+            return {"error": f"finding {finding_id} already has CEM state defined -- "
+                              "cem_define is one-shot per finding"}
+        conn.execute(
+            "INSERT INTO cem_meta (finding_id, base_request, success_signature, k, "
+            "nonidempotent_approval) VALUES (?, ?, ?, ?, ?)",
+            (finding_id, json.dumps(base_request), json.dumps(success_signature), k,
+             json.dumps(nonidempotent_approval) if nonidempotent_approval is not None else None),
+        )
+        condition_ids = []
+        for c in conditions:
+            cur = conn.execute(
+                "INSERT INTO cem_conditions (finding_id, name, category, baseline_value, perturbation) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (finding_id, c["name"], c["category"], c.get("baseline_value"),
+                 json.dumps(c["perturbation"])),
+            )
+            condition_ids.append(cur.lastrowid)
+        conn.commit()
+        return {"finding_id": finding_id, "condition_ids": condition_ids}
+    finally:
+        conn.close()
+
+
+def cem_record_trial(finding_id: int, arm: str, k_index: int, oracle_hit: bool,
+                      condition_id: int | None = None, http_status: int | None = None,
+                      request_evidence_hash: str | None = None,
+                      response_evidence_hash: str | None = None,
+                      controls: dict | None = None, db_path: str | None = None) -> dict:
+    """Persist one CEM trial row -- one real observation within a determinism-gate or
+    counterfactual-intervention run. condition_id is None for the baseline/determinism
+    arm, matching the documented schema (cem_trials.condition_id is NULLable)."""
+    if arm not in CEM_TRIAL_ARMS:
+        return {"error": f"invalid arm {arm!r}, expected one of {sorted(CEM_TRIAL_ARMS)}"}
+    conn = _get_conn(db_path)
+    try:
+        if not _row_exists(conn, "findings", finding_id):
+            return _missing_fk_error(f"finding with id {finding_id}")
+        if condition_id is not None and not _row_exists(conn, "cem_conditions", condition_id):
+            return _missing_fk_error(f"cem_conditions with id {condition_id}")
+        cur = conn.execute(
+            "INSERT INTO cem_trials (finding_id, condition_id, arm, k_index, http_status, "
+            "oracle_hit, request_evidence_hash, response_evidence_hash, controls) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (finding_id, condition_id, arm, k_index, http_status, int(bool(oracle_hit)),
+             request_evidence_hash, response_evidence_hash, json.dumps(controls or {})),
+        )
+        conn.commit()
+        return {"id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+def cem_record_verdict(finding_id: int, verdict: str, k: int, controls: dict,
+                        condition_id: int | None = None, detail: str = "",
+                        db_path: str | None = None) -> dict:
+    """Persist one CEM verdict row for a condition (or None for a finding-level
+    verdict, e.g. the determinism-gate outcome)."""
+    if verdict not in CEM_VERDICTS:
+        return {"error": f"invalid verdict {verdict!r}, expected one of {sorted(CEM_VERDICTS)}"}
+    conn = _get_conn(db_path)
+    try:
+        if not _row_exists(conn, "findings", finding_id):
+            return _missing_fk_error(f"finding with id {finding_id}")
+        if condition_id is not None and not _row_exists(conn, "cem_conditions", condition_id):
+            return _missing_fk_error(f"cem_conditions with id {condition_id}")
+        cur = conn.execute(
+            "INSERT INTO cem_verdicts (finding_id, condition_id, verdict, k, controls, detail) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (finding_id, condition_id, verdict, k, json.dumps(controls), detail),
+        )
+        conn.commit()
+        return {"id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+def cem_mark_incomplete(finding_id: int, db_path: str | None = None) -> dict:
+    """F2: flag a finding's CEM run as truncated (`cem_meta.incomplete = 1`) when a
+    sender stopped early on a budget denial. Idempotent; no-op if cem_define was
+    never called for this finding. This records that the run was cut short so the
+    bundle is honestly labelled -- it is NOT partial trial/verdict persistence
+    (those are still never written on a budget denial)."""
+    conn = _get_conn(db_path)
+    try:
+        cur = conn.execute(
+            "UPDATE cem_meta SET incomplete = 1 WHERE finding_id = ?", (finding_id,)
+        )
+        conn.commit()
+        return {"finding_id": finding_id, "updated": cur.rowcount}
+    finally:
+        conn.close()
+
+
+def cem_load_state(finding_id: int, db_path: str | None = None) -> dict:
+    """Load all persisted CEM state for a finding: meta (JSON fields decoded back to
+    dicts), conditions, trials, and verdicts. {"error": ...} if cem_define was never
+    called for this finding_id -- mirrors this module's existing not-found convention."""
+    conn = _get_conn(db_path)
+    try:
+        meta_row = conn.execute("SELECT * FROM cem_meta WHERE finding_id = ?", (finding_id,)).fetchone()
+        if not meta_row:
+            return {"error": f"no CEM state defined for finding {finding_id} -- call cem_define first"}
+        meta = dict(meta_row)
+        meta["base_request"] = json.loads(meta["base_request"])
+        meta["success_signature"] = json.loads(meta["success_signature"])
+        # F3b/UD-4: decode the stored authorization (NULL / legacy-missing -> None).
+        raw_approval = meta.get("nonidempotent_approval")
+        try:
+            meta["nonidempotent_approval"] = json.loads(raw_approval) if raw_approval else None
+        except (TypeError, ValueError):
+            meta["nonidempotent_approval"] = raw_approval  # garbage -> policy gate rejects it
+
+        conditions = []
+        for r in conn.execute(
+            "SELECT * FROM cem_conditions WHERE finding_id = ?", (finding_id,)
+        ).fetchall():
+            c = dict(r)
+            c["perturbation"] = json.loads(c["perturbation"])
+            conditions.append(c)
+
+        trials = []
+        for r in conn.execute("SELECT * FROM cem_trials WHERE finding_id = ?", (finding_id,)).fetchall():
+            t = dict(r)
+            t["controls"] = json.loads(t["controls"]) if t["controls"] else {}
+            trials.append(t)
+
+        verdicts = []
+        for r in conn.execute("SELECT * FROM cem_verdicts WHERE finding_id = ?", (finding_id,)).fetchall():
+            v = dict(r)
+            v["controls"] = json.loads(v["controls"]) if v["controls"] else {}
+            verdicts.append(v)
+
+        return {"meta": meta, "conditions": conditions, "trials": trials, "verdicts": verdicts}
     finally:
         conn.close()

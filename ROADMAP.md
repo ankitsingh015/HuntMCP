@@ -102,8 +102,30 @@ proof / causal-validation engine (CEM), not a discovery-throughput engine.**
 
 ```
 CURRENT PHASE:        Phase 1 — scientifically-trustworthy CEM vertical slice
-CURRENT MILESTONE:    Phase 1a testing-architecture hardening COMPLETE & verified; CEM engine NOT started (awaiting G0)
-STATUS:               PLANNING (no implementation code written)
+CURRENT MILESTONE:    G0 implementation approval GRANTED. Pure CEM engine (Group C, C1-C8) COMPLETE and
+                      MERGED to main (PR #93); Group A and Group H MERGED (PRs #92/#93). Group B fully
+                      RECOVERED & VERIFIED on the completion branch 2026-09-07: B1 (4-table CEM schema in
+                      case_store._init_schema() + 19 schema-contract tests), B2 (CEM_TRIAL_ARMS/CEM_VERDICTS
+                      constants + the 4 CRUD helpers cem_define/cem_record_trial/cem_record_verdict/
+                      cem_load_state), B3 (6 cascade-delete/deep-isolation tests + helpers; test file now 25
+                      tests). Full suite 917 green; case_store.py byte-identical to the
+                      phase1-cem-implementation-6e1693 copy modulo two disclosed doc-comment lines,
+                      test_cem_case_store.py byte-identical modulo its module docstring.
+                      Group D (intervention executor) COMPLETE 2026-09-07 in cem_engine.py — D1 (Controls +
+                      apply_control_gate), D2 (run_intervention + Trial), D3 (throttled_in + apply_throttle_gate
+                      + run_intervention 429-abort). Group E (MCP tool integration) COMPLETE 2026-09-07 in
+                      case-mcp/server.py — E1 (6 CEM @app.tool() wrappers delegating to cem_engine +
+                      case_store; senders send via http_probe.fetch, persist cem_trials/cem_verdicts), E2
+                      (budget_guard.enforce per request + audit_log.log_call once per call, idor-mcp pattern;
+                      + B-1 _make_budget_cb/_sender_run de-dup + T-2), E3 (CONFIRMED/IMPACT_PROVEN guard on
+                      define_conditions + both senders; SuccessSignature.from_dict validation, UD-3; new
+                      case_store.get_finding()). New tests/test_cem_mcp.py (18) + tests/test_cem_safety.py
+                      (26). Full suite 1037 green; every design decision human-approved via AskUserQuestion.
+                      E3 awaiting review. Nothing from Group B, D or E is on main yet (uncommitted working-tree
+                      state). Groups F-P not started. Phase-1 acceptance gate (G1-G9 via
+                      scripts/verify-phase1.sh) still PENDING.
+STATUS:               IMPLEMENTATION IN PROGRESS — CEM Phase-1 completion effort (runtime / MCP integration /
+                      safety / evidence persistence / end-to-end benchmark + FCCR). One task at a time.
 COMPLETED:            - XYZ.md thesis + architecture (approved)
                       - PHASE1-PLAN.md spec (approved)
                       - INTELLIGENCE-ALLOCATION-MEMO.md future-work review (delivered)
@@ -111,15 +133,41 @@ COMPLETED:            - XYZ.md thesis + architecture (approved)
                       - ROADMAP.md + PHASE1-EXECUTION-PLAN.md authored
                       - UD-1..UD-4 resolved & recorded (PHASE1-EXECUTION-PLAN §2; task A1 [x])
                       - Phase-1 TEST-ENVIRONMENT SUBSTRATE built & verified (A3/H1/H2)
-                      - Phase-1a TESTING-ARCHITECTURE HARDENING complete & verified (A1-A4, B1-B3):
-                        blind scenario manifest + evaluator-only answer key (split, both integrity-locked),
-                        independent evaluator (FCCR/coverage/missed/FP/reproducibility), evidence trail,
-                        vulnerable/patched mutation target, loopback-only, no-CEM-production guard;
-                        full suite 661 green (37 CEM-env/hardening tests), no regression
-IN PROGRESS:          (none — implementation not started)
-BLOCKED:              Awaiting human G0 implementation approval (all design decisions now resolved)
-NEXT STEP:            Human G0 approval → begin CEM engine (A2 worktree, A4 http_probe extract, then B..P) under TDD
-                      (test-environment substrate already in place: bash scripts/verify-phase1.sh)
+                      - MERGED to main via PR #92 (3cb25bb): Group H benchmark environment
+                        (tests/fixtures/cem_target/*, tests/test_cem_environment.py) + Phase-1a
+                        TESTING-ARCHITECTURE HARDENING (blind scenario manifest + evaluator-only answer key,
+                        both integrity-locked; independent evaluator for FCCR/coverage/missed/FP/repro;
+                        evidence trail; vulnerable/patched mutation target; loopback-only guard) + A3 baseline
+                        (docs/cem-phase1-baseline.txt). (661 green at that milestone, no regression.)
+                      - MERGED to main via PR #93 (796831a): Group A/A4 (mcp-servers/http_probe.py extract +
+                        idor_sweep.py re-export refactor); Group C C1-C8 pure CEM engine
+                        (mcp-servers/cem_engine.py + tests/test_cem_engine.py), incl. 2 retrospective C1-C8
+                        audit-fix rounds + the C6 AND-necessity addendum; planning docs (ROADMAP.md,
+                        PHASE1-PLAN.md, PHASE1-EXECUTION-PLAN.md, XYZ.md, INTELLIGENCE-ALLOCATION-MEMO.md).
+                        This-branch full suite: 892 green (2026-09-07).
+NOT ON MAIN:          - Group B (B1+B2+B3) + Group D (D1+D2+D3) + Group E (E1+E2+E3): uncommitted working-tree
+                        changes on the completion branch (claude/cem-phase-1-completion-1a5cd5) —
+                        mcp-servers/case_store.py (B1 4 CEM tables + B2 CEM_TRIAL_ARMS/CEM_VERDICTS + 4 CRUD
+                        helpers + E3 get_finding() accessor); tests/test_cem_case_store.py untracked (25);
+                        tests/test_case_store.py (+1 E3 get_finding test); mcp-servers/cem_engine.py (D1-D3 —
+                        C1-C8 committed bodies untouched); tests/test_cem_engine.py (+85 D1-D3 tests, purely
+                        additive); mcp-servers/case-mcp/server.py (E1 6 wrappers + E2 budget/audit + B-1
+                        _make_budget_cb/_sender_run + E3 _confirmed_or_error guards; existing 15 tools
+                        byte-untouched); tests/test_cem_mcp.py untracked (18 E1) + tests/test_cem_safety.py
+                        untracked (26 = 8 E2 + 1 B-1 + 7 E3, T-2 strengthened in place). Nothing committed to
+                        main. B1-B3 recovery source of truth: the phase1-cem-implementation-6e1693 worktree
+                        (branch claude/phase1-cem-implementation-6e1693, HEAD e1b9644).
+IN PROGRESS:          (none) — Group B recovered & verified (917 green); Group D done & verified (1002 green);
+                      Group E done & verified (1037 green; E1 18 + E2 9 + E3 8 tests). E2 audited (SAFE WITH
+                      IMPROVEMENTS) → B-1 (de-dup senders via _make_budget_cb factory + _sender_run
+                      contextmanager) + T-2 (strengthened partial-persistence regression) implemented +
+                      re-reviewed; B-2/B-3 deferred to G1. Paused for E3 review. N2 doc-reconciliation pass
+                      also done (final post-P1 read-back still pending).
+BLOCKED:              (none)
+NEXT STEP:            E3 review/audit (separate session). Then F1 (add "case-mcp" to
+                      scope_gate_hook.TIER2_MCP_SERVERS so the two senders' url arg is scope-gated) .. P1
+                      under TDD, one task at a time. Test-environment substrate already in place: bash
+                      scripts/verify-phase1.sh.
 KNOWN DEVIATIONS:     RESOLVED via rulings —
                       - UD-1=B: extract shared mcp-servers/http_probe.py; idor_sweep imports it (regression-guarded)
                       - UD-2=A: CEM shares the 500-call cap + per-finding CEM request ceiling
@@ -127,8 +175,36 @@ KNOWN DEVIATIONS:     RESOLVED via rulings —
                       - UD-4=refuse non-idempotent perturbations by default (per-finding human exception only)
                       (Design note, not a decision) CEM HTTP path bypasses tool_resolver → rate handling is
                       executor-local (spacing + 429→inconclusive), same bypass idor-mcp already accepts.
-LAST VERIFIED:        Repo read + reuse map + UD rulings recorded (this session). No code executed/changed.
-NEXT ACCEPTANCE GATE: G0 — implementation approval (design decisions already resolved); then G1..G9
+LAST VERIFIED:        2026-09-07 (E3): guards in case-mcp/server.py — define_conditions + determinism_gate +
+                      run_counterfactual refuse a finding not in {CONFIRMED, IMPACT_PROVEN} (senders
+                      re-check, so a post-define demotion can't send real requests; fetch spy proves 0
+                      requests); define_conditions also rejects a missing/invalid success_signature via
+                      cem_engine.SuccessSignature.from_dict (UD-3, no derivation). New public
+                      case_store.get_finding() accessor (0 removed lines; B1/B2 CEM schema/CRUD untouched;
+                      case_store.py touch was part of the human-approved guard-scope option). The 3 local
+                      assemblers are NOT gated (they read vetted state, send nothing). TDD: 7 tests in
+                      test_cem_safety.py + 1 in test_case_store.py, RED (AttributeError on get_finding + the
+                      guard behaviours) → GREEN. cem_engine.py / test_cem_engine.py NOT touched by E3. Full
+                      suite `.venv/bin/python -m pytest tests/ -q` → 1037 passed, 0 failed; test_cem_mcp.py
+                      18/18, test_cem_engine.py 296/296, test_case_store.py 36→37, test_idor_mcp_server.py 3/3
+                      unmodified; ruff (CI-exact) + py_compile clean, zero fixes. No commit.
+                      Earlier same day: E2 + B-1/T-2 (senders de-duped via _make_budget_cb/_sender_run;
+                      partial-persistence tests strengthened; B-2/B-3 deferred to G1; 1029 green).
+                      Earlier same day: E1 (6 CEM @app.tool() wrappers, 18 smoke tests, 1020 green). D3
+                      (THROTTLE_STATUS/throttled_in/apply_throttle_gate + run_intervention
+                      429-abort, 19 tests, 1002 green). D2 (Trial + run_intervention, 25 tests, 983 green); D1 (Controls +
+                      apply_control_gate, 41 tests, 958 green, one TRY004 ruff round, C1 precedent).
+                      Earlier same day: B3 recovery (6 cascade tests + 3 helpers byte-for-byte; 25/25;
+                      917 green; foreign_keys=OFF non-vacuity spike). B2 recovery (CEM constants + 4 CRUD
+                      helpers byte-for-byte; case_store.py 723 lines; 911 green; 18-check CRUD smoke).
+                      Earlier same day (B1 recovery): `tests/test_cem_case_store.py` written first → RED on
+                      this branch (no such table); 4 CREATE TABLE statements added to
+                      case_store._init_schema() byte-for-byte from that worktree → GREEN. Focused (B1):
+                      test_cem_case_store.py 19/19, test_case_store.py 36/36 (unmodified), test_cem_engine.py
+                      211/211 (unmodified). Full suite `.venv/bin/python -m pytest tests/ -q` → 911 passed,
+                      0 failed. ruff clean on both changed files. No commit.
+NEXT ACCEPTANCE GATE: G0 GRANTED. Next: Phase-1 acceptance gates G1..G9 via scripts/verify-phase1.sh
+                      (run only after D-P prerequisites are implemented and reviewed) — still PENDING.
 ```
 
 *Do not depend on conversation memory. If this block and the conversation disagree, this block (once updated by

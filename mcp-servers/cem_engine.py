@@ -227,11 +227,37 @@ matches -- exact (case-insensitive) match only, so real CEM condition names
 like "session_cookie"/"auth_cookie" (substrings of "cookie"/"auth" but never
 equal to them) are never wrongly caught.
 
-Deliberately NOT here: intervention execution, perturbation, replication beyond
-what the caller already computed, confounder pinning, database writes, model
-calls, "never auto-submitted" draft/review workflow (report-agent / a later
-phase) -- only the redaction half of C8's acceptance criterion is this module's
-job.
+Task D1: Controls -- the per-finding confounder-pinning set (PHASE1-PLAN.md sec 9).
+`Controls.pin(request, trial_index)` rewrites a request dict in memory so every
+trial is identical except a per-trial-unique `_cb=<trial_index>` cache-buster;
+`Controls.record()` is the JSON snapshot for `cem_trials.controls` / the bundle
+(header NAMES only -- values are session secrets); `Controls.has_uncontrolled`
+and the module-level `apply_control_gate(verdict, controls)` implement "any arm
+sees an uncontrolled confounder -> `inconclusive`" (PHASE1-PLAN.md sec 9 / sec D)
+as the one place that rule lives, applied by D2/E around `classify()` output
+(`classify()` stays controls-unaware, C3-pinned). Still pure: the only callable
+`pin()` invokes is the caller-injected `csrf_provider`. API shape (methods on
+Controls + a module gate fn; full csrf_provider injection) was human-approved
+2026-09-07, per the C4/C5/C6 "plan names the behavior, not the signature -> stop
+and ask" precedent.
+
+Task D2: run_intervention -- the intervention executor loop (PHASE1-PLAN.md
+"Intervention executor design"). One call runs ONE arm k times: `perturbation=None`
+is the baseline / determinism arm, `perturbation=<Callable[[dict], dict]>` is the
+perturbed arm. Per trial: optional inter-trial `sleep_fn(spacing_ms/1000)`, one
+`budget_cb()` (injected -- the server wires `budget_guard.enforce`; a raise
+propagates and stops sending), `Controls.pin(base_request, i)`, the single
+perturbation composed on top (once), `fetch_fn(...)` (injected, `http_probe.fetch`
+signature -- C2 precedent), `evaluate_signature`. Returns `list[Trial]`; the
+E-layer content-addresses each trial's request/response into evidence and
+persists arm/k_index/http_status/oracle_hit. `perturbation` and `sleep_fn` as
+injected callables were human-approved 2026-09-07 via AskUserQuestion.
+
+Deliberately NOT here: `429`/throttle detection -> `inconclusive` (D3), the
+per-finding request ceiling + partial/`incomplete` bundle on budget exhaustion
+(F2 -- D2 just lets a `budget_cb` raise propagate), non-idempotent-perturbation
+refusal (F3), database writes, evidence hashing, model calls, "never
+auto-submitted" draft/review workflow (report-agent / a later phase).
 """
 
 from __future__ import annotations
@@ -239,8 +265,10 @@ from __future__ import annotations
 import difflib
 import itertools
 import re
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from http_probe import DEFAULT_TIMEOUT_S, FetchResult
 from redact import KNOWN_SECRET_HEADER_NAMES, redact_text, redacted
@@ -1113,3 +1141,566 @@ def assemble_bundle(
     }
 
     return _redact_recursive(bundle)
+
+
+# ---------------------------------------------------------------------------
+# Task D1: Controls -- the per-finding confounder-pinning set (PHASE1-PLAN.md sec 9)
+# ---------------------------------------------------------------------------
+# Everything an intervention keeps IDENTICAL across every trial so the only thing
+# that differs between the baseline arm and the perturbed arm is the single
+# perturbed condition: session cookie/bearer, CSRF handling, cache-busting policy,
+# request ordering, inter-trial spacing, concurrency. Anything that cannot be
+# pinned is recorded, and apply_control_gate() forces the verdict to
+# `inconclusive` -- an uncontrolled confounder means the causal comparison is not
+# trustworthy (PHASE1-PLAN.md sec 9 / sec D). Pure: pin() rewrites a dict in
+# memory and the only callable it invokes is the injected csrf_provider; no
+# sleeping / fetch loop / budget (D2), no 429 detection (D3).
+
+_CB_PARAM = "_cb"
+
+
+@dataclass
+class Controls:
+    """The per-finding confounder-pinning set, held identical across every trial
+    (PHASE1-PLAN.md sec 9).
+
+    `session_headers` (name -> value) is merged into every trial's headers
+    unchanged. `csrf_header_name` + `csrf_provider`: if both are set, `pin()`
+    calls the provider once per trial and sets that header (fresh per trial, same
+    mechanism every trial); if the header name is set but no provider is given,
+    the CSRF token cannot be pinned -- `"csrf_token"` joins the effective
+    uncontrolled set and every verdict for this finding is forced to
+    `inconclusive` (PHASE1-EXECUTION-PLAN.md sec 8). `cache_buster` adds a
+    per-trial-unique `_cb=<trial_index>` query param -- the one thing that MUST
+    differ per trial, to defeat response caching (the `/cached` confounder).
+    `ordering` is `"sequential"` and `concurrency` is `1` in Phase 1 (any other
+    value is rejected; the race carve-out is a separate flagged path, not a
+    Controls value). `spacing_ms` is carried here but only *applied* by D2's
+    executor. `uncontrolled` is the caller's explicit list of any other
+    confounder it knows it cannot pin; those names feed the same gate."""
+
+    session_headers: dict = field(default_factory=dict)
+    csrf_header_name: str | None = None
+    csrf_provider: Callable[[], str] | None = None
+    cache_buster: bool = True
+    ordering: str = "sequential"
+    spacing_ms: int = 0
+    concurrency: int = 1
+    uncontrolled: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.session_headers, dict):
+            raise TypeError(
+                f"session_headers must be a dict, got {type(self.session_headers).__name__}"
+            )
+        for name, value in self.session_headers.items():
+            if not isinstance(name, str) or not isinstance(value, str):
+                raise TypeError("session_headers must be a dict of str -> str")
+
+        if self.csrf_header_name is not None:
+            if not isinstance(self.csrf_header_name, str):
+                raise TypeError(
+                    f"csrf_header_name must be a string or None, got "
+                    f"{type(self.csrf_header_name).__name__}"
+                )
+            if self.csrf_header_name == "":
+                raise ValueError("csrf_header_name must not be an empty string")
+        if self.csrf_provider is not None and not callable(self.csrf_provider):
+            raise TypeError("csrf_provider must be callable or None")
+
+        if not isinstance(self.cache_buster, bool):
+            raise TypeError(f"cache_buster must be a bool, got {type(self.cache_buster).__name__}")
+
+        if self.ordering != "sequential":
+            raise ValueError(f"ordering must be 'sequential' in Phase 1, got {self.ordering!r}")
+
+        if isinstance(self.spacing_ms, bool) or not isinstance(self.spacing_ms, int):
+            raise TypeError(f"spacing_ms must be an int, got {type(self.spacing_ms).__name__}")
+        if self.spacing_ms < 0:
+            raise ValueError(f"spacing_ms must be >= 0, got {self.spacing_ms}")
+
+        if isinstance(self.concurrency, bool) or not isinstance(self.concurrency, int):
+            raise TypeError(f"concurrency must be an int, got {type(self.concurrency).__name__}")
+        if self.concurrency != 1:
+            raise ValueError(
+                "concurrency must be 1 in Phase 1 (the race path is a separate flag, "
+                f"not a Controls value), got {self.concurrency}"
+            )
+
+        if not isinstance(self.uncontrolled, (tuple, list)):
+            raise TypeError(
+                f"uncontrolled must be a tuple/list of non-empty strings, got "
+                f"{type(self.uncontrolled).__name__}"
+            )
+        for n in self.uncontrolled:
+            if not isinstance(n, str):
+                raise TypeError("uncontrolled must contain only non-empty strings")
+            if n == "":
+                raise ValueError("uncontrolled must not contain an empty string")
+        self.uncontrolled = tuple(self.uncontrolled)
+
+    def _effective_uncontrolled(self) -> tuple[str, ...]:
+        """Caller-declared uncontrolled confounders, plus `"csrf_token"` when a
+        CSRF header is required but no provider was supplied to pin it. Deduped,
+        insertion order preserved."""
+        names = list(self.uncontrolled)
+        if self.csrf_header_name is not None and self.csrf_provider is None:
+            names.append("csrf_token")
+        return tuple(dict.fromkeys(names))
+
+    @property
+    def has_uncontrolled(self) -> bool:
+        """True iff at least one confounder could not be pinned -> every verdict
+        for this finding must be forced to `inconclusive`."""
+        return len(self._effective_uncontrolled()) > 0
+
+    def pin(self, request: dict, trial_index: int) -> dict:
+        """Return a NEW request dict with this control set applied. Identical for
+        every trial except the cache-buster query param, which is
+        `_cb=<trial_index>` so each trial bypasses any response cache. Pure: the
+        only callable invoked is `csrf_provider` (when both it and
+        `csrf_header_name` are set). Never mutates `request`; scheme/host/path are
+        left untouched -- a cache-buster can never change the target host."""
+        if not isinstance(request, dict):
+            raise TypeError(f"request must be a dict, got {type(request).__name__}")
+        if not isinstance(request.get("url"), str):
+            raise TypeError("request must have a string 'url'")
+        if isinstance(trial_index, bool) or not isinstance(trial_index, int):
+            raise TypeError(f"trial_index must be an int, got {type(trial_index).__name__}")
+        if trial_index < 0:
+            raise ValueError(f"trial_index must be >= 0, got {trial_index}")
+
+        pinned = dict(request)
+        headers = dict(request.get("headers") or {})
+        headers.update(self.session_headers)
+        if self.csrf_header_name is not None and self.csrf_provider is not None:
+            token = self.csrf_provider()
+            if not isinstance(token, str):
+                raise TypeError(f"csrf_provider must return a string, got {type(token).__name__}")
+            headers[self.csrf_header_name] = token
+        pinned["headers"] = headers
+
+        if self.cache_buster:
+            pinned["url"] = _with_query_param(request["url"], _CB_PARAM, str(trial_index))
+        return pinned
+
+    def record(self) -> dict:
+        """JSON-serializable snapshot of this control set for
+        `cem_trials.controls` / `cem_verdicts.controls` and the Triager-Proof
+        Bundle. Header NAMES only -- values are session secrets and never go in
+        the DB or a report (security.md). Uncontrolled confounders are listed as
+        `"uncontrolled:<name>"` exactly as PHASE1-PLAN.md sec 9 specifies."""
+        if self.csrf_header_name is None:
+            csrf = "n/a"
+        elif self.csrf_provider is not None:
+            csrf = "pinned"
+        else:
+            csrf = "uncontrolled"
+        return {
+            "session_headers": sorted(self.session_headers),
+            "cache_buster": self.cache_buster,
+            "spacing_ms": self.spacing_ms,
+            "ordering": self.ordering,
+            "concurrency": self.concurrency,
+            "csrf": csrf,
+            "uncontrolled": [f"uncontrolled:{n}" for n in self._effective_uncontrolled()],
+        }
+
+
+def _with_query_param(url: str, key: str, value: str) -> str:
+    """Return `url` with `key=value` in the query string, replacing any existing
+    `key`. Scheme/host/path/fragment untouched (SSRF guard: a cache-buster can
+    never change the target host -- PHASE1-EXECUTION-PLAN.md sec 10)."""
+    parts = urlsplit(url)
+    query = [(k, v) for (k, v) in parse_qsl(parts.query, keep_blank_values=True) if k != key]
+    query.append((key, value))
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
+def apply_control_gate(verdict: str, controls: Controls) -> str:
+    """PHASE1-PLAN.md sec 9 / sec D: "any arm sees ... an uncontrolled confounder
+    -> `inconclusive`". The ONE place that rule lives -- D2's executor and the
+    E-layer MCP tools call it around `classify()` / `classify_race()` output;
+    `classify()` itself stays controls-unaware (C3-pinned). If `controls` has any
+    confounder that could not be pinned, the causal comparison is untrustworthy
+    and the verdict is forced to `inconclusive`; otherwise `verdict` is returned
+    unchanged (any of the 5 verdict strings passes through). Pure: no fetch, no
+    DB, no model call."""
+    if not isinstance(verdict, str):
+        raise TypeError(f"verdict must be a string, got {type(verdict).__name__}")
+    if verdict == "":
+        raise ValueError("verdict must not be an empty string")
+    if not isinstance(controls, Controls):
+        raise TypeError(f"controls must be a Controls instance, got {type(controls).__name__}")
+    if controls.has_uncontrolled:
+        return VERDICT_INCONCLUSIVE
+    return verdict
+
+
+# ---------------------------------------------------------------------------
+# Task D2: run_intervention -- the intervention executor loop
+# (PHASE1-PLAN.md "Intervention executor design")
+# ---------------------------------------------------------------------------
+# One call = ONE arm, k trials. perturbation=None -> baseline / determinism arm;
+# perturbation=<Callable[[dict], dict]> -> perturbed arm (the single perturbation
+# composed on top of the pinned request, once per trial -- "one variable at a
+# time" is the caller's contract). Pure loop: every side-effecting dependency
+# (fetch, sleep, budget, scope_check) is injected, so the module stays
+# MCP-free/network-free/testable and the server can pass the real
+# http_probe.fetch / time.sleep / budget_guard.enforce / a scope_guard-backed
+# check with zero adapter code. No 429 handling (D3), no partial/incomplete
+# bundle on budget exhaustion (F2 -- a budget_cb raise just propagates), no DB,
+# no evidence hashing.
+#
+# F3 SECURITY INVARIANT -- the scope boundary protects the URL that is ACTUALLY
+# fetched. The URL sent to the network is `perturbation(controls.pin(base, i))["url"]`
+# -- resolved per trial, AFTER the perturbation. A perturbation is arbitrary
+# caller-supplied code (today host-preserving; a future / corrupt / hostile one
+# need not be), so `run_intervention` re-verifies the FINAL resolved URL through
+# the injected `scope_check` immediately before `fetch_fn`, in the same loop
+# iteration -- the checked value and the fetched value are the same local
+# variable, one statement apart. A perturbed arm CANNOT run without a
+# `scope_check` (TypeError). This is why no perturbation type, present or future,
+# can route an out-of-scope request past the guard: there is no path from
+# "perturbation applied" to "fetch" that skips `scope_check(req["url"])`.
+#
+# F3b / UD-4 applies the identical shape to the outbound HTTP METHOD: an injected
+# `method_check`, also required for any perturbed arm, refuses a non-idempotent /
+# state-changing verb unless the finding carries an explicit authorization (see
+# `check_method_allowed` above).
+
+ARM_BASELINE = "baseline"
+ARM_PERTURBED = "perturbed"
+
+# ---------------------------------------------------------------------------
+# F3b / UD-4: non-idempotent / state-changing perturbation policy
+# (PHASE1-EXECUTION-PLAN.md UD-4 -- "refuse non-idempotent/non-GET perturbations
+#  unless a human explicitly approves per finding; no blanket override")
+# ---------------------------------------------------------------------------
+# CEM is controlled READ-ONLY counterfactual experimentation. The outbound HTTP
+# method of every trial of every arm -- `perturbation(controls.pin(base, i))
+# .get("method", "GET")`, resolved per trial -- must be a Phase-1 read-only verb
+# unless the finding's persisted CEM state carries an explicit, structured,
+# method-specific authorization. Pure policy; no MCP / no network / no DB. The
+# case-mcp senders adapt the return of `check_method_allowed` into an error-JSON
+# (sender fail-fast) or a `PerturbationRefused` raise (per-trial method_check).
+#
+# Phase-1 policy is METHOD-based only. A future policy that also inspects the
+# body (e.g. a GraphQL mutation over a POST-shaped GET) would widen the
+# per-trial callback -- a deliberate, reviewed signature change, exactly the bar
+# F3 set for `scope_check`.
+CEM_READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# The only verbs an approval may ever list. TRACE/CONNECT/custom verbs can never
+# be authorized -> a resolved method outside READ_ONLY ∪ APPROVABLE is refused
+# unconditionally (fail closed on the unknown).
+CEM_APPROVABLE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# A "harmless-looking method" is still state-changing if a header smuggles the
+# real verb past a framework that honours method override (Rails/Symfony/Spring/
+# many Java stacks). These header NAMES (lower-cased for a case-insensitive
+# match) are treated as carrying an effective method that must ALSO clear the
+# policy -- so `{"method": "GET", "headers": {"X-HTTP-Method-Override": "DELETE"}}`
+# is refused exactly like a bare DELETE.
+CEM_METHOD_OVERRIDE_HEADERS = frozenset({
+    "x-http-method-override", "x-http-method", "x-method-override",
+})
+
+
+def normalize_method(method) -> str:
+    """Canonical form for comparison: stripped + uppercased. A non-str (or None,
+    or all-whitespace) collapses to '' -- which is in neither method set, so it
+    fails closed everywhere."""
+    return method.strip().upper() if isinstance(method, str) else ""
+
+
+def validate_nonidempotent_approval(approval) -> tuple[frozenset, str | None]:
+    """`(approved_methods, None)` for a well-formed approval, else
+    `(frozenset(), reason)`. A valid approval is a JSON object:
+        {"methods": [<>=1 of POST/PUT/PATCH/DELETE>],
+         "reason": <non-empty str>, "authorized_by": <non-empty str>}
+    Anything else -> no method approved -> default deny. Pure, fail-closed."""
+    if not isinstance(approval, dict):
+        return frozenset(), "approval must be a JSON object {methods, reason, authorized_by}"
+    methods = approval.get("methods")
+    if not isinstance(methods, list) or not methods:
+        return frozenset(), "approval.methods must be a non-empty list"
+    norm = set()
+    for m in methods:
+        if not isinstance(m, str):
+            return frozenset(), f"approval.methods entries must be strings, got {type(m).__name__}"
+        mm = normalize_method(m)
+        if mm not in CEM_APPROVABLE_METHODS:
+            return frozenset(), (
+                f"approval.methods entry {m!r} is not an approvable state-changing method "
+                f"(allowed: {sorted(CEM_APPROVABLE_METHODS)})"
+            )
+        norm.add(mm)
+    for key in ("reason", "authorized_by"):
+        v = approval.get(key)
+        if not isinstance(v, str) or not v.strip():
+            return frozenset(), f"approval.{key} must be a non-empty string (deliberate, auditable)"
+    return frozenset(norm), None
+
+
+def check_method_allowed(method, approval) -> str | None:
+    """`None` if this one resolved HTTP verb may be sent by CEM, else a
+    human-readable refusal reason. Phase-1 policy: GET/HEAD/OPTIONS always pass;
+    every other method (POST/PUT/PATCH/DELETE, TRACE/CONNECT, a custom verb,
+    whitespace/garbage, a non-str) is REFUSED unless `approval` is a valid
+    per-finding authorization that explicitly lists it. Pure; fail-closed on
+    every malformed input; the finding's status (CONFIRMED / IMPACT_PROVEN) is
+    irrelevant here -- that's E3's job.
+
+    See `check_request_allowed` for the full per-request check (this verb PLUS
+    any method-override header)."""
+    m = normalize_method(method)
+    if m in CEM_READ_ONLY_METHODS:
+        return None
+    approved, err = validate_nonidempotent_approval(approval)
+    if err:
+        return (
+            f"non-idempotent CEM request refused: method {method!r} is not read-only and the "
+            f"finding has no valid state-change authorization ({err})"
+        )
+    if m not in approved:
+        return (
+            f"non-idempotent CEM request refused: method {method!r} is not covered by the "
+            f"finding's state-change authorization (authorized: {sorted(approved)})"
+        )
+    return None
+
+
+def check_request_allowed(method, headers, approval) -> str | None:
+    """`None` if the fully-resolved outbound request may be sent by CEM, else a
+    refusal reason. Checks the HTTP verb AND every method-override header
+    (`CEM_METHOD_OVERRIDE_HEADERS`): each effective method must independently
+    clear `check_method_allowed`. So a request that *looks* like a GET but
+    carries `X-HTTP-Method-Override: DELETE` is refused exactly like a bare
+    DELETE. `headers` may be any mapping (or None); non-str keys/values are
+    ignored for the name match but a non-str override *value* -> '' -> refused."""
+    reason = check_method_allowed(method, approval)
+    if reason is not None:
+        return reason
+    items = headers.items() if hasattr(headers, "items") else ()
+    for name, value in items:
+        if isinstance(name, str) and name.strip().lower() in CEM_METHOD_OVERRIDE_HEADERS:
+            reason = check_method_allowed(value, approval)
+            if reason is not None:
+                return (
+                    f"non-idempotent CEM request refused: header {name!r} carries an effective "
+                    f"method {value!r} that is not allowed -- {reason}"
+                )
+    return None
+
+# Task D3: the throttle signal is HTTP 429 only (PHASE1-PLAN.md always says
+# "429/throttle"; FetchResult carries no headers so Retry-After is unavailable).
+# A 429 in any arm means the causal comparison is rate-limit contaminated -- a
+# perturbed MISS could be the limiter, not the perturbation -> a false
+# `necessary` -- so `apply_throttle_gate` forces the verdict to `inconclusive`,
+# and `run_intervention` aborts the arm on the first 429 (stop hammering an
+# in-scope target). Human-approved 2026-09-07 via AskUserQuestion.
+THROTTLE_STATUS = 429
+
+
+@dataclass
+class Trial:
+    """One observed trial within a run_intervention arm (PHASE1-PLAN.md sec 6).
+    `request` is the exact dict handed to fetch_fn (pinned, then perturbed for the
+    perturbed arm); `response` is the raw FetchResult. This is the pre-DB,
+    pre-evidence-hashing shape -- the E-layer content-addresses request/response
+    into cem_trials.request_evidence_hash / response_evidence_hash and persists
+    arm / k_index / http_status / oracle_hit."""
+    arm: str
+    k_index: int
+    http_status: int | None
+    oracle_hit: bool
+    request: dict
+    response: FetchResult
+
+
+def run_intervention(
+    base_request: dict,
+    controls: Controls,
+    perturbation: Callable[[dict], dict] | None,
+    k: int,
+    budget_cb: Callable[[], None],
+    success_signature: SuccessSignature,
+    fetch_fn: FetchFn,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    scope_check: Callable[[str], None] | None = None,
+    method_check: Callable[[dict], None] | None = None,
+) -> list[Trial]:
+    """Run one arm of a CEM intervention: k trials of `base_request`, each with
+    `controls` pinned identically (fresh CSRF + a per-trial-unique cache-buster),
+    the single `perturbation` composed on top for the perturbed arm, checked
+    against `success_signature`. `perturbation=None` is the baseline / determinism
+    arm.
+
+    Per trial, in order: an inter-trial `sleep_fn(controls.spacing_ms / 1000)`
+    (only BETWEEN trials -- k-1 times, never before the first or after the last,
+    and skipped when `spacing_ms == 0`); `controls.pin(base_request, i)`;
+    `perturbation(...)` once if given; then -- with the request now FULLY
+    resolved -- `method_check(req)` (UD-4: is this outbound request read-only for
+    CEM -- its verb AND any method-override header), then `scope_check(url)` (F1:
+    is the outbound URL in scope), then `budget_cb()` (E2/F2: count a request
+    only if method+scope passed -- method > scope > budget > fetch); then
+    `fetch_fn(url, method, headers, body, timeout_s)` (injected, matching
+    `http_probe.fetch`'s signature -- C2's anti-duplication precedent); and
+    `evaluate_signature`. `method` and `url` are each resolved ONCE into a local
+    and that same local is both checked (via `req`) and passed to `fetch_fn`.
+    Whatever `method_check` / `scope_check` / `budget_cb` raises propagates and
+    stops the arm before that trial's fetch. A fetch-error result never satisfies
+    the signature, so error trials are MISS (as C2).
+
+    `scope_check` (F3): `Callable[[str], None]` -- given the final resolved URL,
+    raise (typically `ScopeDenied`) if out of scope, else return.
+    `method_check` (F3b/UD-4): `Callable[[dict], None]` -- given the final
+    resolved request dict, raise (typically `PerturbationRefused`) if it is not
+    read-only for CEM (a non-idempotent verb, or a method-override header, the
+    finding is not authorized for), else return.
+    BOTH are REQUIRED whenever `perturbation is not None` (a perturbed arm can
+    rewrite either the URL or the method, so neither may run unguarded); optional
+    for the baseline arm (the server passes both there too, defence in depth).
+    `None` is only for pure-loop unit tests asserting non-security mechanics of
+    the baseline arm.
+
+    Task D3: if a trial comes back HTTP 429 the arm is rate-limit contaminated --
+    the 429 `Trial` is appended (it is the evidence) and the loop then breaks, so
+    a throttled arm returns FEWER than k trials. `throttled_in()` /
+    `apply_throttle_gate()` turn that into `inconclusive`; a network error
+    (status None) is NOT a throttle and does not abort.
+
+    Returns `list[Trial]` in trial order; the hit sequence for `classify()` /
+    `determinism_gate()` semantics is `[t.oracle_hit for t in trials]` (and is
+    only length-k when the arm was not throttled). Never mutates `base_request`;
+    never calls the real `http_probe.fetch`."""
+    if not isinstance(base_request, dict):
+        raise TypeError(f"base_request must be a dict, got {type(base_request).__name__}")
+    if not isinstance(controls, Controls):
+        raise TypeError(f"controls must be a Controls instance, got {type(controls).__name__}")
+    if perturbation is not None and not callable(perturbation):
+        raise TypeError("perturbation must be callable or None")
+    if isinstance(k, bool) or not isinstance(k, int):
+        raise TypeError(f"k must be an int, got {type(k).__name__}")
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}")
+    if not callable(budget_cb):
+        raise TypeError("budget_cb must be callable")
+    if not isinstance(success_signature, SuccessSignature):
+        raise TypeError(
+            f"run_intervention requires a SuccessSignature instance, got "
+            f"{type(success_signature).__name__}"
+        )
+    if not callable(fetch_fn):
+        raise TypeError("fetch_fn must be callable")
+    if not callable(sleep_fn):
+        raise TypeError("sleep_fn must be callable")
+    if scope_check is not None and not callable(scope_check):
+        raise TypeError("scope_check must be callable or None")
+    if method_check is not None and not callable(method_check):
+        raise TypeError("method_check must be callable or None")
+    if perturbation is not None and scope_check is None:
+        raise TypeError(
+            "run_intervention: a perturbed arm requires scope_check -- the "
+            "perturbation can rewrite the outbound URL after the sender's "
+            "base-URL scope check, so the FINAL resolved URL must be re-verified "
+            "per trial before it is fetched (F3 security invariant)."
+        )
+    if perturbation is not None and method_check is None:
+        raise TypeError(
+            "run_intervention: a perturbed arm requires method_check -- the "
+            "perturbation can rewrite the outbound HTTP method, so the FINAL "
+            "resolved method must be re-verified per trial before it is fetched "
+            "(F3b / UD-4: non-idempotent / state-changing perturbation refusal)."
+        )
+
+    arm = ARM_BASELINE if perturbation is None else ARM_PERTURBED
+    spacing_s = controls.spacing_ms / 1000
+    trials: list[Trial] = []
+
+    for i in range(k):
+        if i > 0 and controls.spacing_ms > 0:
+            sleep_fn(spacing_s)
+
+        req = controls.pin(base_request, i)
+        if perturbation is not None:
+            req = perturbation(req)
+            if not isinstance(req, dict):
+                raise TypeError(
+                    f"perturbation must return a dict, got {type(req).__name__}"
+                )
+
+        # The request is now fully resolved. Resolve the outbound METHOD and URL
+        # each ONCE into a local, then check and fetch THAT SAME value -- never a
+        # second `req[...]` read (a hostile perturbation could return a dict
+        # subclass whose .get() and [] diverge). Order: method (UD-4) -> scope
+        # (F1) -> budget (F2) -> fetch. Whatever a check raises stops the arm
+        # before this trial's fetch, and a request a check refuses is never
+        # counted against the budget. No perturbation type -- present, future, or
+        # hostile -- can route a disallowed method or an out-of-scope URL past
+        # these guards: there is no path from "perturbation applied" to "fetch"
+        # that skips them.
+        outbound_method = req.get("method", "GET")
+        outbound_url = req.get("url")
+        if method_check is not None:
+            method_check(req)          # UD-4: verb + any method-override header
+        if scope_check is not None:
+            scope_check(outbound_url)
+        budget_cb()
+
+        result = fetch_fn(
+            outbound_url,
+            outbound_method,
+            req.get("headers") or {},
+            req.get("body"),
+            DEFAULT_TIMEOUT_S,
+        )
+        trials.append(
+            Trial(
+                arm=arm,
+                k_index=i,
+                http_status=result.status,
+                oracle_hit=evaluate_signature(result, success_signature),
+                request=req,
+                response=result,
+            )
+        )
+        if result.status == THROTTLE_STATUS:
+            # D3: rate-limit contaminated -- stop hammering the target; the 429
+            # Trial stays as evidence and apply_throttle_gate() -> inconclusive.
+            break
+
+    return trials
+
+
+def throttled_in(trials: list[Trial]) -> bool:
+    """True iff any trial in the arm came back HTTP 429 (PHASE1-PLAN.md
+    "Rate-limit contamination"). The arm's causal comparison cannot be trusted --
+    a perturbed MISS could be the rate limiter, not the perturbation. Parallel to
+    `Controls.has_uncontrolled`; `apply_throttle_gate()` turns this into a forced
+    `inconclusive`. An empty list is not throttled."""
+    if not isinstance(trials, (list, tuple)):
+        raise TypeError(f"trials must be a list of Trial, got {type(trials).__name__}")
+    for t in trials:
+        if not isinstance(t, Trial):
+            raise TypeError(
+                f"trials must contain only Trial instances, got {type(t).__name__}"
+            )
+    return any(t.http_status == THROTTLE_STATUS for t in trials)
+
+
+def apply_throttle_gate(verdict: str, trials: list[Trial]) -> str:
+    """PHASE1-PLAN.md sec D / "Rate-limit contamination": "any arm sees 429/
+    throttle -> `inconclusive`". The ONE place that rule lives -- D2's executor /
+    the E-layer call it around `classify()` / `classify_race()` output, exactly
+    like `apply_control_gate` for uncontrolled confounders; `classify()` itself
+    stays status-blind (C3-pinned). If any trial in `trials` was HTTP 429 the
+    verdict is forced to `inconclusive` regardless of what was passed in (so a
+    throttled arm can never yield `necessary`); otherwise `verdict` is returned
+    unchanged. Pure: no fetch, no DB, no model call."""
+    if not isinstance(verdict, str):
+        raise TypeError(f"verdict must be a string, got {type(verdict).__name__}")
+    if verdict == "":
+        raise ValueError("verdict must not be an empty string")
+    if throttled_in(trials):
+        return VERDICT_INCONCLUSIVE
+    return verdict

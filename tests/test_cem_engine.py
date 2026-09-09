@@ -154,13 +154,19 @@ first prove the fixture is non-vacuous (redact_text really does change it on its
 own) before relying on it disappearing from the assembled bundle -- otherwise a
 totally broken redaction pass could pass the bundle-level tests by accident.
 """
+import dataclasses
 import inspect
 import json
+from urllib.parse import parse_qsl, urlsplit
 
 import pytest
 from cem_engine import (
+    ARM_BASELINE,
+    ARM_PERTURBED,
+    THROTTLE_STATUS,
     AlternateSetsResult,
     AndNecessityGroup,
+    Controls,
     DeterminismResult,
     InteractionEvidence,
     MinimalSetResult,
@@ -168,6 +174,9 @@ from cem_engine import (
     RaceResult,
     SimilarityToBaseline,
     SuccessSignature,
+    Trial,
+    apply_control_gate,
+    apply_throttle_gate,
     assemble_bundle,
     classify,
     classify_race,
@@ -177,6 +186,8 @@ from cem_engine import (
     find_and_necessity_groups,
     minimal_condition_sets,
     minimize_poc,
+    run_intervention,
+    throttled_in,
 )
 from http_probe import FetchResult
 from redact import redact_text
@@ -2153,3 +2164,810 @@ def test_assemble_bundle_signature_has_the_12_named_parameters_in_order():
         "audit_trail",
         "k",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Task D1: Controls dataclass + pinning helpers + apply_control_gate
+# (PHASE1-EXECUTION-PLAN.md task D1; PHASE1-PLAN.md sec 9). API shape
+# (methods on Controls + a module-level gate fn; full csrf_provider injection)
+# human-approved 2026-09-07, per the C4/C5/C6 "plan names the behavior, not the
+# signature -> stop and ask" precedent.
+# ---------------------------------------------------------------------------
+
+_BASE_REQ = {"method": "GET", "url": "https://t.example/doc/1", "headers": {}, "body": None}
+
+
+def test_controls_defaults_construct():
+    c = Controls()
+    assert c.session_headers == {}
+    assert c.cache_buster is True
+    assert c.spacing_ms == 0
+    assert c.ordering == "sequential"
+    assert c.concurrency == 1
+    assert c.csrf_header_name is None
+    assert c.csrf_provider is None
+    assert c.uncontrolled == ()
+    assert c.has_uncontrolled is False
+
+
+def test_controls_session_headers_must_be_str_dict():
+    with pytest.raises(TypeError):
+        Controls(session_headers=["Cookie: x"])
+    with pytest.raises(TypeError):
+        Controls(session_headers={"Cookie": 1})
+    with pytest.raises(TypeError):
+        Controls(session_headers={1: "v"})
+
+
+def test_controls_cache_buster_must_be_bool():
+    with pytest.raises(TypeError):
+        Controls(cache_buster="yes")
+    with pytest.raises(TypeError):
+        Controls(cache_buster=1)
+
+
+def test_controls_spacing_ms_int_nonnegative():
+    assert Controls(spacing_ms=250).spacing_ms == 250
+    with pytest.raises(TypeError):
+        Controls(spacing_ms=1.5)
+    with pytest.raises(TypeError):
+        Controls(spacing_ms=True)
+    with pytest.raises(ValueError):
+        Controls(spacing_ms=-1)
+
+
+def test_controls_ordering_must_be_sequential_in_phase1():
+    assert Controls(ordering="sequential").ordering == "sequential"
+    with pytest.raises(ValueError):
+        Controls(ordering="parallel")
+    with pytest.raises(ValueError):
+        Controls(ordering="random")
+
+
+def test_controls_concurrency_must_be_one_in_phase1():
+    assert Controls(concurrency=1).concurrency == 1
+    with pytest.raises(ValueError):
+        Controls(concurrency=2)
+    with pytest.raises(TypeError):
+        Controls(concurrency=True)
+
+
+def test_controls_csrf_header_name_type_and_nonempty():
+    assert Controls(csrf_header_name="X-CSRF-Token", csrf_provider=lambda: "t").csrf_header_name == "X-CSRF-Token"
+    with pytest.raises(TypeError):
+        Controls(csrf_header_name=123)
+    with pytest.raises(ValueError):
+        Controls(csrf_header_name="")
+
+
+def test_controls_csrf_provider_must_be_callable():
+    with pytest.raises(TypeError):
+        Controls(csrf_header_name="X-CSRF", csrf_provider="not-callable")
+
+
+def test_controls_uncontrolled_must_be_str_iterable():
+    assert Controls(uncontrolled=["session_state"]).uncontrolled == ("session_state",)
+    assert Controls(uncontrolled=("a", "b")).uncontrolled == ("a", "b")
+    with pytest.raises(TypeError):
+        Controls(uncontrolled="session_state")  # a bare str is not a list of names
+    with pytest.raises(ValueError):
+        Controls(uncontrolled=[""])
+    with pytest.raises(TypeError):
+        Controls(uncontrolled=[1])
+
+
+# --- has_uncontrolled / _effective_uncontrolled -------------------------------
+
+def test_has_uncontrolled_false_when_clean():
+    assert Controls().has_uncontrolled is False
+    assert Controls(session_headers={"Cookie": "sid=abc"}, cache_buster=True).has_uncontrolled is False
+
+
+def test_has_uncontrolled_true_for_caller_declared():
+    assert Controls(uncontrolled=("session_state",)).has_uncontrolled is True
+
+
+def test_csrf_required_without_provider_is_uncontrolled():
+    c = Controls(csrf_header_name="X-CSRF-Token")  # no provider
+    assert c.has_uncontrolled is True
+    assert "csrf_token" in c._effective_uncontrolled()
+
+
+def test_csrf_with_provider_is_pinned_not_uncontrolled():
+    c = Controls(csrf_header_name="X-CSRF-Token", csrf_provider=lambda: "tok")
+    assert c.has_uncontrolled is False
+    assert "csrf_token" not in c._effective_uncontrolled()
+
+
+def test_effective_uncontrolled_dedupes():
+    c = Controls(csrf_header_name="X-CSRF", uncontrolled=("csrf_token", "csrf_token", "x"))
+    assert c._effective_uncontrolled() == ("csrf_token", "x")
+
+
+# --- pin() ------------------------------------------------------------------
+
+def test_pin_merges_session_headers_identically_every_trial():
+    c = Controls(session_headers={"Cookie": "sid=abc", "Authorization": "Bearer z"}, cache_buster=False)
+    p0 = c.pin(_BASE_REQ, 0)
+    p1 = c.pin(_BASE_REQ, 1)
+    assert p0["headers"] == {"Cookie": "sid=abc", "Authorization": "Bearer z"}
+    assert p1["headers"] == p0["headers"]
+
+
+def test_pin_preserves_and_overrides_existing_headers():
+    req = {**_BASE_REQ, "headers": {"Accept": "*/*", "Cookie": "old"}}
+    c = Controls(session_headers={"Cookie": "sid=new"}, cache_buster=False)
+    p = c.pin(req, 0)
+    assert p["headers"] == {"Accept": "*/*", "Cookie": "sid=new"}
+
+
+def test_pin_cache_buster_is_per_trial_unique():
+    c = Controls(cache_buster=True)
+    u0 = c.pin(_BASE_REQ, 0)["url"]
+    u1 = c.pin(_BASE_REQ, 1)["url"]
+    assert "_cb=0" in u0
+    assert "_cb=1" in u1
+    assert u0 != u1
+
+
+def test_pin_cache_buster_off_leaves_url_untouched():
+    c = Controls(cache_buster=False)
+    assert c.pin(_BASE_REQ, 3)["url"] == _BASE_REQ["url"]
+
+
+def test_pin_cache_buster_preserves_scheme_host_path_and_existing_query():
+    req = {**_BASE_REQ, "url": "https://t.example/doc/1?ref=a&x=1#frag"}
+    c = Controls(cache_buster=True)
+    out = c.pin(req, 7)
+    parts = urlsplit(out["url"])
+    assert (parts.scheme, parts.netloc, parts.path, parts.fragment) == ("https", "t.example", "/doc/1", "frag")
+    q = dict(parse_qsl(parts.query))
+    assert q["ref"] == "a" and q["x"] == "1" and q["_cb"] == "7"
+
+
+def test_pin_cache_buster_replaces_stale_cb():
+    req = {**_BASE_REQ, "url": "https://t.example/doc/1?_cb=99"}
+    out = Controls(cache_buster=True).pin(req, 2)
+    assert parse_qsl(urlsplit(out["url"]).query).count(("_cb", "99")) == 0
+    assert ("_cb", "2") in parse_qsl(urlsplit(out["url"]).query)
+
+
+def test_pin_calls_csrf_provider_once_per_trial_and_sets_header():
+    calls = []
+    def prov():
+        calls.append(1)
+        return f"tok{len(calls)}"
+    c = Controls(csrf_header_name="X-CSRF-Token", csrf_provider=prov, cache_buster=False)
+    p0 = c.pin(_BASE_REQ, 0)
+    p1 = c.pin(_BASE_REQ, 1)
+    assert p0["headers"]["X-CSRF-Token"] == "tok1"
+    assert p1["headers"]["X-CSRF-Token"] == "tok2"
+    assert len(calls) == 2
+
+
+def test_pin_does_not_call_provider_when_absent():
+    c = Controls(csrf_header_name="X-CSRF-Token")  # no provider
+    p = c.pin(_BASE_REQ, 0)
+    assert "X-CSRF-Token" not in p["headers"]
+
+
+def test_pin_rejects_non_str_provider_return():
+    c = Controls(csrf_header_name="X-CSRF", csrf_provider=lambda: 123)
+    with pytest.raises(TypeError):
+        c.pin(_BASE_REQ, 0)
+
+
+def test_pin_does_not_mutate_input_request():
+    req = {**_BASE_REQ, "headers": {"Accept": "*/*"}}
+    snap = json.loads(json.dumps(req))
+    Controls(session_headers={"Cookie": "x"}, cache_buster=True).pin(req, 0)
+    assert req == snap
+
+
+def test_pin_trial_index_validation():
+    c = Controls()
+    with pytest.raises(TypeError):
+        c.pin(_BASE_REQ, "0")
+    with pytest.raises(TypeError):
+        c.pin(_BASE_REQ, True)
+    with pytest.raises(ValueError):
+        c.pin(_BASE_REQ, -1)
+
+
+def test_pin_request_validation():
+    c = Controls()
+    with pytest.raises(TypeError):
+        c.pin("not-a-dict", 0)
+    with pytest.raises(TypeError):
+        c.pin({"method": "GET"}, 0)  # no usable string url
+
+
+def test_pin_is_deterministic_for_a_deterministic_provider():
+    c = Controls(session_headers={"Cookie": "x"}, csrf_header_name="X-CSRF",
+                 csrf_provider=lambda: "fixed", cache_buster=True)
+    assert c.pin(_BASE_REQ, 4) == c.pin(_BASE_REQ, 4)
+
+
+def test_pin_never_calls_http_probe_fetch(monkeypatch):
+    import http_probe
+    def _forbidden(*a, **k):
+        raise AssertionError("Controls.pin must never call the real http_probe.fetch")
+    monkeypatch.setattr(http_probe, "fetch", _forbidden)
+    Controls(session_headers={"Cookie": "x"}, csrf_header_name="X-CSRF",
+             csrf_provider=lambda: "t", cache_buster=True).pin(_BASE_REQ, 0)
+
+
+# --- record() -------------------------------------------------------------
+
+def test_record_stores_header_names_only_never_values():
+    secret = "sid=SUPERSECRETVALUE"
+    c = Controls(session_headers={"Cookie": secret, "Authorization": "Bearer LEAKME"})
+    rec = c.record()
+    assert rec["session_headers"] == ["Authorization", "Cookie"]
+    blob = json.dumps(rec)
+    assert "SUPERSECRETVALUE" not in blob
+    assert "LEAKME" not in blob
+
+
+def test_record_carries_pinned_config():
+    c = Controls(cache_buster=True, spacing_ms=300, ordering="sequential", concurrency=1)
+    rec = c.record()
+    assert rec["cache_buster"] is True
+    assert rec["spacing_ms"] == 300
+    assert rec["ordering"] == "sequential"
+    assert rec["concurrency"] == 1
+
+
+def test_record_uncontrolled_entries_use_plan_prefix():
+    c = Controls(uncontrolled=("session_state",), csrf_header_name="X-CSRF")  # csrf unpinnable
+    rec = c.record()
+    assert set(rec["uncontrolled"]) == {"uncontrolled:session_state", "uncontrolled:csrf_token"}
+
+
+def test_record_uncontrolled_empty_when_clean():
+    assert Controls().record()["uncontrolled"] == []
+
+
+def test_record_csrf_status():
+    assert Controls().record()["csrf"] == "n/a"
+    assert Controls(csrf_header_name="X-CSRF").record()["csrf"] == "uncontrolled"
+    assert Controls(csrf_header_name="X-CSRF", csrf_provider=lambda: "t").record()["csrf"] == "pinned"
+
+
+def test_record_is_json_serializable():
+    c = Controls(session_headers={"Cookie": "x"}, uncontrolled=("y",), csrf_header_name="X-CSRF")
+    assert json.loads(json.dumps(c.record())) == c.record()
+
+
+# --- apply_control_gate() -----------------------------------------------------
+
+def test_apply_control_gate_passthrough_when_clean():
+    clean = Controls(session_headers={"Cookie": "x"})
+    for v in ("necessary", "apparently_not_necessary", "inconclusive", "interacting", "probabilistic"):
+        assert apply_control_gate(v, clean) == v
+
+
+def test_apply_control_gate_forces_inconclusive_when_uncontrolled():
+    dirty = Controls(uncontrolled=("session_state",))
+    for v in ("necessary", "apparently_not_necessary", "inconclusive", "interacting", "probabilistic"):
+        assert apply_control_gate(v, dirty) == "inconclusive"
+
+
+def test_apply_control_gate_acceptance_criterion_uncontrolled_confounder_to_inconclusive():
+    # PHASE1-EXECUTION-PLAN.md D1 accept: uncontrolled confounder -> inconclusive.
+    dirty = Controls(csrf_header_name="X-CSRF-Token")  # required, no provider -> unpinnable
+    necessary = classify([True] * 5, [False] * 5, 5)
+    assert necessary == "necessary"
+    assert apply_control_gate(necessary, dirty) == "inconclusive"
+    # and the clean counterpart is untouched
+    assert apply_control_gate(classify([True] * 5, [False] * 5, 5), Controls()) == "necessary"
+
+
+def test_apply_control_gate_validation():
+    with pytest.raises(TypeError):
+        apply_control_gate(123, Controls())
+    with pytest.raises(ValueError):
+        apply_control_gate("", Controls())
+    with pytest.raises(TypeError):
+        apply_control_gate("necessary", {"uncontrolled": []})
+
+
+def test_apply_control_gate_never_calls_http_probe_fetch(monkeypatch):
+    import http_probe
+    def _forbidden(*a, **k):
+        raise AssertionError("apply_control_gate must never call the real http_probe.fetch")
+    monkeypatch.setattr(http_probe, "fetch", _forbidden)
+    apply_control_gate("necessary", Controls(uncontrolled=("x",)))
+
+
+def test_apply_control_gate_signature_is_verdict_controls():
+    assert list(inspect.signature(apply_control_gate).parameters) == ["verdict", "controls"]
+
+
+def test_controls_field_order_is_pinned():
+    assert [f.name for f in dataclasses.fields(Controls)] == [
+        "session_headers",
+        "csrf_header_name",
+        "csrf_provider",
+        "cache_buster",
+        "ordering",
+        "spacing_ms",
+        "concurrency",
+        "uncontrolled",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Task D2: run_intervention -- the intervention executor loop
+# (PHASE1-EXECUTION-PLAN.md task D2; PHASE1-PLAN.md "Intervention executor
+# design"). Signature is explicit in the plan; success_signature/fetch_fn are
+# structurally required (C2 precedent); perturbation = injected Callable[[dict],
+# dict] and sleep_fn = injected Callable[[float], None] were human-approved
+# 2026-09-07 via AskUserQuestion (2 questions).
+# ---------------------------------------------------------------------------
+
+_D2_SIG = SuccessSignature(status_in=[200])
+
+
+def _fetch_seq(*statuses):
+    """A fake fetch_fn returning FetchResult(status=s) for each call in order;
+    a status of None -> an error result. Records every call's positional args."""
+    calls = []
+    it = iter(statuses)
+
+    def _fetch(url, method, headers, body, timeout_s):
+        calls.append((url, method, dict(headers), body, timeout_s))
+        s = next(it)
+        if s is None:
+            return FetchResult(status=None, body="", error="boom")
+        return FetchResult(status=s, body="")
+
+    _fetch.calls = calls
+    return _fetch
+
+
+def _noop_budget():
+    pass
+
+
+def _noop_scope(_url):
+    # F3: a perturbed arm requires a scope_check; these pure-loop tests assert
+    # non-scope mechanics, so they pass a trivial pass-through.
+    pass
+
+
+def _noop_method(_req):
+    # F3b/UD-4: a perturbed arm also requires a method_check (given the resolved
+    # request dict); trivial pass-through for pure-loop tests.
+    pass
+
+
+def _base(url="https://t.example/doc/1"):
+    return {"method": "GET", "url": url, "headers": {}, "body": None}
+
+
+def test_run_intervention_signature_is_pinned():
+    assert list(inspect.signature(run_intervention).parameters) == [
+        "base_request",
+        "controls",
+        "perturbation",
+        "k",
+        "budget_cb",
+        "success_signature",
+        "fetch_fn",
+        "sleep_fn",
+        "scope_check",
+        "method_check",
+    ]
+
+
+def test_run_intervention_baseline_arm_runs_k_trials():
+    fetch = _fetch_seq(200, 200, 200)
+    trials = run_intervention(_base(), Controls(cache_buster=False), None, 3, _noop_budget, _D2_SIG, fetch)
+    assert len(trials) == 3
+    assert [t.arm for t in trials] == [ARM_BASELINE] * 3
+    assert [t.k_index for t in trials] == [0, 1, 2]
+    assert all(isinstance(t, Trial) for t in trials)
+    assert len(fetch.calls) == 3
+
+
+def test_run_intervention_perturbed_arm_tagged():
+    fetch = _fetch_seq(200, 200)
+    trials = run_intervention(_base(), Controls(cache_buster=False), lambda r: r, 2,
+                              _noop_budget, _D2_SIG, fetch, scope_check=_noop_scope, method_check=_noop_method)
+    assert [t.arm for t in trials] == [ARM_PERTURBED, ARM_PERTURBED]
+
+
+def test_run_intervention_calls_fetch_exactly_k_times():
+    fetch = _fetch_seq(*([200] * 5))
+    run_intervention(_base(), Controls(cache_buster=False), None, 5, _noop_budget, _D2_SIG, fetch)
+    assert len(fetch.calls) == 5
+
+
+def test_run_intervention_budget_cb_called_once_per_request():
+    n = []
+    fetch = _fetch_seq(*([200] * 4))
+    run_intervention(_base(), Controls(cache_buster=False), None, 4,
+                     lambda: n.append(1), _D2_SIG, fetch)
+    assert len(n) == 4
+
+
+def test_run_intervention_budget_cb_raise_stops_sending_before_that_fetch():
+    calls = []
+    fetch = _fetch_seq(*([200] * 5))
+
+    def budget():
+        calls.append(1)
+        if len(calls) == 3:
+            raise RuntimeError("budget exceeded")
+
+    with pytest.raises(RuntimeError, match="budget exceeded"):
+        run_intervention(_base(), Controls(cache_buster=False), None, 5, budget, _D2_SIG, fetch)
+    assert len(calls) == 3          # budget checked for trial 3
+    assert len(fetch.calls) == 2    # ...but trial 3's fetch never ran
+
+
+def test_run_intervention_one_variable_at_a_time_baseline_is_pinned_only():
+    c = Controls(session_headers={"Cookie": "sid=x"}, cache_buster=True)
+    fetch = _fetch_seq(200, 200)
+    trials = run_intervention(_base(), c, None, 2, _noop_budget, _D2_SIG, fetch)
+    assert trials[0].request == c.pin(_base(), 0)
+    assert trials[1].request == c.pin(_base(), 1)
+
+
+def test_run_intervention_perturbation_composes_after_pin_once_per_trial():
+    c = Controls(session_headers={"Cookie": "sid=x"}, cache_buster=True)
+    seen = []
+
+    def perturb(req):
+        seen.append(req)
+        return {**req, "headers": {**req["headers"], "X-Perturb": "1"}}
+
+    fetch = _fetch_seq(200, 200, 200)
+    trials = run_intervention(_base(), c, perturb, 3, _noop_budget, _D2_SIG, fetch,
+                              scope_check=_noop_scope, method_check=_noop_method)
+    # perturbation saw exactly the pinned request for each trial
+    assert seen == [c.pin(_base(), 0), c.pin(_base(), 1), c.pin(_base(), 2)]
+    # and the request actually sent is pin -> perturb, applied once
+    assert trials[0].request == perturb(c.pin(_base(), 0))
+    assert trials[0].request["headers"]["X-Perturb"] == "1"
+
+
+def test_run_intervention_sleeps_between_trials_only():
+    slept = []
+    fetch = _fetch_seq(*([200] * 4))
+    run_intervention(_base(), Controls(cache_buster=False, spacing_ms=200), None, 4,
+                     _noop_budget, _D2_SIG, fetch, sleep_fn=lambda s: slept.append(s))
+    assert slept == [0.2, 0.2, 0.2]   # k-1 sleeps, never after the last
+
+
+def test_run_intervention_no_sleep_when_spacing_zero():
+    slept = []
+    fetch = _fetch_seq(*([200] * 3))
+    run_intervention(_base(), Controls(cache_buster=False, spacing_ms=0), None, 3,
+                     _noop_budget, _D2_SIG, fetch, sleep_fn=lambda s: slept.append(s))
+    assert slept == []
+
+
+def test_run_intervention_no_sleep_for_k_equals_one():
+    slept = []
+    fetch = _fetch_seq(200)
+    run_intervention(_base(), Controls(cache_buster=False, spacing_ms=500), None, 1,
+                     _noop_budget, _D2_SIG, fetch, sleep_fn=lambda s: slept.append(s))
+    assert slept == []
+
+
+def test_run_intervention_oracle_hit_matches_evaluate_signature():
+    fetch = _fetch_seq(200, 403, 200, None)
+    trials = run_intervention(_base(), Controls(cache_buster=False), None, 4, _noop_budget, _D2_SIG, fetch)
+    assert [t.oracle_hit for t in trials] == [True, False, True, False]  # 403 miss, error miss
+
+
+def test_run_intervention_trial_carries_status_request_response():
+    fetch = _fetch_seq(200, 403)
+    trials = run_intervention(_base(), Controls(cache_buster=False), None, 2, _noop_budget, _D2_SIG, fetch)
+    assert trials[0].http_status == 200
+    assert trials[1].http_status == 403
+    assert isinstance(trials[0].response, FetchResult)
+    assert isinstance(trials[0].request, dict)
+
+
+def test_run_intervention_error_result_status_is_none_and_miss():
+    fetch = _fetch_seq(None)
+    trials = run_intervention(_base(), Controls(cache_buster=False), None, 1, _noop_budget, _D2_SIG, fetch)
+    assert trials[0].http_status is None
+    assert trials[0].oracle_hit is False
+
+
+def test_run_intervention_passes_fetch_positional_args_from_pinned_request():
+    c = Controls(session_headers={"Cookie": "sid=x"}, cache_buster=True)
+    fetch = _fetch_seq(200)
+    run_intervention(_base(), c, None, 1, _noop_budget, _D2_SIG, fetch)
+    url, method, headers, body, timeout_s = fetch.calls[0]
+    pinned = c.pin(_base(), 0)
+    assert url == pinned["url"] and "_cb=0" in url
+    assert method == "GET"
+    assert headers == {"Cookie": "sid=x"}
+    assert body is None
+    assert isinstance(timeout_s, (int, float))
+
+
+def test_run_intervention_cache_buster_unique_per_trial():
+    fetch = _fetch_seq(200, 200, 200)
+    run_intervention(_base(), Controls(cache_buster=True), None, 3, _noop_budget, _D2_SIG, fetch)
+    urls = [c[0] for c in fetch.calls]
+    assert "_cb=0" in urls[0] and "_cb=1" in urls[1] and "_cb=2" in urls[2]
+
+
+def test_run_intervention_mints_csrf_per_trial():
+    minted = []
+    def prov():
+        minted.append(1)
+        return f"tok{len(minted)}"
+    c = Controls(csrf_header_name="X-CSRF-Token", csrf_provider=prov, cache_buster=False)
+    fetch = _fetch_seq(200, 200)
+    run_intervention(_base(), c, None, 2, _noop_budget, _D2_SIG, fetch)
+    assert [call[2]["X-CSRF-Token"] for call in fetch.calls] == ["tok1", "tok2"]
+    assert len(minted) == 2
+
+
+def test_run_intervention_does_not_mutate_base_request():
+    req = _base()
+    snap = json.loads(json.dumps(req))
+    fetch = _fetch_seq(200, 200)
+    run_intervention(req, Controls(session_headers={"Cookie": "x"}, cache_buster=True), None, 2,
+                     _noop_budget, _D2_SIG, fetch)
+    assert req == snap
+
+
+def test_run_intervention_deterministic():
+    def make():
+        return run_intervention(_base(), Controls(cache_buster=True, spacing_ms=10), None, 3,
+                                _noop_budget, _D2_SIG, _fetch_seq(200, 403, 200),
+                                sleep_fn=lambda s: None)
+    a = make()
+    b = make()
+    assert [t.oracle_hit for t in a] == [t.oracle_hit for t in b]
+    assert [t.request for t in a] == [t.request for t in b]
+
+
+def test_run_intervention_never_calls_real_http_probe_fetch(monkeypatch):
+    import http_probe
+    def _forbidden(*a, **k):
+        raise AssertionError("run_intervention must use the injected fetch_fn, never http_probe.fetch")
+    monkeypatch.setattr(http_probe, "fetch", _forbidden)
+    run_intervention(_base(), Controls(cache_buster=True, csrf_header_name="X", csrf_provider=lambda: "t"),
+                     lambda r: r, 2, _noop_budget, _D2_SIG, _fetch_seq(200, 200), scope_check=_noop_scope, method_check=_noop_method)
+
+
+def test_run_intervention_validation():
+    fetch = _fetch_seq(200)
+    with pytest.raises(TypeError):
+        run_intervention(_base(), {"not": "controls"}, None, 1, _noop_budget, _D2_SIG, fetch)
+    with pytest.raises(TypeError):
+        run_intervention(_base(), Controls(), "not-callable", 1, _noop_budget, _D2_SIG, fetch)
+    with pytest.raises(TypeError):
+        run_intervention(_base(), Controls(), None, True, _noop_budget, _D2_SIG, fetch)
+    with pytest.raises(ValueError):
+        run_intervention(_base(), Controls(), None, 0, _noop_budget, _D2_SIG, fetch)
+    with pytest.raises(TypeError):
+        run_intervention(_base(), Controls(), None, 1, "not-callable", _D2_SIG, fetch)
+    with pytest.raises(TypeError):
+        run_intervention(_base(), Controls(), None, 1, _noop_budget, {"status_in": [200]}, fetch)
+    with pytest.raises(TypeError):
+        run_intervention(_base(), Controls(), None, 1, _noop_budget, _D2_SIG, "not-callable")
+    with pytest.raises(TypeError):
+        run_intervention(_base(), Controls(), None, 1, _noop_budget, _D2_SIG, fetch, sleep_fn="nope")
+    with pytest.raises(TypeError):
+        run_intervention("not-a-dict", Controls(), None, 1, _noop_budget, _D2_SIG, fetch)
+    with pytest.raises(TypeError):   # F3: scope_check must be callable or None
+        run_intervention(_base(), Controls(), None, 1, _noop_budget, _D2_SIG, fetch,
+                         scope_check="not-callable")
+    with pytest.raises(TypeError):   # F3: a perturbed arm cannot run without a scope_check
+        run_intervention(_base(), Controls(), lambda r: r, 1, _noop_budget, _D2_SIG, fetch,
+                         method_check=_noop_method)
+    with pytest.raises(TypeError):   # F3b: method_check must be callable or None
+        run_intervention(_base(), Controls(), None, 1, _noop_budget, _D2_SIG, fetch,
+                         method_check="not-callable")
+    with pytest.raises(TypeError):   # F3b: a perturbed arm cannot run without a method_check
+        run_intervention(_base(), Controls(), lambda r: r, 1, _noop_budget, _D2_SIG, fetch,
+                         scope_check=_noop_scope)
+
+
+def test_run_intervention_perturbation_returning_non_dict_is_rejected():
+    fetch = _fetch_seq(200)
+    with pytest.raises(TypeError):
+        run_intervention(_base(), Controls(cache_buster=False), lambda r: "nope", 1,
+                         _noop_budget, _D2_SIG, fetch, scope_check=_noop_scope, method_check=_noop_method)
+
+
+def test_run_intervention_feeds_classify_end_to_end():
+    # baseline arm all-HIT, perturbed arm all-MISS -> classify() == "necessary"
+    base_trials = run_intervention(_base(), Controls(cache_buster=False), None, 5, _noop_budget,
+                                   _D2_SIG, _fetch_seq(*([200] * 5)))
+    pert_trials = run_intervention(_base(), Controls(cache_buster=False),
+                                   lambda r: {**r, "headers": {}}, 5, _noop_budget,
+                                   _D2_SIG, _fetch_seq(*([403] * 5)), scope_check=_noop_scope, method_check=_noop_method)
+    baseline_hits = [t.oracle_hit for t in base_trials]
+    perturbed_hits = [t.oracle_hit for t in pert_trials]
+    assert classify(baseline_hits, perturbed_hits, 5) == "necessary"
+
+
+def test_arm_constants_match_plan_vocabulary():
+    assert ARM_BASELINE == "baseline"
+    assert ARM_PERTURBED == "perturbed"
+    assert {ARM_BASELINE, ARM_PERTURBED} == {"baseline", "perturbed"}
+
+
+def test_trial_field_order_is_pinned():
+    assert [f.name for f in dataclasses.fields(Trial)] == [
+        "arm",
+        "k_index",
+        "http_status",
+        "oracle_hit",
+        "request",
+        "response",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Task D3: 429/throttle detection in the executor -> inconclusive
+# (PHASE1-EXECUTION-PLAN.md task D3; PHASE1-PLAN.md "Rate-limit contamination").
+# Human-approved 2026-09-07 via AskUserQuestion: (1) throttle signal = HTTP 429
+# only; (2) run_intervention aborts the arm on the first 429 (appends that Trial,
+# then breaks). throttled_in / apply_throttle_gate parallel D1's has_uncontrolled
+# / apply_control_gate; classify() stays status-blind (C3-pinned).
+# ---------------------------------------------------------------------------
+
+
+def test_throttle_status_constant_is_429():
+    assert THROTTLE_STATUS == 429
+
+
+def test_run_intervention_aborts_arm_on_first_429():
+    fetch = _fetch_seq(200, 200, 429, 200, 200)   # 429 at trial index 2
+    trials = run_intervention(_base(), Controls(cache_buster=False), None, 5,
+                              _noop_budget, _D2_SIG, fetch)
+    assert len(trials) == 3                 # stopped after the 429 trial
+    assert trials[-1].http_status == 429
+    assert trials[-1].oracle_hit is False   # 429 is not a 200
+    assert len(fetch.calls) == 3            # trials 4 and 5 never sent
+
+
+def test_run_intervention_429_on_first_trial_returns_one_trial():
+    fetch = _fetch_seq(429, 200, 200)
+    trials = run_intervention(_base(), Controls(cache_buster=False), None, 3,
+                              _noop_budget, _D2_SIG, fetch)
+    assert len(trials) == 1
+    assert trials[0].http_status == 429
+    assert len(fetch.calls) == 1
+
+
+def test_run_intervention_429_on_last_trial_is_natural_end():
+    fetch = _fetch_seq(200, 200, 429)
+    trials = run_intervention(_base(), Controls(cache_buster=False), None, 3,
+                              _noop_budget, _D2_SIG, fetch)
+    assert len(trials) == 3
+    assert trials[-1].http_status == 429
+
+
+def test_run_intervention_no_429_runs_all_k_unchanged():
+    fetch = _fetch_seq(200, 403, 200, 403, 200)
+    trials = run_intervention(_base(), Controls(cache_buster=False), None, 5,
+                              _noop_budget, _D2_SIG, fetch)
+    assert len(trials) == 5
+    assert [t.oracle_hit for t in trials] == [True, False, True, False, True]
+
+
+def test_run_intervention_abort_applies_to_perturbed_arm_too():
+    fetch = _fetch_seq(200, 429, 200)
+    trials = run_intervention(_base(), Controls(cache_buster=False), lambda r: r, 5,
+                              _noop_budget, _D2_SIG, fetch, scope_check=_noop_scope, method_check=_noop_method)
+    assert len(trials) == 2
+    assert [t.arm for t in trials] == [ARM_PERTURBED, ARM_PERTURBED]
+    assert trials[-1].http_status == 429
+
+
+def test_run_intervention_abort_stops_the_loop_not_just_fetch():
+    budget_calls = []
+    slept = []
+    fetch = _fetch_seq(200, 429, 200, 200)
+    run_intervention(_base(), Controls(cache_buster=False, spacing_ms=100), None, 4,
+                     lambda: budget_calls.append(1), _D2_SIG, fetch,
+                     sleep_fn=lambda s: slept.append(s))
+    assert len(budget_calls) == 2   # trials 0 and 1 only
+    assert slept == [0.1]           # one inter-trial sleep (before trial 1), then stop
+
+
+def test_run_intervention_error_result_does_not_abort():
+    fetch = _fetch_seq(None, 200, 200)   # network error != throttle
+    trials = run_intervention(_base(), Controls(cache_buster=False), None, 3,
+                              _noop_budget, _D2_SIG, fetch)
+    assert len(trials) == 3
+
+
+# --- throttled_in --------------------------------------------------------
+
+def test_throttled_in_empty_is_false():
+    assert throttled_in([]) is False
+
+
+def test_throttled_in_true_when_any_trial_is_429():
+    fetch = _fetch_seq(200, 200, 429)
+    trials = run_intervention(_base(), Controls(cache_buster=False), None, 5,
+                              _noop_budget, _D2_SIG, fetch)
+    assert throttled_in(trials) is True
+
+
+def test_throttled_in_false_for_200_403_none():
+    fetch = _fetch_seq(200, 403, None)
+    trials = run_intervention(_base(), Controls(cache_buster=False), None, 3,
+                              _noop_budget, _D2_SIG, fetch)
+    assert throttled_in(trials) is False
+
+
+def test_throttled_in_validation():
+    with pytest.raises(TypeError):
+        throttled_in("not-a-list")
+    with pytest.raises(TypeError):
+        throttled_in([{"http_status": 429}])   # not a Trial
+
+
+# --- apply_throttle_gate ----------------------------------------------------
+
+def _throttled_trials():
+    return run_intervention(_base(), Controls(cache_buster=False), None, 5,
+                            _noop_budget, _D2_SIG, _fetch_seq(200, 200, 429))
+
+
+def _clean_trials(n=3):
+    return run_intervention(_base(), Controls(cache_buster=False), None, n,
+                            _noop_budget, _D2_SIG, _fetch_seq(*([200] * n)))
+
+
+def test_apply_throttle_gate_passthrough_when_not_throttled():
+    clean = _clean_trials()
+    for v in ("necessary", "apparently_not_necessary", "inconclusive", "interacting", "probabilistic"):
+        assert apply_throttle_gate(v, clean) == v
+
+
+def test_apply_throttle_gate_forces_inconclusive_when_throttled():
+    dirty = _throttled_trials()
+    for v in ("necessary", "apparently_not_necessary", "inconclusive", "interacting", "probabilistic"):
+        assert apply_throttle_gate(v, dirty) == "inconclusive"
+
+
+def test_apply_throttle_gate_acceptance_throttled_arm_never_yields_necessary():
+    # PHASE1-EXECUTION-PLAN.md D3 accept: a throttled arm never yields `necessary`.
+    dirty = _throttled_trials()
+    assert len(dirty) == 3 and dirty[-1].http_status == 429      # arm aborted on the 429
+    assert apply_throttle_gate("necessary", dirty) == "inconclusive"
+    # a fully-completed, un-throttled arm is untouched
+    assert apply_throttle_gate("necessary", _clean_trials(5)) == "necessary"
+
+
+def test_apply_throttle_gate_composes_with_apply_control_gate():
+    dirty = _throttled_trials()
+    v = apply_throttle_gate(apply_control_gate("necessary", Controls()), dirty)
+    assert v == "inconclusive"
+
+
+def test_apply_throttle_gate_validation():
+    with pytest.raises(TypeError):
+        apply_throttle_gate(123, _clean_trials())
+    with pytest.raises(ValueError):
+        apply_throttle_gate("", _clean_trials())
+    with pytest.raises(TypeError):
+        apply_throttle_gate("necessary", "not-a-list")
+
+
+def test_apply_throttle_gate_never_calls_http_probe_fetch(monkeypatch):
+    import http_probe
+    def _forbidden(*a, **k):
+        raise AssertionError("apply_throttle_gate must never call the real http_probe.fetch")
+    monkeypatch.setattr(http_probe, "fetch", _forbidden)
+    apply_throttle_gate("necessary", _throttled_trials())
+
+
+def test_apply_throttle_gate_signature_is_verdict_trials():
+    assert list(inspect.signature(apply_throttle_gate).parameters) == ["verdict", "trials"]
