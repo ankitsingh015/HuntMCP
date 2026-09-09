@@ -122,6 +122,27 @@ TIER2_MCP_SERVERS = {
     "ad-recon-mcp",
 }
 
+# MIXED MCP servers: mostly local (bookkeeping / DB reads), but a NAMED subset
+# of their tools touches a live target. Listing a server here instead of in
+# TIER2_MCP_SERVERS means: "scope-gate ONLY these exact tool names on this
+# server; treat every other tool on it as local and never scope-check it."
+# Without this, a `target`/`url`-shaped arg on a purely local tool (e.g.
+# case-mcp's log_experiment(target=...) / check_experiment_exists(target=...),
+# which only write/read a SQLite row) would be mistaken for a network
+# destination and blocked. A future mixed server adds one entry here; the
+# whole-server TIER2_MCP_SERVERS path is unchanged for every server on it.
+#
+# IMPORTANT -- for case-mcp's two senders this hook's host extraction from
+# their `url` arg is only a cheap EARLY FILTER, not the security boundary.
+# The URL cem_engine.run_intervention actually fetches is
+# meta["base_request"]["url"], which is stored engagement state this hook
+# cannot see without coupling to the CEM schema. The DEFINITIVE, decoupling-
+# proof scope check for those sends lives in mcp-servers/case-mcp/server.py
+# (_scope_or_error, reusing scope_guard) and runs before run_intervention.
+TIER2_MCP_TOOLS: dict[str, frozenset[str]] = {
+    "case-mcp": frozenset({"determinism_gate", "run_counterfactual"}),
+}
+
 HOST_ARG_KEYS = ("domains", "domain", "target", "targets", "url", "host", "hosts")
 
 HOSTNAME_RE = re.compile(
@@ -247,6 +268,12 @@ def _mcp_server_name(tool_name: str) -> str:
     return parts[1] if len(parts) >= 2 else ""
 
 
+def _mcp_tool_name(tool_name: str) -> str:
+    # "mcp__<server>__<tool>" -- the tool part may itself contain "__".
+    parts = tool_name.split("__")
+    return "__".join(parts[2:]) if len(parts) >= 3 else ""
+
+
 
 def main() -> int:
     try:
@@ -281,9 +308,17 @@ def main() -> int:
     if tool_name == "Bash":
         candidates = _extract_hosts_from_bash(command)
     elif tool_name.startswith("mcp__"):
-        if _mcp_server_name(tool_name) not in TIER2_MCP_SERVERS:
+        server = _mcp_server_name(tool_name)
+        if server in TIER2_MCP_SERVERS:
+            candidates = _extract_hosts_from_tool_input(tool_input)
+        elif server in TIER2_MCP_TOOLS:
+            # Mixed server: only the named network tools are gated; every other
+            # tool on it is local and passes straight through.
+            if _mcp_tool_name(tool_name) not in TIER2_MCP_TOOLS[server]:
+                return 0
+            candidates = _extract_hosts_from_tool_input(tool_input)
+        else:
             return 0
-        candidates = _extract_hosts_from_tool_input(tool_input)
     else:
         return 0
 

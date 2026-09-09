@@ -132,6 +132,17 @@ def test_group_root_cause_rejects_unknown_finding_id_with_clear_message(tmp_path
     assert "999" in result["error"]
 
 
+def test_get_finding_returns_the_row_or_none(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("IDOR", "/api/orders/{id}", db_path=db)
+    row = case_store.get_finding(f["id"], db_path=db)
+    assert row is not None
+    assert row["id"] == f["id"]
+    assert row["vuln_class"] == "IDOR"
+    assert row["status"] == "DISCOVERED"
+    assert case_store.get_finding(999, db_path=db) is None
+
+
 # ---- Findings: the evidence gate ---------------------------------------------
 
 def test_confirmed_transition_blocked_without_evidence(tmp_path):

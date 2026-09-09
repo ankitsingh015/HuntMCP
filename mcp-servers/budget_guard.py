@@ -46,6 +46,29 @@ DEFAULT_PATH = engagement_paths.resolve("budget.json", override_env="HUNTMCP_BUD
 MAX_CALLS = int(os.getenv("HUNTMCP_MAX_TOOL_CALLS", "500"))
 WARNING_BANDS = (0.70, 0.85, 0.95)
 
+# F2 (UD-2=A): CEM sends real HTTP requests that count against the engagement-
+# wide MAX_CALLS cap above, AND against a per-finding ceiling so one confirmed
+# finding's counterfactual sweep cannot dominate the shared hunting budget.
+# The per-finding counter lives in the SAME budget.json (bucket
+# `by_cem_finding`, keyed by finding id) under the SAME file lock -- so it is
+# durable across sender re-invocations and is reset only by deleting budget.json,
+# exactly like the engagement counter. Configurable via
+# HUNTMCP_CEM_MAX_REQUESTS_PER_FINDING; re-read fresh on every enforce so a
+# malformed/non-positive/unset value transparently falls back to the default
+# (unlike MAX_CALLS, which is bound once at import).
+CEM_MAX_REQUESTS_PER_FINDING_DEFAULT = 200
+
+
+def _cem_max_per_finding() -> int:
+    raw = os.getenv("HUNTMCP_CEM_MAX_REQUESTS_PER_FINDING")
+    if raw is None:
+        return CEM_MAX_REQUESTS_PER_FINDING_DEFAULT
+    try:
+        val = int(raw.strip())
+    except ValueError:
+        return CEM_MAX_REQUESTS_PER_FINDING_DEFAULT
+    return val if val > 0 else CEM_MAX_REQUESTS_PER_FINDING_DEFAULT
+
 
 class BudgetExceeded(Exception):
     pass
@@ -127,6 +150,55 @@ def enforce(tool_name: str, path: str | None = None) -> dict:
             "for a tool that's looping."
         )
     return status
+
+
+def enforce_cem_finding(finding_id: int, path: str | None = None) -> dict:
+    """Record one CEM HTTP request for `finding_id` and enforce the per-finding
+    ceiling (HUNTMCP_CEM_MAX_REQUESTS_PER_FINDING, default 200).
+
+    Call this BEFORE `enforce("case-mcp")` in the CEM budget callback: once a
+    finding is at its ceiling this raises immediately, so a runaway on one
+    finding never even reaches -- and so never nibbles -- the shared
+    engagement-wide counter. Real requests (those that pass BOTH checks) still
+    increment the engagement counter via `enforce()`.
+
+    Same record-then-raise semantics as `enforce()`: the denying request IS
+    counted (so retries keep climbing and never reset), and it raises once the
+    finding's recorded count EXCEEDS the ceiling -- i.e. exactly `ceiling`
+    requests are allowed through. State is `budget.json`'s `by_cem_finding`
+    bucket, mutated under the shared file lock; isolated per finding id.
+
+    Because this check runs first, a request that then fails the engagement-wide
+    `enforce()` (only possible once the engagement is already at its hard cap) is
+    still counted here -- symmetric with `enforce()` itself counting its own
+    denied attempts. Both counters are cleared only by deleting `budget.json`.
+    """
+    path = _resolve_path(path)
+    key = str(finding_id)
+    ceiling = _cem_max_per_finding()
+    with file_lock.locked(path):
+        state = _load(path)
+        bucket = state.setdefault("by_cem_finding", {})
+        bucket[key] = bucket.get(key, 0) + 1
+        used = bucket[key]
+        _save(state, path)
+
+    if used > ceiling:
+        raise BudgetExceeded(
+            f"CEM per-finding request ceiling exceeded for finding {finding_id}: "
+            f"{used}/{ceiling} CEM requests used (HUNTMCP_CEM_MAX_REQUESTS_PER_FINDING). "
+            "Raise it if this finding genuinely needs a deeper counterfactual sweep, "
+            "or accept the partial (incomplete=1) bundle for this finding."
+        )
+    return {"finding_id": finding_id, "cem_requests": used, "cem_max_per_finding": ceiling}
+
+
+def cem_requests_used(finding_id: int, path: str | None = None) -> int:
+    """Read-only: how many CEM requests `enforce_cem_finding` has recorded for
+    this finding in the current engagement's budget.json (0 if none / no file)."""
+    path = _resolve_path(path)
+    with file_lock.locked(path):
+        return _load(path).get("by_cem_finding", {}).get(str(finding_id), 0)
 
 
 def _cli() -> None:
