@@ -40,6 +40,10 @@ AGENT-BRIEF.md
 # reset alongside engagement.yaml at the start of each new engagement.
 budget.json
 
+# CEM Phase-1 verifier output (scripts/verify-phase1.sh, task P1) — a
+# regenerated run artifact, not source.
+phase1-report.json
+
 # security.txt-discovered candidate targets — local catalog, not for git.
 data/candidate-targets.db*
 

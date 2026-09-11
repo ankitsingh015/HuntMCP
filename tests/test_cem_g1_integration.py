@@ -353,12 +353,18 @@ def test_G_only_the_two_senders_call_run_intervention(cem):
     lines = inspect.getsource(srv).splitlines()
     ri = [i for i, ln in enumerate(lines) if "cem_engine.run_intervention(" in ln]
     assert len(ri) == 3   # determinism_gate x1, run_counterfactual x2 (baseline + perturbed arm)
-    # http_probe.fetch is only ever passed as the fetch_fn arg of run_intervention
-    fetch_args = [i for i, ln in enumerate(lines)
-                  if "http_probe.fetch," in ln]
+    # The CEM fetch primitive (_cem_fetch -- http_probe.fetch with redirects
+    # disabled, O1) is only ever passed as the fetch_fn arg of run_intervention.
+    fetch_args = [i for i, ln in enumerate(lines) if "sig, _cem_fetch," in ln]
     assert len(fetch_args) == 3
     for i in fetch_args:
         assert any("run_intervention(" in lines[j] for j in range(i - 4, i))
+    # ...and the raw http_probe.fetch callable is bound in exactly one place --
+    # inside _cem_fetch (which disables redirects) -- and invoked nowhere by name.
+    assert [ln.strip() for ln in lines if ln.strip() == "fn = http_probe.fetch"] == [
+        "fn = http_probe.fetch"], "http_probe.fetch must be bound once, in _cem_fetch"
+    assert not [ln for ln in lines if "http_probe.fetch(" in ln], \
+        "http_probe.fetch must never be called by name -- go through _cem_fetch"
 
 
 def test_G_url_arg_lie_does_not_help_an_oos_base(cem, tmp_path, monkeypatch):

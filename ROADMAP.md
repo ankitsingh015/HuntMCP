@@ -102,30 +102,52 @@ proof / causal-validation engine (CEM), not a discovery-throughput engine.**
 
 ```
 CURRENT PHASE:        Phase 1 — scientifically-trustworthy CEM vertical slice
-CURRENT MILESTONE:    G0 implementation approval GRANTED. Pure CEM engine (Group C, C1-C8) COMPLETE and
-                      MERGED to main (PR #93); Group A and Group H MERGED (PRs #92/#93). Group B fully
-                      RECOVERED & VERIFIED on the completion branch 2026-09-07: B1 (4-table CEM schema in
-                      case_store._init_schema() + 19 schema-contract tests), B2 (CEM_TRIAL_ARMS/CEM_VERDICTS
-                      constants + the 4 CRUD helpers cem_define/cem_record_trial/cem_record_verdict/
-                      cem_load_state), B3 (6 cascade-delete/deep-isolation tests + helpers; test file now 25
-                      tests). Full suite 917 green; case_store.py byte-identical to the
-                      phase1-cem-implementation-6e1693 copy modulo two disclosed doc-comment lines,
-                      test_cem_case_store.py byte-identical modulo its module docstring.
-                      Group D (intervention executor) COMPLETE 2026-09-07 in cem_engine.py — D1 (Controls +
-                      apply_control_gate), D2 (run_intervention + Trial), D3 (throttled_in + apply_throttle_gate
-                      + run_intervention 429-abort). Group E (MCP tool integration) COMPLETE 2026-09-07 in
-                      case-mcp/server.py — E1 (6 CEM @app.tool() wrappers delegating to cem_engine +
-                      case_store; senders send via http_probe.fetch, persist cem_trials/cem_verdicts), E2
-                      (budget_guard.enforce per request + audit_log.log_call once per call, idor-mcp pattern;
-                      + B-1 _make_budget_cb/_sender_run de-dup + T-2), E3 (CONFIRMED/IMPACT_PROVEN guard on
-                      define_conditions + both senders; SuccessSignature.from_dict validation, UD-3; new
-                      case_store.get_finding()). New tests/test_cem_mcp.py (18) + tests/test_cem_safety.py
-                      (26). Full suite 1037 green; every design decision human-approved via AskUserQuestion.
-                      E3 awaiting review. Nothing from Group B, D or E is on main yet (uncommitted working-tree
-                      state). Groups F-P not started. Phase-1 acceptance gate (G1-G9 via
-                      scripts/verify-phase1.sh) still PENDING.
-STATUS:               IMPLEMENTATION IN PROGRESS — CEM Phase-1 completion effort (runtime / MCP integration /
-                      safety / evidence persistence / end-to-end benchmark + FCCR). One task at a time.
+CURRENT MILESTONE:    G0 implementation approval GRANTED. main HEAD = 517dc1c.
+                      MERGED to main: Group A + Group H + Phase-1a hardening (PR #92, 3cb25bb);
+                      A4 + Group C C1-C8 pure engine + planning docs (PR #93, 796831a);
+                      Group B (B1-B3 case_store CEM persistence) + Group D (D1-D3 intervention executor) +
+                      Group E (E1-E3 MCP tool integration) + Group F (F1 scope gate / F2 shared 500-call cap
+                      + per-finding ceiling default 200 / F3 per-trial post-perturbation scope_check /
+                      F3b-UD-4 non-idempotent-refused-by-default) + G1 (adversarial stack review + the
+                      determinism_gate budget-denied => "INCOMPLETE" fix) — all in PR #99 (517dc1c).
+                      NOTE: the plan's original G1 content-addressed evidence hashing
+                      (cem_trials.*_evidence_hash, assemble_bundle audit_trail) is UNBUILT — tracked
+                      capability limitation, not a defect (docs/cem-phase1-limitations.md).
+                      UNCOMMITTED on this branch (claude/cem-phase1-j1-benchmark, cut fresh from
+                      origin/main@517dc1c): J1 (end-to-end six-tool pipeline vs the real loopback benchmark,
+                      network not mocked), K1 CLOSED (real-CEM vs protected answer_key via
+                      evaluator.evaluate(); one human-approved case_03 ruling, lock 87e0f55b=>5546f890;
+                      5 strict xfails = documented Phase-2 boundaries), K2 (aggregate FCCR == 0, gate fails
+                      otherwise), L1 (full suite green >= A3 baseline; test_case_store.py/test_idor_sweep.py
+                      byte-identical to main; + docs/cem-phase1-limitations.md), M1 (within-process A->B->A
+                      wall-clock sandwich applying §12's literal <= 1.02 to a bootstrap CI + deterministic
+                      sys.setprofile CEM-isolation gate; config B: 0 cem_engine calls on the normal path,
+                      0 extra HTTP), N1 (docs/cem-phase1.md), N2 (this block + PHASE1-EXECUTION-PLAN.md §19),
+                      P1 (scripts/verify-phase1.sh rewritten to run the real §14 pipeline + G1-G9 verdict;
+                      + phase1-report.json in .gitignore),
+                      O1 (final §15 security audit -- adversarial code inspection + 3 fixes: CEM outbound
+                      scheme allowlist + cloud-metadata/link-local deny [O1-1 MED / O1-2 LOW] and no-redirect
+                      CEM fetch [O1-3 MED], in case-mcp/server.py + http_probe.py; tests/test_cem_o1_ssrf.py
+                      NEW 20; O1-4 k>=3 floor + an RFC1918-reachability residual documented as LOW
+                      non-blocking follow-ups). O1 is the first production change on this branch since PR #99
+                      (2 files); J1..P1 add none.
+                      P1 RAN GREEN 2026-09-11 (re-run post-O1): verify-phase1.sh exit 0, phase1-report.json
+                      overall PASS -- G1 1328>=637, G2 339, G3 12, G4 20+5-approved-xfails, G5 fccr==0.0,
+                      G6 247 (incl. 20 O1 tests), G7 5, G9 harness 36 + integrity 5546f890.../31862b91...
+                      unchanged; G8 review-by-record.
+                      Still open: I1 only (engine-branch coverage-audit formality -- G2's unit suite is green,
+                      the explicit tally is unrecorded; NOT an acceptance gate).
+                      HUMAN REVIEW 2026-09-11: the O1 production diff (case-mcp/server.py + http_probe.py)
+                      is APPROVED. Final completion-checkpoint re-run (post-approval) of
+                      scripts/verify-phase1.sh: exit 0, overall PASS, identical gate result.
+                      >>> CEM PHASE 1: ACCEPTED AND FROZEN (2026-09-11). <<< G1-G9 GREEN, O1 signed off,
+                      no unresolved High/Med. No further Phase-1 code/test/benchmark change is authorized
+                      absent a genuine regression found later. Phase 2 NOT started.
+STATUS:               CEM PHASE 1 ACCEPTED AND FROZEN -- G1-G9 GREEN via scripts/verify-phase1.sh, O1
+                      security audit COMPLETE + human-approved (no unresolved High/Med). B/D/E/F/G1 on main
+                      (PR #99); J1/K1/K2/L1/M1/N1/N2/P1/O1 done, uncommitted on this branch, awaiting a
+                      human integration decision (finishing-a-development-branch). Only the I1 coverage-audit
+                      formality is unrecorded (not a gate, not a blocker). Nothing committed/pushed/merged.
 COMPLETED:            - XYZ.md thesis + architecture (approved)
                       - PHASE1-PLAN.md spec (approved)
                       - INTELLIGENCE-ALLOCATION-MEMO.md future-work review (delivered)
@@ -144,30 +166,61 @@ COMPLETED:            - XYZ.md thesis + architecture (approved)
                         (mcp-servers/cem_engine.py + tests/test_cem_engine.py), incl. 2 retrospective C1-C8
                         audit-fix rounds + the C6 AND-necessity addendum; planning docs (ROADMAP.md,
                         PHASE1-PLAN.md, PHASE1-EXECUTION-PLAN.md, XYZ.md, INTELLIGENCE-ALLOCATION-MEMO.md).
-                        This-branch full suite: 892 green (2026-09-07).
-NOT ON MAIN:          - Group B (B1+B2+B3) + Group D (D1+D2+D3) + Group E (E1+E2+E3): uncommitted working-tree
-                        changes on the completion branch (claude/cem-phase-1-completion-1a5cd5) —
-                        mcp-servers/case_store.py (B1 4 CEM tables + B2 CEM_TRIAL_ARMS/CEM_VERDICTS + 4 CRUD
-                        helpers + E3 get_finding() accessor); tests/test_cem_case_store.py untracked (25);
-                        tests/test_case_store.py (+1 E3 get_finding test); mcp-servers/cem_engine.py (D1-D3 —
-                        C1-C8 committed bodies untouched); tests/test_cem_engine.py (+85 D1-D3 tests, purely
-                        additive); mcp-servers/case-mcp/server.py (E1 6 wrappers + E2 budget/audit + B-1
-                        _make_budget_cb/_sender_run + E3 _confirmed_or_error guards; existing 15 tools
-                        byte-untouched); tests/test_cem_mcp.py untracked (18 E1) + tests/test_cem_safety.py
-                        untracked (26 = 8 E2 + 1 B-1 + 7 E3, T-2 strengthened in place). Nothing committed to
-                        main. B1-B3 recovery source of truth: the phase1-cem-implementation-6e1693 worktree
-                        (branch claude/phase1-cem-implementation-6e1693, HEAD e1b9644).
-IN PROGRESS:          (none) — Group B recovered & verified (917 green); Group D done & verified (1002 green);
-                      Group E done & verified (1037 green; E1 18 + E2 9 + E3 8 tests). E2 audited (SAFE WITH
-                      IMPROVEMENTS) → B-1 (de-dup senders via _make_budget_cb factory + _sender_run
-                      contextmanager) + T-2 (strengthened partial-persistence regression) implemented +
-                      re-reviewed; B-2/B-3 deferred to G1. Paused for E3 review. N2 doc-reconciliation pass
-                      also done (final post-P1 read-back still pending).
+                      - MERGED to main via PR #99 (517dc1c) — "CEM Phase-1: intervention executor, MCP
+                        integration, safety controls, evidence integrity (D-G1)":
+                        Group B (case_store.py 4 CEM tables + enums + CRUD helpers; tests/test_cem_case_store.py),
+                        Group D (cem_engine.py D1 Controls/apply_control_gate, D2 run_intervention/Trial,
+                        D3 throttled_in/apply_throttle_gate/429-abort; C1-C8 bodies untouched),
+                        Group E (case-mcp/server.py 6 CEM @app.tool() wrappers + budget/audit wiring +
+                        CONFIRMED/UD-3 guards + case_store.get_finding(); existing 15 tools untouched),
+                        Group F (scope_gate_hook.py TIER2_MCP_TOOLS + case-mcp _scope_or_error [F1];
+                        budget_guard.enforce_cem_finding + per-finding ceiling default 200 [F2];
+                        cem_engine.run_intervention scope_check [F3]; cem_engine method policy +
+                        cem_meta.nonidempotent_approval [F3b/UD-4]),
+                        G1 (adversarial stack review + the determinism_gate budget-denied => "INCOMPLETE"
+                        fix). Original G1 content-addressed evidence hashing UNBUILT (tracked limitation).
+                      - ON-BRANCH, NOT MERGED (claude/cem-phase1-j1-benchmark, uncommitted working-tree):
+                        J1 — tests/test_cem_benchmark.py (end-to-end six-tool pipeline, real loopback).
+                        K1 — CLOSED; K1 section in tests/test_cem_benchmark.py; tests/fixtures/cem_target/
+                        answer_key.py case_03 label corrected (interacting=>necessary) + regenerated
+                        answer_key.py.sha256.lock (87e0f55b=>5546f890 via integrity.update()); consequential
+                        tests/test_cem_evaluator.py _correct_vulnerable() case_03 sync;
+                        docs/cem-phase1-k1-decisions.md. K2 — K2 section in tests/test_cem_benchmark.py
+                        (aggregate FCCR == 0). L1 — docs/cem-phase1-limitations.md (regression gate is
+                        verification-only). M1 — tests/test_cem_performance.py. N1 — docs/cem-phase1.md.
+                        N2 — this block + PHASE1-EXECUTION-PLAN.md §19 reconciliation update + J1..P1 task
+                        notes in PHASE1-EXECUTION-PLAN.md §6.
+                        P1 — scripts/verify-phase1.sh rewritten (was stubbing CEM gates as PENDING) to run
+                        the §14 pipeline + emit a real G1-G9 verdict; phase1-report.json added to .gitignore.
+NOT ON MAIN:          - J1 + K1 + K2 + L1 + M1 + N1 + N2 + P1 + O1 — uncommitted working-tree state on
+                        claude/cem-phase1-j1-benchmark (branch cut fresh from origin/main@517dc1c, which
+                        already carries B/D/E/F/G1 via PR #99). git diff --name-only HEAD:
+                        PHASE1-EXECUTION-PLAN.md, ROADMAP.md, scripts/verify-phase1.sh, .gitignore,
+                        mcp-servers/case-mcp/server.py (O1: _cem_outbound_policy_error + _cem_fetch + wiring),
+                        mcp-servers/http_probe.py (O1: allow_redirects kw, default True),
+                        tests/fixtures/cem_target/answer_key.py,
+                        tests/fixtures/cem_target/answer_key.py.sha256.lock, tests/test_cem_evaluator.py,
+                        tests/test_cem_g1_integration.py (O1: _cem_fetch invariant update).
+                        Untracked: tests/test_cem_benchmark.py, tests/test_cem_performance.py,
+                        tests/test_cem_o1_ssrf.py, docs/cem-phase1.md, docs/cem-phase1-limitations.md,
+                        docs/cem-phase1-k1-decisions.md.
+                        cem_engine.py / case_store.py / scope_gate_hook.py / budget_guard.py remain
+                        byte-identical to HEAD (O1 touched only case-mcp/server.py + http_probe.py).
+                        Nothing committed.
+IN PROGRESS:          (none) — B/D/E/F/G1 on main (PR #99). J1/K1/K2/L1/M1/N1/N2/P1/O1 done and uncommitted
+                      on this branch; verify-phase1.sh G1-G9 GREEN (exit 0) and O1 COMPLETE (no unresolved
+                      High/Med). Every design decision human-approved via AskUserQuestion where the plan
+                      named a behaviour not a signature.
 BLOCKED:              (none)
-NEXT STEP:            E3 review/audit (separate session). Then F1 (add "case-mcp" to
-                      scope_gate_hook.TIER2_MCP_SERVERS so the two senders' url arg is scope-gated) .. P1
-                      under TDD, one task at a time. Test-environment substrate already in place: bash
-                      scripts/verify-phase1.sh.
+NEXT STEP:            Phase 1 is ACCEPTED AND FROZEN — human review of the O1 diff is approved
+                      (2026-09-11). Remaining step is a human integration decision via
+                      finishing-a-development-branch — present integration options for the uncommitted
+                      J1..O1 work (2 O1 production files + benchmark/perf/doc test files + state prose);
+                      do NOT auto-merge. Do NOT start Phase 2. Optional non-blocking hardening follow-ups
+                      recorded under §6 O1 (not required for acceptance):
+                      (a) k>=3 floor in define_conditions + senders (O1-4, LOW); (b) scope_guard
+                      is_safe_test_host should not pre-empt an explicit out_of_scope entry (O1-1 RFC1918
+                      residual, LOW); (c) I1's formal engine-branch coverage tally (G2's unit suite is green).
 KNOWN DEVIATIONS:     RESOLVED via rulings —
                       - UD-1=B: extract shared mcp-servers/http_probe.py; idor_sweep imports it (regression-guarded)
                       - UD-2=A: CEM shares the 500-call cap + per-finding CEM request ceiling
@@ -175,20 +228,51 @@ KNOWN DEVIATIONS:     RESOLVED via rulings —
                       - UD-4=refuse non-idempotent perturbations by default (per-finding human exception only)
                       (Design note, not a decision) CEM HTTP path bypasses tool_resolver → rate handling is
                       executor-local (spacing + 429→inconclusive), same bypass idor-mcp already accepts.
-LAST VERIFIED:        2026-09-07 (E3): guards in case-mcp/server.py — define_conditions + determinism_gate +
-                      run_counterfactual refuse a finding not in {CONFIRMED, IMPACT_PROVEN} (senders
-                      re-check, so a post-define demotion can't send real requests; fetch spy proves 0
-                      requests); define_conditions also rejects a missing/invalid success_signature via
-                      cem_engine.SuccessSignature.from_dict (UD-3, no derivation). New public
-                      case_store.get_finding() accessor (0 removed lines; B1/B2 CEM schema/CRUD untouched;
-                      case_store.py touch was part of the human-approved guard-scope option). The 3 local
-                      assemblers are NOT gated (they read vetted state, send nothing). TDD: 7 tests in
-                      test_cem_safety.py + 1 in test_case_store.py, RED (AttributeError on get_finding + the
-                      guard behaviours) → GREEN. cem_engine.py / test_cem_engine.py NOT touched by E3. Full
-                      suite `.venv/bin/python -m pytest tests/ -q` → 1037 passed, 0 failed; test_cem_mcp.py
-                      18/18, test_cem_engine.py 296/296, test_case_store.py 36→37, test_idor_mcp_server.py 3/3
-                      unmodified; ruff (CI-exact) + py_compile clean, zero fixes. No commit.
-                      Earlier same day: E2 + B-1/T-2 (senders de-duped via _make_budget_cb/_sender_run;
+LAST VERIFIED:        2026-09-11 (FINAL PHASE-1 COMPLETION CHECKPOINT, post human O1 approval):
+                      re-read `git status`/`git diff` — J1..O1 are the only Phase-1 deltas, no unrelated
+                      change present (untracked `budget.json.lock`/`data/watch.db-*` are pre-existing,
+                      unrelated runtime files, left untouched). Re-ran `PYTHON=.venv/bin/python bash
+                      scripts/verify-phase1.sh` → exit 0, phase1-report.json overall PASS, identical to
+                      the pre-approval run. CEM PHASE 1 DECLARED ACCEPTED AND FROZEN.
+                      2026-09-11 (O1 final security audit + fixes; verifier re-run post-O1):
+                      `PYTHON=.venv/bin/python bash scripts/verify-phase1.sh` → exit 0, phase1-report.json
+                      overall PASS. Automated gates: G7 performance_non_regression 5 passed (quiet host,
+                      wall-clock CI <= §12's 1.02; config B 0 cem_engine calls / 0 extra HTTP);
+                      G1 regression_full_suite 1328 passed / 5 xfailed (>= 637; +20 new O1 SSRF tests);
+                      G2 cem_unit_tests 339; G3 cem_integration (J1) 12; G4 cem_causal_benchmark (K1)
+                      20 passed / 5 xfailed (0 XPASS); G5 fccr==0.0, 2 passed; G6 scope_rate_budget_audit
+                      247 passed (incl. tests/test_cem_o1_ssrf.py 20); G9 benchmark_harness_isolation 36 +
+                      integrity_start == integrity_end (answer_key.py 5546f890…, scenarios.py 31862b91…
+                      unchanged). G8 review-by-record (deviations incl. the verifier rewrite + the O1 fixes
+                      documented in PHASE1-EXECUTION-PLAN.md §6; pending human sign-off).
+                      O1 fixes (production, 2 files): case-mcp/server.py — _cem_outbound_policy_error (scheme
+                      allowlist http/https only + cloud-metadata/link-local/v4-mapped deny, on the fail-fast
+                      and per-trial scope paths) + _cem_fetch (http_probe.fetch with redirects disabled);
+                      http_probe.py — allow_redirects kw-only param, default True (idor_sweep unchanged).
+                      All 3 reproduced exploits (file:// LFI, 169.254.169.254 IMDS, 302→internal) now
+                      refused before any HTTP, nothing persisted; benchmark loopback path unchanged.
+                      CI-exact ruff mcp-servers/ 136 (unchanged). O1-4 (k>=3 floor) + RFC1918 residual =
+                      LOW, documented non-blocking follow-ups. K1/K2/L1/M1/N1/N2/P1 regression: none.
+                      2026-09-10 (M1): within-process A→B→A wall-clock sandwich (bootstrap CI vs §12's literal
+                      1.02) + deterministic sys.setprofile CEM-isolation gate; config B 0 cem_engine calls /
+                      0 extra HTTP; full suite 1308 passed / 5 xfailed at capture.
+                      2026-09-10 (L1): full suite green ≥ A3 baseline; test_case_store.py / test_idor_sweep.py
+                      byte-identical to main; docs/cem-phase1-limitations.md added.
+                      2026-09-09 (K2): aggregate FCCR == 0/4 through the protected evaluator; gate fails if
+                      fccr_numerator != 0. (K1): real-CEM vs answer_key via evaluator.evaluate(); case_03
+                      label ruling (lock 87e0f55b→5546f890); 5 strict xfails, 0 XPASS.
+                      2026-09-09 (G1): adversarial review of the full stack; determinism_gate budget-denied
+                      → "INCOMPLETE" fix; original evidence-hashing scope UNBUILT (tracked). (J1): six-tool
+                      pipeline end-to-end vs the real loopback benchmark, network not mocked.
+                      2026-09-07..09 (F1–F3b): case-mcp scope-gated (TIER2_MCP_TOOLS + sender _scope_or_error,
+                      SEC-1/SEC-2 remediation); shared 500 cap + per-finding ceiling (default 200) with
+                      partial-arm → incomplete=1; per-trial post-perturbation scope_check; non-idempotent
+                      methods refused by default.
+                      2026-09-07 (E3): guards in case-mcp/server.py — define_conditions + determinism_gate +
+                      run_counterfactual refuse a finding not in {CONFIRMED, IMPACT_PROVEN}; define_conditions
+                      also rejects a missing/invalid success_signature via SuccessSignature.from_dict (UD-3).
+                      New case_store.get_finding(). 1037 green at capture.
+                      Earlier: E2 + B-1/T-2 (senders de-duped via _make_budget_cb/_sender_run;
                       partial-persistence tests strengthened; B-2/B-3 deferred to G1; 1029 green).
                       Earlier same day: E1 (6 CEM @app.tool() wrappers, 18 smoke tests, 1020 green). D3
                       (THROTTLE_STATUS/throttled_in/apply_throttle_gate + run_intervention
@@ -203,8 +287,15 @@ LAST VERIFIED:        2026-09-07 (E3): guards in case-mcp/server.py — define_c
                       test_cem_case_store.py 19/19, test_case_store.py 36/36 (unmodified), test_cem_engine.py
                       211/211 (unmodified). Full suite `.venv/bin/python -m pytest tests/ -q` → 911 passed,
                       0 failed. ruff clean on both changed files. No commit.
-NEXT ACCEPTANCE GATE: G0 GRANTED. Next: Phase-1 acceptance gates G1..G9 via scripts/verify-phase1.sh
-                      (run only after D-P prerequisites are implemented and reviewed) — still PENDING.
+NEXT ACCEPTANCE GATE: G0 GRANTED. Phase-1 acceptance gates G1..G9 — GREEN (scripts/verify-phase1.sh
+                      exit 0, phase1-report.json overall PASS, re-confirmed at the final completion
+                      checkpoint 2026-09-11; G8 confirmed, O1 diff human-approved). O1 final §15 security
+                      audit — COMPLETE 2026-09-11 (no unresolved High/Med; O1-1/O1-2/O1-3 fixed, O1-4 +
+                      documented residuals = LOW non-blocking). **CEM PHASE 1: ACCEPTED AND FROZEN.**
+                      No further Phase-1 code/test/benchmark change is authorized absent a genuine
+                      regression found later; Phase 2 has NOT started and must not be prematurely
+                      detailed. Next (human decision, not code): finishing-a-development-branch for the
+                      uncommitted J1..O1 work (no auto-merge performed).
 ```
 
 *Do not depend on conversation memory. If this block and the conversation disagree, this block (once updated by
