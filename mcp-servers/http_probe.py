@@ -33,12 +33,28 @@ def build_headers(cookie_header: str | None, bearer_token: str | None) -> dict[s
     return headers
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """redirect_request -> None means "do not follow"; the 3xx then surfaces as
+    an HTTPError the caller sees as a real (non-followed) response."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
 def fetch(url: str, method: str, headers: dict[str, str], body: str | None,
-          timeout_s: float) -> FetchResult:
+          timeout_s: float, *, allow_redirects: bool = True) -> FetchResult:
+    """`allow_redirects` defaults True (unchanged behaviour for idor_sweep and
+    every existing caller). CEM's senders pass allow_redirects=False so a
+    scope-checked in-scope URL cannot 3xx the fetch onto an unchecked host
+    (SSRF / scope-bypass via redirect -- O1 final security audit)."""
     data = body.encode() if body else None
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    _open = urllib.request.urlopen if allow_redirects else _NO_REDIRECT_OPENER.open
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        with _open(req, timeout=timeout_s) as resp:
             return FetchResult(status=resp.status, body=resp.read().decode(errors="replace"))
     except urllib.error.HTTPError as e:
         # A 401/403/404 (the exact protected-vs-leaked signal callers care

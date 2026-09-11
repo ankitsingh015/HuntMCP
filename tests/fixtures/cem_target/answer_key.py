@@ -33,7 +33,15 @@ EXPECTED = MappingProxyType({
         "minimal_sets": (("x_access_header",), ("session_cookie",)),
     }),
     "case_03": MappingProxyType({
-        "verdicts": MappingProxyType({"role_admin": "interacting", "flag_on": "interacting"}),
+        # Corrected 2026-09-09 by explicit human ruling (K1 closure): a pure 2-way
+        # AND where each single removal flips the oracle is per-condition
+        # `necessary` + a size-2 minimal set (the AND-necessity / intersection
+        # group). This matches the human-approved C6 addendum
+        # (find_and_necessity_groups), the structurally-identical case_07-vulnerable
+        # label, the live CEM engine output, and XYZ.md sec 2.2's `necessary`
+        # definition. Was {interacting, interacting} -- internally inconsistent.
+        # minimal_sets unchanged: the intersection-group semantics are preserved.
+        "verdicts": MappingProxyType({"role_admin": "necessary", "flag_on": "necessary"}),
         "minimal_sets": (("role_admin", "flag_on"),),
     }),
     "case_04": MappingProxyType({

@@ -18,7 +18,13 @@ def _correct_vulnerable():
                                   minimal_sets=(("session_cookie",),)),
         "case_02": CaseConclusion(verdicts={"x_access_header": "interacting", "session_cookie": "interacting"},
                                   minimal_sets=(("x_access_header",), ("session_cookie",))),
-        "case_03": CaseConclusion(verdicts={"role_admin": "interacting", "flag_on": "interacting"},
+        # case_03 verdicts updated interacting->necessary to track the 2026-09-09
+        # human-ruled answer_key.py correction (K1 closure): a pure 2-way AND
+        # where each single removal flips the oracle is per-condition `necessary`
+        # + a size-2 AND-necessity minimal set. This double must mirror
+        # answer_key.EXPECTED so `test_correct_conclusion_scores_clean` still
+        # asserts coverage == 1.0 for a perfectly-correct CEM conclusion.
+        "case_03": CaseConclusion(verdicts={"role_admin": "necessary", "flag_on": "necessary"},
                                   minimal_sets=(("role_admin", "flag_on"),)),
         "case_04": CaseConclusion(verdicts={"probe_header": "inconclusive"}, determinism_status="NONDETERMINISTIC"),
         "case_05": CaseConclusion(verdicts={"probe_header": "inconclusive"}),
