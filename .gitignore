@@ -126,3 +126,6 @@ Thumbs.db
 # untracked-but-not-ignored findings sitting here (reports/arkose-2026-08/,
 # reports/wibmo-2026-08-26/).
 reports/
+
+# Accidental CLI stdout capture; may contain real engagement data.
+./-
