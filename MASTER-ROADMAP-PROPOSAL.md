@@ -25,6 +25,13 @@
 > two new traceability columns (runtime verification, sec-audit); a terminology correction ("substrate exists" ≠
 > "capabilities exist"; evidence content-addressing present vs CEM per-trial hashing unbuilt); and honest-language
 > fixes (no "self-improving"/"fully autonomous"). Phase 1 remains frozen and untouched.
+>
+> **Revision — Open-Source Audit integration (2026-09-11):** integrated `OPEN-SOURCE-AUDIT.md` (a fourth
+> evidence source — engineering/security & release-hygiene audit, verdict "READY WITH FIXES") as new **§18**,
+> adding P2 security WPs **P2-S3** (`watch-mcp` per-engagement DB isolation, 5-part), **P2-S4** (scope-gate
+> liveness CI test), conditional **P2-S5** (`sqlmap --os-shell` confirmation tier), and §16 Decisions **8–10**.
+> Most audit findings are dispositioned as **operational pre-release checklist (§18.4), not roadmap work**, with a
+> full AUDIT→ROADMAP traceability table (§18.5). No research content weakened; Phase 1 stays frozen.
 
 ---
 
@@ -232,6 +239,8 @@ Each phase uses the Phase-1 engineering loop and the G-gate template (§9). Work
 |---|---|---|---|
 | **P2-S1** (Security, **priority #1**) | Tool-output injection **boundary** (not vague "sanitize") | See detailed spec below — attack model, boundary, mitigation, corpus, runtime proof, adversarial audit, acceptance | `content_scanner.py`, `redact.py`, scope-gate patterns |
 | **P2-S2** (Security) | Phase-1 SSRF/reliability residuals | O1-1 (RFC1918 pre-emption), O1-4 (k≥3 floor) as LOW follow-ups; **no Phase-1 semantic change** | Phase-1 O1 code |
+| **P2-S3** (Security/isolation, *audit-sourced §18*) | `watch-mcp` per-engagement DB-path isolation | `watch-mcp` uses a single global `DB_PATH = data/watch.db` (verified) — route it through `engagement_paths` like the other guards, migrate existing state, and remove the tracked file. Five-part disposition in §18.3 | `engagement_paths.py`, existing guard-path pattern |
+| **P2-S4** (Security/auditability, *audit-sourced §18*) | Scope-gate **liveness** CI smoke test | The whole scope boundary depends on the `PreToolUse` hook (`scope_gate_hook.py` via `scope-gate.ts`); if it silently breaks, the fallback is "allow." Add a CI test that the hook actually fires and blocks an out-of-scope call | `scope_gate_hook.py`, CI |
 | **P2-I1** (Measurement) | Passive decision-feature + cost/quality telemetry | Log memo §6 decision features + per-stage tokens/HTTP/wall-clock, **measurement-only, no behavior change** | `audit_log` |
 | **P2-I2** (Measurement) | Experiment lineage / **deterministic replay** | *Replay = reproduce what happened* (byte-level re-run to identical verdicts); lineage records per experiment | `audit_log`, content-addressed evidence |
 | **P2-I3** (Measurement) | Capability-utilization report (Opp-5) | Offline mine of `audit_log`+inventory → UNDERUSED/MISUSED/OVERUSED/GAP per capability; eligibility signature per tool | `audit_log`, `tool_gaps` |
@@ -804,6 +813,24 @@ on P4-M1; P5-K1/K2/C1 do **not** depend on the allocation policy shipping.
    defaults to **alongside** (lower risk) and asks for a directional ruling before P4.
 7. **Scope confirmation:** confirm the Go backend ↔ agent wiring stays out of scope for this roadmap.
 
+*Decisions 8–10 added by the Open-Source Audit integration pass (§18):*
+
+8. **Unsafe autonomous action — `sqlmap --os-shell` (audit P2).** `exploit-agent.md:204` documents an autonomous
+   SQLi→RCE escalation via `sqlmap --os-shell` with no confirmation tier beyond ordinary scope/budget gating; it
+   plants a persistent code-exec channel on the target. Decide: **(a)** add an explicit human-confirmation tier
+   for this specific class of state-changing action (proposed as conditional WP P2-S5), or **(b)** document why
+   standard scope/budget/audit gating is deemed sufficient. `.claude/rules/security.md` requires explicit
+   authorization for state-changing tests, so this needs a ruling before P2 closes.
+9. **`data/watch.db` remediation + isolation (audit P2).** Approve (a) the operational `git rm --cached
+   data/watch.db` untrack (`.gitignore` line 6 already covers it — verified), **and** (b) the P2-S3 runtime
+   change to per-engagement watch DB paths + a one-time migration of any existing global state. The untrack alone
+   does not fix the runtime single-global-DB isolation gap.
+10. **Protected-doc corrections need a separate planning task (audit P1/P3).** Two audit findings require editing
+    files this proposal may not touch — `ROADMAP.md`'s stale "CEM Phase 1 not started" status line (P1) and the
+    literal `/home/ankit/...` path in `ARCHITECTURE.md`/`PHASE1-EXECUTION-PLAN.md` (P3). Per the standing
+    protected-planning-file rule, authorize a **separate, explicitly-scoped human-approved planning task** to make
+    those doc corrections; this proposal only records them (§18.4), it does not perform them.
+
 ---
 
 ## 17. FINAL PROPOSED PRODUCT PROGRESSION
@@ -830,6 +857,177 @@ on P4-M1; P5-K1/K2/C1 do **not** depend on the allocation policy shipping.
   constant differentiator**, now reached in a dependency-correct, measured, security-first order. Each phase's
   claim is bounded by its acceptance gate; capabilities that fail their gate are **deferred with a recorded
   reason**, not shipped.
+
+---
+
+## 18. OPEN-SOURCE AUDIT INTEGRATION  *(added 2026-09-11 — OPEN-SOURCE-AUDIT.md as a fourth evidence source)*
+
+### 18.1 How this audit is treated
+
+`OPEN-SOURCE-AUDIT.md` (on `main` @ `b409525`; a read-only static/historical security & repo audit, verdict
+**"READY WITH FIXES"**, no P0/P1 *security* findings) is integrated here as a **fourth evidence source — an
+engineering/security & release-hygiene audit — not a replacement for the three research streams.** It changes
+**none** of the frozen CEM status, the CEM methodology/gates, the intelligence-allocation experimental design,
+the Q1–Q8 mapping, the signature-transfer or long-horizon-benchmark requirements, the Hunt Postmortem, or Opp-1…
+Opp-6. Most of its findings are **operational release-hygiene**, not research/capability work, and are dispositioned
+as such below — the roadmap is *not* inflated with them.
+
+Language discipline (per the anti-overclaim rule): the audit reports **observed current state** and **identified
+risk**; this section adds **planned remediation** or **disposition** only. It does **not** assert anything is
+"fixed," "secure," or "production-ready" — nothing here has been implemented.
+
+### 18.2 Audit-confirmed roadmap assumptions (independent validation, not new work)
+
+The audit independently verified several substrate facts this roadmap *relies on* — strengthening, not changing,
+the plan:
+
+- **Scope gate, budget guard, and audit log are wired as real runtime controls** (`scope_gate_hook.py` PreToolUse
+  hook + `budget_guard`/`audit_log` chokepoints), not documentation-only. → the substrate P2 (telemetry,
+  utilization, negative knowledge) builds on is confirmed real.
+- **`report-agent` has no submission capability at either the agent-permission or `hackerone-mcp` layer.** →
+  confirms the "human-reviewed draft, never auto-submit" invariant the report path assumes; preserve it in P3–P5.
+- **`case-mcp` structurally refuses a `CONFIRMED` transition with zero linked evidence.** → the evidence-gated
+  substrate CEM and P2-E1 postmortem depend on is confirmed enforced.
+- **CEM benchmark fixtures carry `.sha256.lock` integrity locks on `scenarios.py`/`answer_key.py`.** → confirms
+  G9-style benchmark-integrity discipline is real; **reinforces prior adversarial finding H-1** (P2-R1 must not
+  weaken these locks and must be authorized before touching frozen CEM code).
+- **No secrets in the 241-commit history; fixtures are genuinely synthetic.** → confirms the benchmark/fixture
+  hygiene rules the roadmap assumes.
+
+### 18.3 New / updated roadmap work (the genuinely roadmap-worthy audit items only)
+
+Two audit findings are real engineering items that fit the **P2 Security/Reliability track** (integrated into the
+existing phase, not a new phase); one is conditional on a §16 decision.
+
+**WP P2-S3 — `watch-mcp` per-engagement DB-path isolation (from audit P2 "watch.db").**
+- **Objective:** eliminate the single-global-`data/watch.db` state store so per-target monitoring state is
+  isolated like every other engagement guard.
+- **Dependency:** `engagement_paths.py` (the existing per-target path resolver the other guards already use).
+- **Implementation scope (five explicitly distinct parts — `git rm --cached` alone does NOT solve this):**
+  1. **Git-tracking/remediation (operational, §16 Decision 9a):** `git rm --cached data/watch.db`. Verified: the
+     file *is* tracked on this branch and `.gitignore` line 6 *already* lists it (it was added in the same commit
+     that ignored it, so the ignore never untracked it). This removes the tracked artifact but changes nothing at
+     runtime.
+  2. **Runtime storage-path architecture (the real fix):** `watch-mcp` currently hardcodes
+     `DB_PATH = os.path.join(DATA_DIR, "watch.db")` (verified) — a single global DB, **not** routed through
+     `engagement_paths` unlike `case_store`/`budget_guard`/`audit_log`/`dedupe`. Route it through
+     `engagement_paths` so state lands under `data/engagements/<slug>/watch.db`.
+  3. **Target/engagement isolation:** after (2), one target's watch state can never be read/written under another
+     target's context; closes the "all targets share one file" leak/mixing vector (related to, but distinct from,
+     the already-documented ARCHITECTURE limitation that cron-fired watch resolves against whichever target is
+     active at fire time).
+  4. **Migration requirement:** a one-time migration path for any existing global `watch.db` content (or a
+     documented decision to discard it, since it currently holds only the public test target `testphp.vulnweb.com`).
+     Must not silently drop real state if a user has any.
+  5. **Validation / benchmark / security test requirement:** a test proving (a) two engagements get separate watch
+     DBs, (b) switching engagements never reads the other's state, (c) migration preserves or intentionally
+     discards prior state per the decision, (d) no global `data/watch.db` is recreated. This is a
+     `test_engagement_paths`-style isolation test, not a new benchmark.
+- **Security considerations:** target-data isolation, stale-state, reproducibility; must preserve `watch-mcp`'s
+  existing scope gating and background-job locks (no new SSRF/scope surface).
+- **Runtime verification:** end-to-end — run two watch engagements on a loopback fixture, assert separate DBs and
+  no cross-read (real invocation, not a unit mock).
+- **Acceptance gate:** folds into **P2-G** (G6 isolation/scope preserved; G1 regression). No new gate.
+- **Disposition:** **new requirement** (runtime architecture) + **operational remediation** (untrack) +
+  **human decision** (§16 Decision 9, incl. migration).
+
+**WP P2-S4 — Scope-gate liveness CI smoke test (from audit P3/INFO "PreToolUse hook is a single point of failure").**
+- **Objective:** guarantee the scope boundary the entire offensive toolchain depends on cannot silently fail
+  "open." The audit notes `opencode.jsonc`'s `bash:{"*":"allow"}` means real enforcement is *entirely* the hook
+  chain; if the hook breaks, the fallback is allow-everything.
+- **Dependency:** existing `scope_gate_hook.py` + CI.
+- **Implementation scope:** a CI test that actually invokes the hook with an out-of-scope host and asserts a block
+  (exit-2), plus an in-scope allow — a liveness/regression guard, not new enforcement logic.
+- **Security considerations:** protects scope enforcement (the highest-value control); prevents a silent
+  fail-open regression.
+- **Runtime verification:** the test itself is the runtime proof (hook fires and blocks).
+- **Acceptance gate:** add to **P2-G** as a G-SEC sub-check ("scope-gate fires and blocks out-of-scope").
+- **Disposition:** **new requirement** (small, high-value reliability/auditability).
+
+**WP P2-S5 — `sqlmap --os-shell` confirmation tier *(CONDITIONAL on §16 Decision 8).* **
+- **Objective (if approved):** add an explicit human-confirmation tier for state-changing actions that plant a
+  persistent access channel (distinct from ordinary detection), for the escalation path documented in
+  `exploit-agent.md`.
+- **Dependency:** existing scope/budget/audit gating (this is an *added* tier, not a replacement).
+- **Implementation scope:** a confirmation/authorization checkpoint (mirroring CEM's non-idempotent-refused-by-
+  default + per-finding human-exception pattern) before `--os-shell`-class actions.
+- **Security considerations:** unsafe autonomous actions; `.claude/rules/security.md` state-change authorization.
+- **Runtime verification:** e2e — the action is refused without an explicit approval token; approval path audited.
+- **Acceptance gate:** G-SEC (non-idempotent/persistent-access refused-by-default).
+- **Disposition:** **human decision required (§16 Decision 8)** → if (a), this WP; if (b), documented rationale,
+  no WP.
+
+### 18.4 Operational remediation (pre-release checklist — NOT roadmap work packages)
+
+These are release-hygiene/governance items. They do **not** belong in the phased research roadmap and are **not**
+assigned WP IDs; they are a **pre-public-release checklist** for a human/ops pass. Items touching protected
+planning files are gated on §16 Decision 10.
+
+| # | Audit finding | Priority | Disposition |
+|---|---|---|---|
+| O-1 | `ROADMAP.md` stale "CEM Phase 1 not started" status | P1 | Operational — **protected file → §16 Decision 10** (separate planning task); record only here |
+| O-2 | No `SECURITY.md` / private vuln-disclosure channel | P1 | Operational (governance) — add pre-release; contributor-safety relevant |
+| O-3 | `docker-compose.yml` defaults `HUNTMCP_ALLOW_DEV_SECRET=1` (silent dev JWT) | P2 | Operational (config/security) — default to unset/`0` pre-release |
+| O-4 | Dockerfiles run as root (no `USER`) | P2 | Operational (container hardening) |
+| O-5 | No `CONTRIBUTING.md` / `CODE_OF_CONDUCT.md` / issue+PR templates | P2 | Operational (governance); issue template should prompt **target-info redaction** (contributor safety) |
+| O-6 | `AGENTS.md` stale snapshot vs `CLAUDE.md` | P2 | Operational — refresh or mark superseded (`CLAUDE.md` is source of truth) |
+| O-7 | `Dockerfile` installs 6 tools via unpinned `go install …@latest` | P2 | Operational (supply chain) — pin or capture SBOM/version log; deferred improvement |
+| O-8 | MCP-server-count disagreement (README 24 / ARCHITECTURE 22 / actual 31) | P3 | Operational — reconcile to one accurate number (all undercounts, no false confidence) |
+| O-9 | `ci.yml` missing `permissions:` block | P3 | Operational (CI defense-in-depth) — add `contents: read` |
+| O-10 | GitHub Actions pinned to tags, not SHAs | P3 | Deferred improvement (supply chain) |
+| O-11 | `mcp-servers/*/requirements.txt` unpinned lower bounds, no lockfile | P3 | Deferred improvement (reproducibility) — optional `pip-compile` lockfile |
+| O-12 | Default Postgres creds in `docker-compose.yml` | P3 | Operational — add dev-only comment |
+| O-13 | Literal `/home/ankit/…` path in `ARCHITECTURE.md`/`PHASE1-EXECUTION-PLAN.md` | P3 | Operational (privacy) — **protected files → §16 Decision 10**; record only |
+| O-14 | `obscura-mcp` referenced (agent docs, scope-gate allowlist, `scripts/connect-obscura.sh`) but no registered server | P3/INFO | Operational — register, or remove/mark-experimental the dead refs; the scope-gate allowlist entry is **harmless** (allowlisting a server that never runs), only confusing |
+| O-15 | `ci.yml` ruff + `content_scanner` steps run with `\|\| true` (advisory) | INFO | Operational — confirm intentional; content-scanner is documented-intentional, ruff is not |
+| O-16 | `go get -u` pass on `backend/go.mod` (none confirmed vulnerable) | INFO | Deferred (routine maintenance) |
+
+### 18.5 AUDIT → ROADMAP TRACEABILITY
+
+| Audit finding | Priority | Roadmap disposition |
+|---|---|---|
+| `data/watch.db` tracked + global-DB isolation | P2 | **New WP P2-S3** (runtime architecture, 5-part §18.3) + operational untrack + §16 Decision 9 |
+| Scope-gate hook single-point-of-failure | P3/INFO | **New WP P2-S4** (liveness CI test) |
+| `sqlmap --os-shell` no confirmation tier | P2 | **Human decision §16 Decision 8** → conditional **WP P2-S5** |
+| `ROADMAP.md` stale CEM status | P1 | Operational O-1 → **§16 Decision 10** (protected file) |
+| Literal home path in protected docs | P3 | Operational O-13 → **§16 Decision 10** (protected file) |
+| No `SECURITY.md` | P1 | Operational O-2 (pre-release governance) — **not roadmap work** |
+| docker-compose dev JWT default | P2 | Operational O-3 — **not roadmap work** |
+| Dockerfiles run as root | P2 | Operational O-4 — **not roadmap work** |
+| No CONTRIBUTING/CoC/templates | P2 | Operational O-5 — **not roadmap work** |
+| `AGENTS.md` stale | P2 | Operational O-6 — **not roadmap work** |
+| Unpinned `go install @latest` | P2 | Operational O-7 (deferred) — **not roadmap work** |
+| MCP-server-count inconsistency | P3 | Operational O-8 — **not roadmap work** |
+| CI permissions block | P3 | Operational O-9 — **not roadmap work** |
+| Action SHA-pinning | P3 | Deferred O-10 — **not roadmap work** |
+| Python dependency lockfile | P3 | Deferred O-11 — **not roadmap work** |
+| Postgres dev-cred comment | P3 | Operational O-12 — **not roadmap work** |
+| `obscura-mcp` dead references | P3/INFO | Operational O-14 — **not roadmap work** |
+| ruff `\|\| true` advisory | INFO | Operational O-15 — **not roadmap work** |
+| Go dep refresh | INFO | Deferred O-16 — **not roadmap work** |
+| Scope/budget/audit wired; report-agent no-submit; case-mcp evidence gate; CEM integrity locks; no secrets | (strengths) | **Already addressed / validated** — §18.2, no work |
+
+### 18.6 Audit findings intentionally NOT made roadmap work (and why)
+
+- **All O-2…O-16 operational items** — these are release-hygiene, CI, Docker, governance, and doc-freshness
+  tasks. The roadmap is a research/capability plan; folding one-off ops chores into it would violate the
+  anti-hype/anti-inflation discipline and the audit's own framing ("release-hygiene, not active exposures"). They
+  live as a pre-release checklist (§18.4) for a human/ops pass.
+- **`obscura-mcp` (O-14)** — not roadmap-worthy as a *capability* (it is a "personal registration" convenience,
+  not a hunting capability); the only action is doc/reference cleanup.
+- **Protected-file corrections (O-1, O-13)** — cannot and should not be "fixed" by editing protected planning
+  files here; recorded for a separate authorized task (§16 Decision 10).
+- **No finding was rejected as false** — the audit's own false-positives (secret-shaped parameter names, cloud-
+  metadata/example IPs in fixtures) were already correctly dismissed *by the audit* and need no roadmap action.
+
+### 18.7 Human decisions from this audit
+
+Added to §16 as Decisions **8** (`sqlmap --os-shell` confirmation tier), **9** (`watch.db` untrack + P2-S3
+isolation/migration), and **10** (authorize a separate planning task for protected-doc corrections O-1/O-13).
+
+**Phase 1 remains ACCEPTED + FROZEN** — the audit introduces no change to CEM methodology, gates, or integrity
+locks; P2-S3/S4/S5 sit in the P2 foundation/security track and touch no frozen CEM code (unlike P2-R1, which
+remains gated on H-1 / §16 authorization).
 
 ---
 
