@@ -7,6 +7,17 @@ data/watch.db
 data/candidate-targets.db
 data/burp-import.db
 
+# SQLite runtime sidecars for any local DB (WAL mode is enabled on
+# memory.db/case.db/watch.db etc.) -- these are generated, machine-local,
+# and never belong in git. The base .db files are ignored individually
+# above / via data/engagements/; their -wal/-shm/-journal siblings were not
+# matched by those exact-name rules. Scoped to *.db-* on purpose -- NOT a
+# broad *.lock rule, which would wrongly hide the tracked, protected
+# benchmark integrity locks (tests/fixtures/cem_target/*.sha256.lock).
+*.db-wal
+*.db-shm
+*.db-journal
+
 # Python cache
 __pycache__/
 *.pyc
@@ -115,3 +126,9 @@ Thumbs.db
 # untracked-but-not-ignored findings sitting here (reports/arkose-2026-08/,
 # reports/wibmo-2026-08-26/).
 reports/
+
+# Accidental CLI stdout capture; may contain real engagement data.
+./-
+
+# Internal research / audit / roadmap-history corpus (kept local, not published)
+/internal-research/
