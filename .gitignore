@@ -129,3 +129,6 @@ reports/
 
 # Accidental CLI stdout capture; may contain real engagement data.
 ./-
+
+# Internal research / audit / roadmap-history corpus (kept local, not published)
+/internal-research/
