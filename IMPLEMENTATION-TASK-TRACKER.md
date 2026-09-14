@@ -30,7 +30,7 @@ item is `[x]` until its gate has actually passed.
 | Hypothesis lifecycle store | `case_store` hypotheses/findings/evidence/experiments | case-store tests | [x] baseline | provenance + lineage (see C1a) |
 | Content-addressed evidence | SHA-256 store (`add_evidence(content:str)`) | yes | [~] integrity only | provenance binding (C1a) |
 | Scope enforcement | 3-layer + PreToolUse `scope_gate_hook.py` | partial | **[~] fail-OPEN, narrow** | fail-closed + tamper-resist + CI test (S1/S2/S6) |
-| Secret handling | `dotenv_loader` loads full `.env` into `os.environ` | — | **[~] over-broad** | secrets-out (S3) |
+| Secret handling | `dotenv_loader.get_secret()` per-key lookup; `run_tool()` env allowlist; scope-hook `.env`-read block | yes | **[~] S3 implemented, pending CI** | — |
 | Engagement/state isolation | `engagement_paths.py`, `file_lock`, WAL | yes | [x] baseline | — |
 | Cross-run memory/knowledge | memory/writeup/lessons-mcp | yes | [x] baseline | — |
 | Continuous recon diffing | `watch-mcp` snapshots (⊥ `case.db`) | yes | [~] recon-only | watch↔case link (C3) |
@@ -56,7 +56,7 @@ begins.** Tier-2 is NOT optional.*
 |---|---|---|---|---|
 | **S1** | [x] | Scope hook **fail-closed** for target-touching calls (internal error blocks the *gated call*, not the session). *Why:* current hook fails open; SPOF. | — | §6 Tier-1 |
 | **S2** | [~] | CI **scope-gate block-test** — prove an out-of-scope call is actually blocked. *Why:* fail-open registration SPOF. Implementation + tests + local verification done (incl. a clean-clone run reproducing CI's exact job/dependency set); the tracker's own §10 evidence requirement ("CI run") is not yet satisfied since this job hasn't executed on GitHub Actions — flip to [x] after the first real CI run passes. | S1 | §6 Tier-1 |
-| **S3** | [ ] | **Secrets-out** of untrusted execution — per-key injection; `.env` unreadable by sandboxed exec. *Why:* full-`.env` load is harvestable. | — | §6 Tier-1 |
+| **S3** | [~] | **Secrets-out** of untrusted execution — per-key injection; `.env` unreadable by sandboxed exec. *Why:* full-`.env` load is harvestable. Implementation + tests + local verification done (`dotenv_loader.get_secret()` per-key lookup replacing the full-file loader across all 4 real call sites + `model_gateway.py`; `tool_resolver.run_tool()` subprocess env allowlist; `scope_gate_hook.py` blanket `.env`-read block, live-verified against the real PreToolUse hook); flip to [x] after a real CI run passes. | — | §6 Tier-1 |
 | **S4** | [ ] | **`--os-shell` / state-changing confirmation tier** — explicit human confirm. *Why:* persistent RCE, no distinct gate today. | — | §6 Tier-1 |
 | **S5** | [ ] | **Rootless per-run execution boundary** (swappable; no root; egress-restricted). *Why:* whole-host TCB. | S1–S4 | §6 Tier-2 |
 | **S6** | [ ] | **Hook tamper-resistance** — bash file-writes above the boundary prevented. *Why:* hook neutralizable mid-session. | S5 | §6 Tier-2 |
