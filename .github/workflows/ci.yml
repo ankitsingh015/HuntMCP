@@ -8,6 +8,8 @@ on:
       - 'scripts/**'
       - 'tests/**'
       - 'opencode.jsonc'
+      - '.opencode/plugin/**'
+      - '.claude/settings.json'
       - 'Dockerfile'
       - '.github/workflows/ci.yml'
       - '.claude/skills/**'
@@ -17,6 +19,8 @@ on:
       - 'mcp-servers/**/*.py'
       - 'scripts/**'
       - 'tests/**'
+      - '.opencode/plugin/**'
+      - '.claude/settings.json'
       - 'Dockerfile'
       - '.github/workflows/ci.yml'
       - '.claude/skills/**'
@@ -76,6 +80,60 @@ jobs:
 
       - name: Run pytest
         run: python3 -m pytest tests/ -v
+
+  scope-gate-dispatch:
+    name: Scope Gate Dispatch Test
+    # S2 (IMPLEMENTATION-TASK-TRACKER.md): a dedicated, distinguishable CI
+    # signal proving the scope gate is actually WIRED, not just that its
+    # internal logic is correct in isolation -- unit-tests above already
+    # covers the latter (it sweeps tests/, which includes these same
+    # files), but a passing unit-tests run can't tell you the PreToolUse
+    # hook registration itself didn't silently go missing. This job runs
+    # the real subprocess dispatch path for both harnesses HuntMCP
+    # supports: Claude Code's scripts/hooks/scope_gate_hook.py (invoked
+    # exactly as .claude/settings.json's PreToolUse entry invokes it) and
+    # OpenCode's .opencode/plugin/scope-gate.ts (which shells out to that
+    # same script -- test_scope_gate_plugin.mjs drives the real plugin
+    # code against a real python3 subprocess, only Bun.spawn's transport
+    # is shimmed). If a future edit drops the hook registration, points it
+    # at the wrong path, or reintroduces a fail-open bug, this job goes
+    # red even though scope_gate_hook.py's unit tests alone would not
+    # catch a registration-level break.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install --no-cache-dir pytest pyyaml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Real subprocess dispatch: hook registration in .claude/settings.json,
+      # in-scope allow, out-of-scope block, fail-closed on malformed JSON /
+      # malformed engagement.yaml -- see tests/test_scope_gate_dispatch.py's
+      # own module docstring for why this is separate from the in-process
+      # unit tests. Deliberately does NOT also run tests/test_scope_gate_hook.py
+      # here -- that file is pure in-process logic testing (no subprocess, no
+      # registration check) already fully covered by the unit-tests job's
+      # blanket `pytest tests/ -v` above; re-running it in this job would add
+      # a full extra test pass with zero additional signal about whether the
+      # hook is actually wired.
+      - name: Claude Code PreToolUse real dispatch (S1/S2)
+        run: python3 -m pytest tests/test_scope_gate_dispatch.py -v
+
+      # OpenCode's tool.execute.before port of the same hook, end to end
+      # against a real python3 subprocess -- see
+      # tests/test_scope_gate_plugin.mjs's own header comment.
+      - name: OpenCode plugin real dispatch
+        run: node tests/test_scope_gate_plugin.mjs
 
   scan-agent-content:
     name: Scan Skill/MCP Content
@@ -337,7 +395,7 @@ jobs:
 
   summary:
     name: Build Summary
-    needs: [lint-python, unit-tests, scan-agent-content, lint-shell, validate-config, validate-agent-files, docker-build]
+    needs: [lint-python, unit-tests, scope-gate-dispatch, scan-agent-content, lint-shell, validate-config, validate-agent-files, docker-build]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -349,6 +407,7 @@ jobs:
           echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| lint-python | ${{ needs.lint-python.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| unit-tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| scope-gate-dispatch | ${{ needs.scope-gate-dispatch.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| lint-shell | ${{ needs.lint-shell.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| validate-config | ${{ needs.validate-config.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| validate-agent-files | ${{ needs.validate-agent-files.result }} |" >> $GITHUB_STEP_SUMMARY

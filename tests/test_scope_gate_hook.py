@@ -405,12 +405,119 @@ def test_main_never_gates_webfetch_with_no_engagement_at_all(monkeypatch, tmp_pa
     assert _run_main(monkeypatch, payload) == 0
 
 
-def test_main_fails_open_on_malformed_json(monkeypatch):
+def test_main_fails_closed_on_malformed_json(monkeypatch, capsys):
+    """S1 (fail-closed): malformed stdin means this hook cannot determine
+    which tool call it's guarding -- it might be a Tier-2 target-touching
+    call this hook exists to block. Contract change from the prior
+    fail-open behavior (see MASTER-ROADMAP-FINAL-v3.md / IMPLEMENTATION-
+    TASK-TRACKER.md S1): 'internal error blocks the gated call, not the
+    session' -- this blocks only the one tool call the hook was invoked
+    for (exit 2, with a clear stderr reason), it does not crash or hang
+    the session. In real operation Claude Code/OpenCode always construct
+    this payload themselves as well-formed JSON, so this path is not
+    expected to fire on ordinary Read/Edit/git-status traffic -- it exists
+    for the tamper/corruption/hook-invocation-bug case, where failing
+    closed is the safe default."""
     monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
-    assert hook.main() == 0
+    assert hook.main() == 2
+    assert "BLOCKED" in capsys.readouterr().err
+
+
+def test_main_fails_closed_on_malformed_engagement_yaml(monkeypatch, tmp_path, capsys):
+    """S1 (fail-closed): engagement.yaml exists but is not valid YAML --
+    load_engagement() raises yaml.YAMLError, which is neither
+    NoEngagementFile nor RuntimeError. This must not propagate as an
+    uncaught exception (which would fail open on this harness's exit-code
+    contract, since only exit 2 is recognized as a block) -- it must
+    deterministically block the Tier-2 call that triggered it."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text("target: [this is not: valid: yaml")
+    payload = {"tool_name": "Bash", "tool_input": {"command": "nuclei -u realtarget-corp.com"}}
+    assert _run_main(monkeypatch, payload) == 2
+    assert "BLOCKED" in capsys.readouterr().err
+
+
+def test_main_fails_closed_on_unexpected_error_during_scope_check(monkeypatch, tmp_path, capsys):
+    """S1 (fail-closed): any unexpected exception raised while evaluating
+    an already-identified Tier-2 candidate (here, is_in_scope itself)
+    must block that call, not silently let it through via an uncaught
+    exception."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+
+    def _boom(host, engagement):
+        raise ValueError("simulated internal scope-check failure")
+
+    monkeypatch.setattr(hook, "is_in_scope", _boom)
+    payload = {"tool_name": "Bash", "tool_input": {"command": "nuclei -u realtarget-corp.com"}}
+    assert _run_main(monkeypatch, payload) == 2
+    assert "BLOCKED" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("tool_name", ["Read", "Write", "Grep"])
 def test_main_ignores_non_bash_non_mcp_tools(monkeypatch, tool_name):
     payload = {"tool_name": tool_name, "tool_input": {"file_path": "/tmp/whatever.com"}}
+    assert _run_main(monkeypatch, payload) == 0
+
+
+# S1 follow-up (code-review finding, CONFIRMED): the malformed-JSON fix above
+# only covers JSON that fails to *parse*. Syntactically valid JSON with the
+# wrong *shape* (a bare `null`/list/string at the top level, a non-string
+# tool_name, a non-dict tool_input, a non-string command on a Bash call)
+# reached past the new try/except entirely and crashed with an uncaught
+# AttributeError/TypeError -- exit code 1, which both real callers
+# (.claude/settings.json's PreToolUse dispatch and .opencode/plugin/
+# scope-gate.ts) treat as an implicit allow. Verified live before this fix:
+# `echo 'null' | python3 scripts/hooks/scope_gate_hook.py` exited 1 with an
+# unhandled traceback. These tests close that gap without widening the gate
+# to non-Tier2 tools -- a malformed tool_input on a definitely-non-Tier2
+# tool_name (see test_main_ignores_malformed_tool_input_on_non_tier2_tool
+# below) must still pass straight through, since tool_input is never even
+# inspected until tool_name is confirmed to be Bash or mcp__*.
+
+
+@pytest.mark.parametrize("raw_stdin", ["null", "[1, 2, 3]", '"just a string"', "42"])
+def test_main_fails_closed_on_non_object_json_payload(monkeypatch, capsys, raw_stdin):
+    monkeypatch.setattr("sys.stdin", io.StringIO(raw_stdin))
+    assert hook.main() == 2
+    assert "BLOCKED" in capsys.readouterr().err
+
+
+def test_main_fails_closed_on_non_string_tool_name(monkeypatch, capsys):
+    payload = {"tool_name": None, "tool_input": {"command": "curl https://realtarget-corp.com"}}
+    assert _run_main(monkeypatch, payload) == 2
+    assert "BLOCKED" in capsys.readouterr().err
+
+
+def test_main_fails_closed_on_non_dict_tool_input_for_bash(monkeypatch, capsys):
+    payload = {"tool_name": "Bash", "tool_input": "not-a-dict"}
+    assert _run_main(monkeypatch, payload) == 2
+    assert "BLOCKED" in capsys.readouterr().err
+
+
+def test_main_fails_closed_on_non_dict_tool_input_for_tier2_mcp(monkeypatch, capsys):
+    payload = {"tool_name": "mcp__httpx-mcp__screenshot_hosts", "tool_input": ["not", "a", "dict"]}
+    assert _run_main(monkeypatch, payload) == 2
+    assert "BLOCKED" in capsys.readouterr().err
+
+
+def test_main_fails_closed_on_non_string_command_for_bash(monkeypatch, capsys):
+    """Regression for the exact crash found live: {"command": 123} used to
+    raise TypeError inside _is_rm_command's regex .split() call, uncaught,
+    exit code 1 -- defeating both the rm-block and the scope gate for this
+    call shape."""
+    payload = {"tool_name": "Bash", "tool_input": {"command": 123}}
+    assert _run_main(monkeypatch, payload) == 2
+    assert "BLOCKED" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("tool_name", ["Read", "Write", "Grep", "WebFetch"])
+def test_main_ignores_malformed_tool_input_on_non_tier2_tool(monkeypatch, tool_name):
+    """Narrow-boundary regression: tool_name is checked BEFORE tool_input is
+    ever inspected, so a definitely-non-Tier2 tool with a garbage tool_input
+    shape must still pass straight through -- the fail-closed net for
+    payload shape must not widen the gate to tools this hook never gated."""
+    payload = {"tool_name": tool_name, "tool_input": "totally-not-a-dict"}
     assert _run_main(monkeypatch, payload) == 0
