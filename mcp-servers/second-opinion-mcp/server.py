@@ -31,12 +31,10 @@ import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from dotenv_loader import load_dotenv_if_present  # noqa: E402
+from dotenv_loader import get_secret  # noqa: E402
 from model_gateway import PROVIDER_CHAIN, select_provider  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
-
-load_dotenv_if_present()
 
 app = FastMCP("second-opinion-mcp")
 
@@ -74,7 +72,7 @@ def _pick_second_opinion_provider(exclude: str):
         provider, key_env, _, _ = entry
         if provider == exclude:
             continue
-        if os.getenv(key_env):
+        if get_secret(key_env):
             return entry
     return None
 
@@ -147,11 +145,11 @@ def get_second_opinion(finding_summary: str, primary_role: str = "exploit") -> s
 
     try:
         if provider == "anthropic":
-            verdict = _call_anthropic(default_model, os.getenv(key_env), prompt)
+            verdict = _call_anthropic(default_model, get_secret(key_env), prompt)
         elif provider in _OPENAI_COMPAT_BASE_URLS:
-            verdict = _call_openai_compat(_OPENAI_COMPAT_BASE_URLS[provider], default_model, os.getenv(key_env), prompt)
+            verdict = _call_openai_compat(_OPENAI_COMPAT_BASE_URLS[provider], default_model, get_secret(key_env), prompt)
         elif provider == "ollama":
-            host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+            host = get_secret("OLLAMA_HOST") or "http://localhost:11434"
             model = os.getenv("HUNTMCP_LOCAL_MODEL", default_model)
             verdict = _call_ollama(model, host, prompt)
         else:

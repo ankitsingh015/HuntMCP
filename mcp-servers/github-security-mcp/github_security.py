@@ -40,10 +40,11 @@ have" philosophy model_gateway.py applies to model provider keys.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import urllib.error
 import urllib.request
+
+from dotenv_loader import get_secret
 
 API_BASE = "https://api.github.com"
 DEFAULT_TIMEOUT_S = 20
@@ -64,7 +65,7 @@ def _token_from_gh_cli() -> str | None:
 
 
 def _get_token() -> str:
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN") or _token_from_gh_cli()
+    token = get_secret("GITHUB_TOKEN") or get_secret("GH_TOKEN") or _token_from_gh_cli()
     if not token:
         raise MissingTokenError(
             "No GitHub token found. Set GITHUB_TOKEN or GH_TOKEN, or authenticate "

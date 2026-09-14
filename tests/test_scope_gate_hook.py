@@ -170,6 +170,71 @@ def test_is_rm_command_ignores_non_rm(command):
     assert hook._is_rm_command(command) is False
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat .env",
+        "cat ./.env",
+        "head -5 .env",
+        "cat /home/ankit/HuntMCP/.env",
+        "grep TOKEN .env",
+        "less .env",
+        "curl https://example.com && cat .env",
+        "cat .env; ls",
+        "echo hi | cat .env",
+        # Regressions (code-review findings, CONFIRMED) -- found live,
+        # none require adversarial cleverness:
+        "echo $(cat .env)",  # ordinary command substitution, not evasion
+        "echo $(head -c 100 .env)",
+        "cp .env /tmp/x",  # stages exfiltration without an interpreter
+        "mv .env /tmp/x",
+        "sudo env cat .env",  # doubled sudo/env prefix
+    ],
+)
+def test_reads_env_file_detects_direct_reads(command):
+    assert hook._reads_env_file(command) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat .env.example",  # documented, no real secrets, must stay readable
+        "cat .envrc",  # a different tool's file, not this repo's secrets
+        "cat keys.env",  # a differently-named file, not the real .env
+        "ls -la",
+        "echo hello",
+        'echo "the file is called .env"',  # a string mentioning it, not a read
+        "cp keys.env /tmp/x",  # differently-named file through a now-gated command
+        "cp .env.example /tmp/x",  # documented file, no real secrets
+        "mv notes.txt archive/",
+    ],
+)
+def test_reads_env_file_ignores_non_matches(command):
+    assert hook._reads_env_file(command) is False
+
+
+def test_reads_env_file_ignores_prose_mentioning_env_in_a_heredoc():
+    """Regression: found live writing this very fix's own commit message.
+    git commit -m "$(cat <<'EOF' ... EOF)" is a common pattern in this
+    repo's own workflow (see .claude/skills instructions for git commits);
+    _CHAIN_SPLIT_RE splits on newlines, so a heredoc's multi-line PROSE
+    BODY gets torn into one piece per line -- a documentation line that
+    merely mentions ".env" as a word (not an actual file read) must not
+    trip this, the same way _is_rm_command's own first-word-only check
+    already protects against prose mentioning "rm"."""
+    command = (
+        "git commit -m \"$(cat <<'EOF'\n"
+        "fix: scope secrets out of untrusted execution\n"
+        "\n"
+        "dotenv_loader.load_dotenv_if_present() dumped every key in .env into\n"
+        "the process environment. Replaced with get_secret(), which falls\n"
+        "back to .env only for the one requested key.\n"
+        "EOF\n"
+        ")\""
+    )
+    assert hook._reads_env_file(command) is False
+
+
 def _run_main(monkeypatch, payload):
     # scope_guard.DEFAULT_PATH is bound from HUNTMCP_ENGAGEMENT_PATH once at
     # import time (same pattern as budget_guard.MAX_CALLS), so it can't be
@@ -197,6 +262,35 @@ def test_main_blocks_rm_even_with_in_scope_engagement(monkeypatch, tmp_path):
     )
     payload = {"tool_name": "Bash", "tool_input": {"command": "rm -rf data/engagements/realtarget-corp"}}
     assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_env_file_read_with_no_engagement_and_no_scope_check(monkeypatch, tmp_path, capsys):
+    """S3 (secrets scoped out of untrusted execution): reading .env
+    directly is a blanket 'never run, never ask' rule, same category as
+    the rm-block above -- must block even with no engagement.yaml and no
+    in-scope host anywhere in the command."""
+    monkeypatch.chdir(tmp_path)
+    payload = {"tool_name": "Bash", "tool_input": {"command": "cat .env"}}
+    assert _run_main(monkeypatch, payload) == 2
+    assert "BLOCKED" in capsys.readouterr().err
+
+
+def test_main_blocks_env_file_read_even_with_in_scope_engagement(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "cat .env"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_allows_reading_env_example_file(monkeypatch, tmp_path):
+    """Regression: .env.example is documented, contains no real secrets,
+    and is referenced by name elsewhere in this codebase -- must stay
+    readable, not swept up by the .env block."""
+    monkeypatch.chdir(tmp_path)
+    payload = {"tool_name": "Bash", "tool_input": {"command": "cat .env.example"}}
+    assert _run_main(monkeypatch, payload) == 0
 
 
 def test_main_allows_plain_bash(monkeypatch, tmp_path):

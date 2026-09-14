@@ -1,4 +1,7 @@
-from tool_resolver import classify_block, resolve_tool
+import json
+import os
+
+from tool_resolver import classify_block, resolve_tool, run_tool
 
 
 def test_classify_block_none_on_clean_output():
@@ -57,3 +60,102 @@ def test_resolve_tool_finds_something_on_path():
 def test_resolve_tool_falls_back_to_bare_name_when_not_found():
     resolved = resolve_tool("definitely-not-a-real-binary-xyz123")
     assert resolved == "definitely-not-a-real-binary-xyz123"
+
+
+# ---------------------------------------------------------------------------
+# S3: run_tool()'s subprocess must not inherit arbitrary secrets sitting in
+# this process's own os.environ -- none of subfinder/httpx/nuclei/curl/etc.
+# need any HuntMCP credential to do their job, and subprocess.run() inherits
+# the FULL parent environment by default unless env= is passed explicitly.
+# ---------------------------------------------------------------------------
+
+def _dump_env_result(monkeypatch, extra_env: dict[str, str] | None = None):
+    monkeypatch.setattr("tool_resolver._enforce_budget", lambda name: None)
+    monkeypatch.setattr("tool_resolver._log_call", lambda *a, **k: None)
+    for k, v in (extra_env or {}).items():
+        monkeypatch.setenv(k, v)
+    result = run_tool(
+        "python3",
+        ["-c", "import json, os, sys; json.dump(dict(os.environ), sys.stdout)"],
+        retry_on_rate_limit=False,
+    )
+    assert result.returncode == 0
+    return json.loads(result.stdout)
+
+
+def test_run_tool_subprocess_does_not_inherit_secret_env_vars(monkeypatch):
+    """The core guarantee: a credential present in THIS process's os.environ
+    (e.g. because some earlier code called dotenv_loader.get_secret() and
+    happened to be inspecting it, or a real key is exported in the
+    operator's shell) must not silently flow into an external tool binary
+    that never asked for it."""
+    child_env = _dump_env_result(monkeypatch, {"HUNTMCP_TEST_FAKE_SECRET": "super-secret-value"})
+    assert "HUNTMCP_TEST_FAKE_SECRET" not in child_env
+
+
+def test_run_tool_subprocess_still_has_path():
+    """Sanity check that the environment scrub isn't so aggressive the
+    child can't function -- PATH must survive, or resolve_tool()'s own
+    binary resolution and the tool's own internal exec calls would break."""
+    result = run_tool(
+        "python3",
+        ["-c", "import os, sys; sys.stdout.write(os.environ.get('PATH', ''))"],
+        retry_on_rate_limit=False,
+    )
+    assert result.stdout.strip() != ""
+
+
+def test_run_tool_respects_explicit_env_override(monkeypatch):
+    """A caller that explicitly passes a real env= dict (e.g. a future
+    tool-specific need) must still be able to -- the default must only
+    kick in when env is absent or None, not clobber a real override,
+    matching every other kwarg this function already defaults
+    (capture_output, text, stdin)."""
+    monkeypatch.setattr("tool_resolver._enforce_budget", lambda name: None)
+    monkeypatch.setattr("tool_resolver._log_call", lambda *a, **k: None)
+    result = run_tool(
+        "python3",
+        ["-c", "import os, sys; sys.stdout.write(os.environ.get('HUNTMCP_EXPLICIT_OVERRIDE', 'MISSING'))"],
+        retry_on_rate_limit=False,
+        env={"HUNTMCP_EXPLICIT_OVERRIDE": "present", "PATH": os.environ["PATH"]},
+    )
+    assert result.stdout.strip() == "present"
+
+
+def test_run_tool_env_none_does_not_bypass_the_scrub(monkeypatch):
+    """Regression (code-review finding, CONFIRMED): subprocess.run(env=None)
+    means "inherit the full parent environment" per Python's own semantics
+    -- kwargs.setdefault("env", ...) would NOT override an explicitly-passed
+    env=None, silently skipping the S3 scrub entirely. A caller passing
+    env=None must still get the scrubbed environment, not the raw one."""
+    monkeypatch.setattr("tool_resolver._enforce_budget", lambda name: None)
+    monkeypatch.setattr("tool_resolver._log_call", lambda *a, **k: None)
+    monkeypatch.setenv("HUNTMCP_TEST_FAKE_SECRET", "super-secret-value")
+    result = run_tool(
+        "python3",
+        ["-c", "import json, os, sys; json.dump(dict(os.environ), sys.stdout)"],
+        retry_on_rate_limit=False,
+        env=None,
+    )
+    child_env = json.loads(result.stdout)
+    assert "HUNTMCP_TEST_FAKE_SECRET" not in child_env
+
+
+def test_run_tool_allowlist_includes_proxy_and_tls_trust_vars(monkeypatch):
+    """Regression (code-review finding, CONFIRMED): the allowlist must
+    include standard proxy/CA-trust vars, or an operator running these
+    tools behind a corporate proxy / TLS-inspecting network silently loses
+    that routing/trust after this environment scrub -- a real capability
+    regression, not just hardening."""
+    monkeypatch.setattr("tool_resolver._enforce_budget", lambda name: None)
+    monkeypatch.setattr("tool_resolver._log_call", lambda *a, **k: None)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/custom-ca.pem")
+    result = run_tool(
+        "python3",
+        ["-c", "import json, os, sys; json.dump(dict(os.environ), sys.stdout)"],
+        retry_on_rate_limit=False,
+    )
+    child_env = json.loads(result.stdout)
+    assert child_env.get("HTTPS_PROXY") == "http://proxy.example:8080"
+    assert child_env.get("SSL_CERT_FILE") == "/etc/ssl/custom-ca.pem"

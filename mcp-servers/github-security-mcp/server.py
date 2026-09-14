@@ -8,10 +8,7 @@ sys.path.insert(0, __file__.rsplit("/", 1)[0])
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 
 import github_security
-from dotenv_loader import load_dotenv_if_present
 from mcp.server.fastmcp import FastMCP
-
-load_dotenv_if_present()
 
 app = FastMCP("github-security-mcp")
 

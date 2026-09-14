@@ -94,6 +94,38 @@ def test_poll_job_unknown_job_id_returns_error():
     assert "error" in job_runtime.poll_job("does-not-exist", {})
 
 
+def test_start_job_subprocess_does_not_inherit_secret_env_vars(monkeypatch):
+    """S3 follow-up (code-review finding, CONFIRMED): start_job()'s
+    subprocess.Popen() had no env= at all, so every real scan tool that
+    goes through it (httpx-mcp, nuclei-mcp, katana-mcp, nmap-mcp,
+    dalfox-mcp, ffuf-mcp, sqlmap-mcp, subfinder-mcp's real enumeration --
+    all call start_job(), not tool_resolver.run_tool()) inherited the full
+    parent environment, completely bypassing S3's env-scrubbing fix. This
+    is the actual chokepoint real engagements use, unlike run_tool()."""
+    import json
+
+    _no_budget(monkeypatch)
+    _no_audit(monkeypatch)
+    monkeypatch.setenv("HUNTMCP_TEST_FAKE_SECRET", "super-secret-value")
+    jobs = {}
+    started = job_runtime.start_job(
+        "python3",
+        ["-c", "import json, os, sys; json.dump(dict(os.environ), sys.stdout)"],
+        max_wall_seconds=30,
+        jobs=jobs,
+    )
+    job_id = started["job_id"]
+    deadline = time.monotonic() + 5
+    result = job_runtime.poll_job(job_id, jobs)
+    while result["status"] == "running" and time.monotonic() < deadline:
+        result = job_runtime.poll_job(job_id, jobs)
+
+    assert result["status"] == "done"
+    child_env = json.loads(result["stdout"])
+    assert "HUNTMCP_TEST_FAKE_SECRET" not in child_env
+    assert child_env.get("PATH")  # sanity: not scrubbed into unusability
+
+
 def test_poll_job_kills_process_past_max_wall_seconds(monkeypatch):
     _no_budget(monkeypatch)
     _no_audit(monkeypatch)
