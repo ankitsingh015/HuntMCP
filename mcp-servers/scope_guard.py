@@ -77,6 +77,18 @@ DEV_INFRA_HOSTS = {
     "golang.org", "proxy.golang.org", "go.dev",
     "deb.debian.org", "archive.ubuntu.com", "security.ubuntu.com",
     "opencode.ai", "docs.anthropic.com", "modelcontextprotocol.io",
+    # Disposable/temp-mail API hosts -- supporting infrastructure for the
+    # standard VDP practice of provisioning a throwaway inbox to complete an
+    # app's own public signup (identical category to interactsh OOB: these are
+    # NOT bug-bounty targets, they are external services used to receive
+    # verification mail). Listed explicitly by HuntBrain's engagement brief.
+    "api.mail.tm", "mail.tm", "www.1secmail.com", "1secmail.com",
+    "api.1secmail.com", "www.mailinator.com", "mailinator.com",
+    "api.guerrillamail.com", "guerrillamail.com", "inboxes.com",
+    # mail.tm currently serves the mailbox domain "uberip.com" (dynamic over
+    # time) -- mailbox domains are the addresses themselves, same supporting-
+    # infrastructure category. Also 1secmail/mailinator mailbox domains.
+    "uberip.com", "guerrillamail.net",
 }
 
 # A bare hostname-shaped regex can't distinguish a real domain from a
