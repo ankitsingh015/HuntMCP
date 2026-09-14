@@ -46,6 +46,26 @@ _WAF_BLOCK_PATTERNS = [
     re.compile(r"access denied|request blocked|attack detected", re.I),
 ]
 
+# S3 (IMPLEMENTATION-TASK-TRACKER.md -- "secrets scoped out of untrusted
+# execution"): subprocess.run() inherits the FULL parent environment by
+# default. This process's own os.environ can carry a real credential --
+# dotenv_loader.get_secret() callers hold one locally, or the operator has
+# one genuinely exported in their shell -- and without an explicit env=,
+# every external tool binary run_tool() spawns (subfinder, httpx, katana,
+# nmap, nuclei, sqlmap, dalfox, ffuf) would inherit all of it, even though
+# none of them need any HuntMCP credential to do their job. Allowlist,
+# not denylist: only these survive into the child by default, so a new
+# secret added to .env.example later is excluded automatically instead of
+# requiring someone to remember to add it to a blocklist.
+_SUBPROCESS_ENV_ALLOWLIST = {
+    "PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR",
+    "GOPATH", "GOROOT",  # Go-toolchain binaries (subfinder/httpx/...) may consult these
+}
+
+
+def _minimal_subprocess_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k in _SUBPROCESS_ENV_ALLOWLIST}
+
 
 def classify_block(output: str) -> str | None:
     """Inspect tool stdout/stderr for a blocking signal. Returns 'rate_limit',
@@ -112,6 +132,11 @@ def run_tool(
     binary = resolve_tool(name)
     kwargs.setdefault("capture_output", True)
     kwargs.setdefault("text", True)
+    # S3: scrub secrets out of the child's environment by default -- see
+    # _minimal_subprocess_env()'s own comment. A caller that has a genuine
+    # reason to pass a specific env (kwargs already supports env=) is not
+    # overridden here, same setdefault pattern as every other kwarg below.
+    kwargs.setdefault("env", _minimal_subprocess_env())
     # Without this, the child inherits OUR stdin file descriptor. That's
     # harmless when this process's own stdin is a terminal or already
     # closed, but every one of these servers normally runs as an MCP

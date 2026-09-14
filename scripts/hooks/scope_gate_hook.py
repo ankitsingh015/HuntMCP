@@ -219,6 +219,55 @@ def _is_rm_command(command: str) -> bool:
     return False
 
 
+# S3 (secrets scoped out of untrusted execution): there is no legitimate
+# reason an agent's own Bash tool call ever needs to read .env's raw
+# contents -- every real consumer reads a credential via
+# dotenv_loader.get_secret() inside a trusted MCP server process, never
+# via a shell command. Same blanket "never run, never ask" category as
+# the rm-block above, independent of scope/engagement state.
+#
+# Gated on the SUB-COMMAND'S OWN FIRST WORD being one of these read/
+# interpreter-shaped binaries, same precedent as _is_rm_command() only
+# checking the first word of each piece -- not a scan of every word
+# anywhere in the command. Necessary, found live: _CHAIN_SPLIT_RE splits
+# on newlines too (so a real multi-line shell script's separate commands
+# are each checked independently, same as rm's), but that also means a
+# heredoc's own multi-line TEXT BODY (e.g. `git commit -m "$(cat <<'EOF'
+# ...prose mentioning the word .env...  EOF)"`) gets torn into one
+# "piece" per line of prose -- scanning every word of a prose line for a
+# bare ".env" token false-positive-blocks on ordinary documentation text
+# that merely mentions the filename, not an actual read of it. Requiring
+# the line's own first word to already be a recognized read command
+# closes that: a commit-message prose line's first word is essentially
+# never "cat"/"grep"/"python3"/etc.
+_ENV_FILE_READ_COMMANDS = {
+    "cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep",
+    "awk", "sed", "strings", "xxd", "hexdump", "od",
+    "vim", "vi", "nano", "emacs", "bat",
+    "python3", "python", "node", "perl", "ruby", "php",
+}
+
+
+def _reads_env_file(command: str) -> bool:
+    for piece in _CHAIN_SPLIT_RE.split(command):
+        try:
+            words = shlex.split(piece)
+        except ValueError:
+            words = piece.split()
+        if not words:
+            continue
+        first = words[0].rsplit("/", 1)[-1]
+        if first in ("sudo", "env") and len(words) > 1:
+            first = words[1].rsplit("/", 1)[-1]
+            words = words[1:]
+        if first not in _ENV_FILE_READ_COMMANDS:
+            continue
+        for word in words[1:]:
+            if word.rsplit("/", 1)[-1] == ".env":
+                return True
+    return False
+
+
 def _extract_hosts_from_bash(command: str) -> list[str]:
     if _first_word(command) not in TIER2_BASH_TOOLS:
         return []
@@ -372,6 +421,19 @@ def main() -> int:
             "BLOCKED: rm is disabled by default in this repo (both Claude "
             "Code and OpenCode) -- ask the user to delete the file "
             "themselves, or move it aside instead of removing it."
+        )
+
+    # S3 (secrets scoped out of untrusted execution) -- same blanket,
+    # unconditional category as the rm-block above. See _reads_env_file()'s
+    # own comment for what this does and doesn't catch.
+    if tool_name == "Bash" and _reads_env_file(command):
+        return _block(
+            "BLOCKED: reading .env directly is disabled by default in this "
+            "repo -- every real credential consumer reads it via "
+            "dotenv_loader.get_secret() inside a trusted MCP server "
+            "process, never via a shell command. If you need to verify a "
+            "key is set, ask the user, or check via an MCP tool that "
+            "already reads it server-side."
         )
 
     # S1 (fail-closed target-touching scope behavior): everything in this

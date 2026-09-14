@@ -45,11 +45,9 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from dotenv_loader import load_dotenv_if_present  # noqa: E402
+from dotenv_loader import get_secret  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
-
-load_dotenv_if_present()
 
 app = FastMCP("hackerone-mcp")
 
@@ -61,8 +59,8 @@ class HackerOneAuthError(Exception):
 
 
 def _auth_header() -> str:
-    username = os.getenv("HACKERONE_API_USERNAME")
-    token = os.getenv("HACKERONE_API_TOKEN")
+    username = get_secret("HACKERONE_API_USERNAME")
+    token = get_secret("HACKERONE_API_TOKEN")
     if not username or not token:
         raise HackerOneAuthError(
             "HACKERONE_API_USERNAME and HACKERONE_API_TOKEN must both be set. "

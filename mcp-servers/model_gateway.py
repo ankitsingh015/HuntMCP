@@ -24,6 +24,8 @@ import re
 import sys
 from dataclasses import dataclass
 
+from dotenv_loader import get_secret
+
 
 @dataclass
 class ProviderConfig:
@@ -71,6 +73,13 @@ def _provider_by_name(name: str) -> tuple[str, str, str, str | None] | None:
     return None
 
 
+# key_env/base_url_env (the credential-shaped PROVIDER_CHAIN fields) go
+# through dotenv_loader.get_secret() rather than plain os.getenv() (S3) --
+# these are the actual API keys/host URLs .env.example documents, so they
+# must fall back to a per-key .env read without ever populating os.environ
+# with every OTHER provider's key too. HUNTMCP_MODEL*/HUNTMCP_LOCAL_MODEL
+# below stay on plain os.getenv(): they're operator config toggles (which
+# provider/model to pick), not secrets, and have no .env.example entry.
 def _build_config(entry: tuple[str, str, str, str | None], source: str) -> ProviderConfig:
     provider, key_env, default_model, base_url_env = entry
     if provider == "ollama":
@@ -81,8 +90,8 @@ def _build_config(entry: tuple[str, str, str, str | None], source: str) -> Provi
     return ProviderConfig(
         name=provider,
         default_model=default_model,
-        base_url=os.getenv(base_url_env) if base_url_env else None,
-        api_key=os.getenv(key_env) if key_env != "OLLAMA_HOST" else None,
+        base_url=get_secret(base_url_env) if base_url_env else None,
+        api_key=get_secret(key_env) if key_env != "OLLAMA_HOST" else None,
         source=source,
     )
 
@@ -112,7 +121,7 @@ def select_provider(agent_role: str | None = None) -> ProviderConfig:
     # 3. automatic fallback chain — first provider with a key actually set
     for entry in PROVIDER_CHAIN:
         provider, key_env, _, _ = entry
-        if os.getenv(key_env):
+        if get_secret(key_env):
             return _build_config(entry, source="chain")
 
     raise RuntimeError(

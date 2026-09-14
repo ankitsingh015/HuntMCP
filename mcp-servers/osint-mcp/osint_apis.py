@@ -30,10 +30,11 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from dotenv_loader import get_secret
 
 SHODAN_BASE = "https://api.shodan.io"
 VIRUSTOTAL_BASE = "https://www.virustotal.com/api/v3"
@@ -48,7 +49,7 @@ class MissingApiKeyError(Exception):
 
 
 def _require_env(*names: str, how_to_get: str) -> list[str]:
-    values = [os.getenv(n) for n in names]
+    values = [get_secret(n) for n in names]
     missing = [n for n, v in zip(names, values) if not v]
     if missing:
         raise MissingApiKeyError(
