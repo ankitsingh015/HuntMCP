@@ -493,7 +493,10 @@ def suggest_next_tool(findings_json: str, current_phase: str = "") -> str:
         suggestions.append("Try PHP wrappers: php://filter/convert.base64-encode/resource=config.php")
     if "SQL INJECTION" in finding_classes or "SQLI" in finding_classes:
         suggestions.append("Extract database schema and user credentials tables")
-        suggestions.append("Try --os-shell for RCE if database user has FILE privilege")
+        suggestions.append(
+            "Try --os-shell for RCE if database user has FILE privilege "
+            "(requires a fresh human confirm first -- scripts/confirm-os-shell.sh <target>)"
+        )
     if "SSTI" in finding_classes:
         suggestions.append("Escalate SSTI to RCE using engine-specific gadget chains")
     if "JWT" in finding_classes:

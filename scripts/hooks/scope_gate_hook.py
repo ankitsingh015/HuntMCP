@@ -56,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "mcp-servers"))
 from audit_log import log_call as _log_call  # noqa: E402
 from budget_guard import BudgetExceeded  # noqa: E402
 from budget_guard import enforce as _enforce_budget  # noqa: E402
+import rce_confirm  # noqa: E402
 from scope_guard import NoEngagementFile, is_in_scope, load_engagement  # noqa: E402
 from scope_guard import is_safe_test_host as _is_safe_test_host  # noqa: E402
 
@@ -289,6 +290,64 @@ def _reads_env_file(command: str) -> bool:
     return False
 
 
+# S4 (persistent-RCE / state-changing confirmation tier): sqlmap's own
+# --os-shell/--os-pwn/--os-cmd/--os-bof flags escalate a confirmed SQLi
+# finding into actual OS-level command execution on the target -- a much
+# bigger step than the read-only injection testing every other sqlmap flag
+# performs, and until now nothing distinguished it from an ordinary sqlmap
+# call. Blanket "never run without an explicit human confirm on file" rule,
+# same category as the rm-block and .env-block above (independent of
+# scope/engagement state -- being in-scope doesn't itself authorize this).
+# See mcp-servers/rce_confirm.py's own module docstring for why the "ask"
+# side of this has to be a separate, human-run interactive script rather
+# than a declarative bash permission (same reason as the rm-block's own
+# comment above: opencode.jsonc's declarative "ask"/deny was empirically
+# not enforced under `opencode run --auto`).
+_PERSISTENT_RCE_FLAGS = {"--os-shell", "--os-pwn", "--os-cmd", "--os-bof"}
+
+
+def _is_persistent_rce_command(command: str) -> bool:
+    if "sqlmap" not in command:
+        # Cheap short-circuit before any parsing -- this runs on every
+        # single Bash call (git status, file edits reaching Bash, ...),
+        # and the overwhelming majority never mention sqlmap at all.
+        return False
+    for piece in _CHAIN_SPLIT_RE.split(command):
+        try:
+            words = shlex.split(piece)
+        except ValueError:
+            words = piece.split()
+        words = _strip_prefix_words(words)
+        if not words:
+            continue
+        # Regression (code-review finding, CONFIRMED, found by 2
+        # independent review angles): checking only words[0] missed any
+        # wrapper that puts other words first -- `timeout 600 sqlmap -u x
+        # --os-shell` or `xargs -I{} sqlmap {} --os-shell` both evaded
+        # detection entirely, since "sqlmap" was never in first-word
+        # position. Scan every word in the piece for "sqlmap" (as its own
+        # basename-stripped token, not a substring of some other word) and
+        # for a persistent-RCE flag, and require both to co-occur in the
+        # SAME piece -- this still won't parse an opaque nested command
+        # string (`bash -c "sqlmap ... --os-shell"`, a python3 -c
+        # subprocess call), the same acknowledged gap the rm-block and
+        # .env-block already carry for the identical reason (see this
+        # file's own module docstring): closing that would mean actually
+        # parsing arbitrary shell/interpreter syntax, not a cheap
+        # word-scan.
+        basenames = [w.rsplit("/", 1)[-1] for w in words]
+        if "sqlmap" not in basenames:
+            continue
+        for word in words:
+            # sqlmap accepts both "--os-cmd whoami" and "--os-cmd=whoami" --
+            # match on the flag prefix before any "=", not exact equality,
+            # or the "=" form would silently slip through.
+            flag = word.split("=", 1)[0]
+            if flag in _PERSISTENT_RCE_FLAGS:
+                return True
+    return False
+
+
 def _extract_hosts_from_bash(command: str) -> list[str]:
     if _first_word(command) not in TIER2_BASH_TOOLS:
         return []
@@ -456,6 +515,68 @@ def main() -> int:
             "key is set, ask the user, or check via an MCP tool that "
             "already reads it server-side."
         )
+
+    # S4 (persistent-RCE / state-changing confirmation tier) -- same
+    # blanket, unconditional category as the rm-block and .env-block
+    # above (fires regardless of whether a host was extractable from the
+    # command text, so a `sqlmap -r request.txt --os-shell` invocation
+    # with no literal host in the command is still gated). See
+    # _is_persistent_rce_command()'s own comment for what this matches and
+    # rce_confirm.py for how the human-confirm/target-binding side works.
+    #
+    # Needs the active engagement's target to bind the confirmation token
+    # to (see rce_confirm.check_and_consume()) and does real file I/O
+    # (rce_confirm.check_and_consume() itself) -- wrapped in its own
+    # fail-closed try/except, same discipline as the Tier-2 net below.
+    # Regression (code-review finding, CONFIRMED): this used to sit
+    # unguarded outside any try/except -- an internal error here (a
+    # permissions/disk error reading the token) would propagate uncaught
+    # out of main(), and since only exit 2 is this harness's documented
+    # block signal, both real callers would treat that as an implicit
+    # ALLOW, letting a persistent-RCE command through on an internal
+    # error -- exactly the fail-open class S1 exists to close, reopened
+    # one check later in the same function.
+    if tool_name == "Bash" and _is_persistent_rce_command(command):
+        try:
+            try:
+                rce_engagement = load_engagement()
+            except (NoEngagementFile, RuntimeError):
+                return _block(
+                    "BLOCKED by scope gate: no engagement.yaml found, but "
+                    "this command requests a persistent OS-shell / "
+                    "state-changing sqlmap action. Write engagement.yaml "
+                    "first, then get explicit human confirmation via "
+                    "scripts/confirm-os-shell.sh."
+                )
+            if not rce_confirm.check_and_consume(rce_engagement.target):
+                return _block(
+                    "BLOCKED: this sqlmap call requests a persistent "
+                    "OS-shell / state-changing action (--os-shell/"
+                    "--os-pwn/--os-cmd/--os-bof) against "
+                    f"{rce_engagement.target!r}. This needs an explicit, "
+                    "interactive human confirm before it runs -- being "
+                    "in-scope is not enough on its own. Ask the user to "
+                    f"run `scripts/confirm-os-shell.sh {rce_engagement.target}` "
+                    "themselves, in their own terminal (it refuses if not "
+                    "run interactively), then retry this exact command."
+                )
+        except Exception as exc:  # noqa: BLE001 -- deliberate fail-closed net, see comment above
+            return _block(
+                "BLOCKED by scope gate: internal error while evaluating "
+                f"the persistent-RCE confirmation gate ({exc!r}). Failing "
+                "closed rather than silently allowing a call this hook "
+                "could not verify."
+            )
+        # Confirmed and allowed -- the one action this whole gate exists
+        # for must leave an audit trail. Unlike curl/wget below, a raw
+        # Bash sqlmap call has no OTHER audit_log wiring anywhere in this
+        # file (sqlmap is normally assumed to be audited via sqlmap-mcp's
+        # own run_tool(), which a raw Bash call never goes through).
+        try:
+            rce_args = shlex.split(command)[1:]
+        except ValueError:
+            rce_args = []
+        _log_call("sqlmap-os-shell-confirmed", rce_args, returncode=None, duration_ms=0.0, block=None)
 
     # S1 (fail-closed target-touching scope behavior): everything in this
     # try -- binary/server narrowing, host extraction from tool_input,
