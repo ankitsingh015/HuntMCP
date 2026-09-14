@@ -206,15 +206,25 @@ def _first_word(command: str) -> str:
 _CHAIN_SPLIT_RE = re.compile(r"&&|\|\||[;&|\n]|\$\(")
 
 
+# Shared by _is_rm_command() and _reads_env_file() -- both need "the real
+# invoked binary, past any sudo/env wrapper" as their first word, and used
+# to each re-derive this independently (found in code review: two copies
+# of the same security-relevant matching rule that could silently drift).
+# Loops rather than a single unwrap: `sudo env cat .env` previously only
+# stripped "sudo", leaving "env" (itself unrecognized) as the first word --
+# a doubled-wrapper bypass found live in code review.
+def _strip_prefix_words(words: list[str]) -> list[str]:
+    while len(words) > 1 and words[0].rsplit("/", 1)[-1] in ("sudo", "env"):
+        words = words[1:]
+    return words
+
+
 def _is_rm_command(command: str) -> bool:
     for piece in _CHAIN_SPLIT_RE.split(command):
-        words = piece.split()
+        words = _strip_prefix_words(piece.split())
         if not words:
             continue
-        first = words[0].rsplit("/", 1)[-1]
-        if first in ("sudo", "env") and len(words) > 1:
-            first = words[1].rsplit("/", 1)[-1]
-        if first == "rm":
+        if words[0].rsplit("/", 1)[-1] == "rm":
             return True
     return False
 
@@ -245,6 +255,13 @@ _ENV_FILE_READ_COMMANDS = {
     "awk", "sed", "strings", "xxd", "hexdump", "od",
     "vim", "vi", "nano", "emacs", "bat",
     "python3", "python", "node", "perl", "ruby", "php",
+    # Copy/transfer/archive commands -- staging exfiltration (`cp .env
+    # /tmp/x`) doesn't itself print contents into the agent's visible
+    # transcript the way `cat` does, but it's the same "get .env's
+    # contents somewhere retrievable" move, one step removed. Found live
+    # in code review: `cp .env /tmp/x && cat /tmp/x` bypassed the block
+    # entirely -- neither half individually named `.env` as a read target.
+    "cp", "mv", "rsync", "tar", "cpio", "scp", "install", "dd", "base64",
 }
 
 
@@ -254,16 +271,20 @@ def _reads_env_file(command: str) -> bool:
             words = shlex.split(piece)
         except ValueError:
             words = piece.split()
+        words = _strip_prefix_words(words)
         if not words:
             continue
         first = words[0].rsplit("/", 1)[-1]
-        if first in ("sudo", "env") and len(words) > 1:
-            first = words[1].rsplit("/", 1)[-1]
-            words = words[1:]
         if first not in _ENV_FILE_READ_COMMANDS:
             continue
         for word in words[1:]:
-            if word.rsplit("/", 1)[-1] == ".env":
+            # .rstrip(")") handles $(cat .env)'s unclosed-by-this-regex
+            # trailing paren (found live in code review): _CHAIN_SPLIT_RE
+            # splits on the opening "$(" but can't balance the matching
+            # close (same documented regex limitation as the rm-block's
+            # own bare-')' exclusion), so the argument word is ".env)"
+            # rather than ".env" -- strip it before comparing.
+            if word.rsplit("/", 1)[-1].rstrip(")") == ".env":
                 return True
     return False
 

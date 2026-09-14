@@ -30,7 +30,7 @@ import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from budget_guard import enforce as _enforce_budget  # noqa: E402
-from tool_resolver import resolve_tool  # noqa: E402
+from tool_resolver import minimal_subprocess_env, resolve_tool  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
 
@@ -108,6 +108,14 @@ def generate_payload_url(label: str = "") -> str:
                 cwd=work_dir,
                 start_new_session=True,  # detach from our process group --
                 # must outlive whatever spawned this MCP server call
+                # S3 (code-review finding, CONFIRMED): this process is
+                # long-lived and detached, so it holds on to whatever
+                # environment it started with for as long as it stays
+                # alive -- explicitly bypasses tool_resolver.run_tool()
+                # (see this module's own docstring), so it never got that
+                # chokepoint's env scrub either. interactsh-client needs no
+                # HuntMCP credential to mint a callback URL.
+                env=minimal_subprocess_env(),
             )
     except FileNotFoundError:
         return (

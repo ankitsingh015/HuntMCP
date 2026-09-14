@@ -106,10 +106,11 @@ def test_run_tool_subprocess_still_has_path():
 
 
 def test_run_tool_respects_explicit_env_override(monkeypatch):
-    """A caller that explicitly passes env= (e.g. a future tool-specific
-    need) must still be able to -- the new default must use setdefault,
-    not clobber an explicit override, matching every other kwarg this
-    function already defaults (capture_output, text, stdin)."""
+    """A caller that explicitly passes a real env= dict (e.g. a future
+    tool-specific need) must still be able to -- the default must only
+    kick in when env is absent or None, not clobber a real override,
+    matching every other kwarg this function already defaults
+    (capture_output, text, stdin)."""
     monkeypatch.setattr("tool_resolver._enforce_budget", lambda name: None)
     monkeypatch.setattr("tool_resolver._log_call", lambda *a, **k: None)
     result = run_tool(
@@ -119,3 +120,42 @@ def test_run_tool_respects_explicit_env_override(monkeypatch):
         env={"HUNTMCP_EXPLICIT_OVERRIDE": "present", "PATH": os.environ["PATH"]},
     )
     assert result.stdout.strip() == "present"
+
+
+def test_run_tool_env_none_does_not_bypass_the_scrub(monkeypatch):
+    """Regression (code-review finding, CONFIRMED): subprocess.run(env=None)
+    means "inherit the full parent environment" per Python's own semantics
+    -- kwargs.setdefault("env", ...) would NOT override an explicitly-passed
+    env=None, silently skipping the S3 scrub entirely. A caller passing
+    env=None must still get the scrubbed environment, not the raw one."""
+    monkeypatch.setattr("tool_resolver._enforce_budget", lambda name: None)
+    monkeypatch.setattr("tool_resolver._log_call", lambda *a, **k: None)
+    monkeypatch.setenv("HUNTMCP_TEST_FAKE_SECRET", "super-secret-value")
+    result = run_tool(
+        "python3",
+        ["-c", "import json, os, sys; json.dump(dict(os.environ), sys.stdout)"],
+        retry_on_rate_limit=False,
+        env=None,
+    )
+    child_env = json.loads(result.stdout)
+    assert "HUNTMCP_TEST_FAKE_SECRET" not in child_env
+
+
+def test_run_tool_allowlist_includes_proxy_and_tls_trust_vars(monkeypatch):
+    """Regression (code-review finding, CONFIRMED): the allowlist must
+    include standard proxy/CA-trust vars, or an operator running these
+    tools behind a corporate proxy / TLS-inspecting network silently loses
+    that routing/trust after this environment scrub -- a real capability
+    regression, not just hardening."""
+    monkeypatch.setattr("tool_resolver._enforce_budget", lambda name: None)
+    monkeypatch.setattr("tool_resolver._log_call", lambda *a, **k: None)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/custom-ca.pem")
+    result = run_tool(
+        "python3",
+        ["-c", "import json, os, sys; json.dump(dict(os.environ), sys.stdout)"],
+        retry_on_rate_limit=False,
+    )
+    child_env = json.loads(result.stdout)
+    assert child_env.get("HTTPS_PROXY") == "http://proxy.example:8080"
+    assert child_env.get("SSL_CERT_FILE") == "/etc/ssl/custom-ca.pem"

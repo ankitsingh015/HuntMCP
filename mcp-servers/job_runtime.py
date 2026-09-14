@@ -68,7 +68,7 @@ from typing import Any, Callable, NamedTuple
 
 from audit_log import log_call as _log_call
 from budget_guard import enforce as _enforce_budget
-from tool_resolver import classify_block, resolve_tool
+from tool_resolver import classify_block, minimal_subprocess_env, resolve_tool
 
 # Past this many seconds since the last poll saw it running, list_jobs()
 # flags a job as likely-abandoned -- informational only, never auto-killed
@@ -114,6 +114,16 @@ def start_job(tool_name: str, args: list[str], max_wall_seconds: int, jobs: dict
             proc = subprocess.Popen(
                 [binary, *args],
                 stdout=out, stderr=err, stdin=subprocess.DEVNULL, cwd=cwd,
+                # S3 (code-review finding, CONFIRMED): this is the actual
+                # subprocess-spawn chokepoint every real scan goes through
+                # (httpx-mcp/nuclei-mcp/katana-mcp/nmap-mcp/dalfox-mcp/
+                # ffuf-mcp/sqlmap-mcp/subfinder-mcp's real enumeration all
+                # call start_job(), not tool_resolver.run_tool() -- see
+                # this module's own docstring for why). Without this, none
+                # of tool_resolver.py's env-scrubbing fix actually applied
+                # to a real engagement's scan traffic. Reuses the same
+                # allowlist run_tool() uses rather than duplicating it.
+                env=minimal_subprocess_env(),
             )
     except Exception:
         # Launch itself failed (e.g. binary missing) -- nothing was

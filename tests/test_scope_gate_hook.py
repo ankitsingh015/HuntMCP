@@ -182,6 +182,13 @@ def test_is_rm_command_ignores_non_rm(command):
         "curl https://example.com && cat .env",
         "cat .env; ls",
         "echo hi | cat .env",
+        # Regressions (code-review findings, CONFIRMED) -- found live,
+        # none require adversarial cleverness:
+        "echo $(cat .env)",  # ordinary command substitution, not evasion
+        "echo $(head -c 100 .env)",
+        "cp .env /tmp/x",  # stages exfiltration without an interpreter
+        "mv .env /tmp/x",
+        "sudo env cat .env",  # doubled sudo/env prefix
     ],
 )
 def test_reads_env_file_detects_direct_reads(command):
@@ -197,6 +204,9 @@ def test_reads_env_file_detects_direct_reads(command):
         "ls -la",
         "echo hello",
         'echo "the file is called .env"',  # a string mentioning it, not a read
+        "cp keys.env /tmp/x",  # differently-named file through a now-gated command
+        "cp .env.example /tmp/x",  # documented file, no real secrets
+        "mv notes.txt archive/",
     ],
 )
 def test_reads_env_file_ignores_non_matches(command):
