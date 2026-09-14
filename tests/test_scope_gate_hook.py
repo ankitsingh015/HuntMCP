@@ -3,7 +3,17 @@ import json
 
 import engagement_paths
 import pytest
+import rce_confirm
 import scope_gate_hook as hook
+
+
+class _FakeTTY(io.StringIO):
+    """Same stand-in as tests/test_rce_confirm.py's -- a stdin that
+    reports itself as a real interactive terminal, the one property an
+    agent's own Bash tool call can never satisfy."""
+
+    def isatty(self):
+        return True
 
 
 @pytest.fixture(autouse=True)
@@ -326,6 +336,181 @@ def test_main_blocks_out_of_scope_target(monkeypatch, tmp_path):
     )
     payload = {"tool_name": "Bash", "tool_input": {"command": "nuclei -u someothersite.com"}}
     assert _run_main(monkeypatch, payload) == 2
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sqlmap -u https://target.com/page?id=1 --os-shell",
+        "sqlmap -u https://target.com/page?id=1 --os-pwn",
+        "sqlmap -u https://target.com/page?id=1 --os-cmd=whoami",
+        "sqlmap -u https://target.com/page?id=1 --os-bof",
+        "sudo sqlmap -u https://target.com --os-shell",
+        "curl https://x.com && sqlmap -u https://target.com --os-shell",
+        "sqlmap -u https://target.com --os-shell; ls",
+        # Regressions (code-review findings, CONFIRMED, found by 2
+        # independent angles): the sub-command's FIRST word being "sqlmap"
+        # was too narrow -- a wrapper that puts other words before it
+        # (a timer, a loop tool) previously evaded detection entirely.
+        "timeout 600 sqlmap -u https://target.com --os-shell",
+        "xargs -I{} sqlmap {} --os-shell",
+    ],
+)
+def test_is_persistent_rce_command_detects_os_shell_flags(command):
+    assert hook._is_persistent_rce_command(command) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sqlmap -u https://target.com/page?id=1 --batch",
+        "sqlmap -u https://target.com --level 3 --risk 2",
+        "echo '--os-shell is dangerous'",  # prose, not an actual sqlmap call
+        "nuclei -u https://target.com --os-shell",  # not sqlmap at all
+    ],
+)
+def test_is_persistent_rce_command_ignores_non_matches(command):
+    assert hook._is_persistent_rce_command(command) is False
+
+
+def test_main_blocks_os_shell_with_no_engagement_and_no_confirmation(monkeypatch, tmp_path):
+    """Blanket 'never run without explicit human confirm' rule, same
+    category as the rm-block and .env-block above -- must block even with
+    no engagement.yaml at all, since this isn't a scope rule."""
+    monkeypatch.setenv("HUNTMCP_RCE_CONFIRM_PATH", str(tmp_path / "os-shell-confirm.json"))
+    monkeypatch.chdir(tmp_path)
+    payload = {"tool_name": "Bash", "tool_input": {"command": "sqlmap -u https://target.com --os-shell"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_os_shell_even_with_in_scope_engagement_and_no_confirmation(monkeypatch, tmp_path):
+    monkeypatch.setenv("HUNTMCP_RCE_CONFIRM_PATH", str(tmp_path / "os-shell-confirm.json"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "sqlmap -u https://realtarget-corp.com --os-shell"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_allows_os_shell_with_a_fresh_confirmation_token(monkeypatch, tmp_path):
+    token_path = str(tmp_path / "os-shell-confirm.json")
+    monkeypatch.setenv("HUNTMCP_RCE_CONFIRM_PATH", token_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    ok = rce_confirm.request_confirmation(
+        "realtarget-corp.com", stdin=_FakeTTY("realtarget-corp.com\n"),
+        stdout=io.StringIO(), path=token_path,
+    )
+    assert ok is True
+    payload = {"tool_name": "Bash", "tool_input": {"command": "sqlmap -u https://realtarget-corp.com --os-shell"}}
+    assert _run_main(monkeypatch, payload) == 0
+
+
+def test_main_os_shell_confirmation_is_single_use(monkeypatch, tmp_path):
+    """The whole point of consuming (not just checking) the token: a second
+    --os-shell attempt must need its own fresh human confirm, not ride the
+    first one indefinitely."""
+    token_path = str(tmp_path / "os-shell-confirm.json")
+    monkeypatch.setenv("HUNTMCP_RCE_CONFIRM_PATH", token_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    rce_confirm.request_confirmation(
+        "realtarget-corp.com", stdin=_FakeTTY("realtarget-corp.com\n"),
+        stdout=io.StringIO(), path=token_path,
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "sqlmap -u https://realtarget-corp.com --os-shell"}}
+    assert _run_main(monkeypatch, payload) == 0
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_fails_closed_when_rce_confirm_raises_internal_error(monkeypatch, tmp_path):
+    """Regression (code-review finding, CONFIRMED): the S4 check previously
+    sat OUTSIDE main()'s fail-closed try/except net -- an internal error
+    here (a permissions error, a disk-full write, a lock-file problem)
+    would propagate uncaught out of main(), and since only exit 2 is this
+    harness's documented block signal, both real callers (Claude Code's
+    PreToolUse dispatch and OpenCode's scope-gate.ts) would treat that as
+    an implicit ALLOW -- letting a persistent-RCE command straight through
+    on an internal error, the exact fail-open class S1 exists to close."""
+    monkeypatch.setenv("HUNTMCP_RCE_CONFIRM_PATH", str(tmp_path / "os-shell-confirm.json"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+
+    def _boom(*a, **k):
+        raise OSError("simulated disk error")
+
+    monkeypatch.setattr(rce_confirm, "check_and_consume", _boom)
+    payload = {"tool_name": "Bash", "tool_input": {"command": "sqlmap -u https://realtarget-corp.com --os-shell"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_os_shell_confirmed_for_a_different_target(monkeypatch, tmp_path):
+    """Regression (code-review finding, CONFIRMED, corroborated by 5
+    independent review angles): a confirmation for one target must not
+    silently authorize --os-shell against a different one, even within
+    the same TTL window."""
+    token_path = str(tmp_path / "os-shell-confirm.json")
+    monkeypatch.setenv("HUNTMCP_RCE_CONFIRM_PATH", token_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    rce_confirm.request_confirmation(
+        "a-different-target.com", stdin=_FakeTTY("a-different-target.com\n"),
+        stdout=io.StringIO(), path=token_path,
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "sqlmap -u https://realtarget-corp.com --os-shell"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_os_shell_confirmed_action_logs_an_audit_entry(monkeypatch, tmp_path):
+    """The one action S4 exists to gate must leave an audit trail once
+    allowed -- unlike curl/wget, raw-Bash sqlmap calls have no other
+    audit_log wiring anywhere in this file (they're normally assumed to be
+    audited via sqlmap-mcp's own run_tool(), which a raw Bash call never
+    goes through)."""
+    token_path = str(tmp_path / "os-shell-confirm.json")
+    monkeypatch.setenv("HUNTMCP_RCE_CONFIRM_PATH", token_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    rce_confirm.request_confirmation(
+        "realtarget-corp.com", stdin=_FakeTTY("realtarget-corp.com\n"),
+        stdout=io.StringIO(), path=token_path,
+    )
+    audit_calls = []
+    monkeypatch.setattr(
+        hook, "_log_call",
+        lambda tool, args, returncode, duration_ms, block: audit_calls.append(
+            (tool, args, returncode, duration_ms, block)
+        ),
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "sqlmap -u https://realtarget-corp.com --os-shell"}}
+    assert _run_main(monkeypatch, payload) == 0
+    assert len(audit_calls) == 1
+    assert audit_calls[0][0] == "sqlmap-os-shell-confirmed"
+
+
+def test_main_ordinary_sqlmap_call_unaffected_by_confirm_gate(monkeypatch, tmp_path):
+    """Regression: the confirm gate must be scoped to the persistent-RCE
+    flags only -- an ordinary --batch injection test against an in-scope
+    target must keep working exactly as before, with no confirmation step
+    at all."""
+    monkeypatch.setenv("HUNTMCP_RCE_CONFIRM_PATH", str(tmp_path / "os-shell-confirm.json"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "sqlmap -u https://realtarget-corp.com --batch"}}
+    assert _run_main(monkeypatch, payload) == 0
 
 
 def test_main_blocks_raw_curl_to_out_of_scope_target(monkeypatch, tmp_path):
