@@ -29,7 +29,7 @@ item is `[x]` until its gate has actually passed.
 | CEM Phase-1 proof engine | `cem_engine.py`, `case_store` CEM tables | `tests/test_cem_benchmark.py` + `fixtures/cem_target/` | **[x] FROZEN/VERIFIED (#101)** | nothing — do not rebuild |
 | Hypothesis lifecycle store | `case_store` hypotheses/findings/evidence/experiments | case-store tests | [x] baseline | provenance + lineage (see C1a) |
 | Content-addressed evidence | SHA-256 store (`add_evidence(content:str)`) | yes | [~] integrity only | provenance binding (C1a) |
-| Scope enforcement | 3-layer + PreToolUse `scope_gate_hook.py` | partial | **[~] fail-OPEN, narrow** | fail-closed + tamper-resist + CI test (S1/S2/S6) |
+| Scope enforcement | 3-layer + PreToolUse `scope_gate_hook.py` | yes | **[~] fail-closed + CI-verified (S1/S2 done)** | tamper-resist (S6) |
 | Secret handling | `dotenv_loader` loads full `.env` into `os.environ` | — | **[~] over-broad** | secrets-out (S3) |
 | Engagement/state isolation | `engagement_paths.py`, `file_lock`, WAL | yes | [x] baseline | — |
 | Cross-run memory/knowledge | memory/writeup/lessons-mcp | yes | [x] baseline | — |
@@ -40,7 +40,7 @@ item is `[x]` until its gate has actually passed.
 | Budget / audit / jobs | `budget_guard.py`, `audit_log.py`, `job_runtime.py` | yes | [x] baseline | — |
 | Toolkit-gap capture | `tool_gaps.py` (bounded first step) | yes | [~] capture only | human-gated growth (P5-TOOLKIT) |
 | Second-opinion review | `second-opinion-mcp` (cross-model) | yes | [x] baseline | (env-isolation unexamined) |
-| CI | `.github/workflows/ci.yml` (ruff, py_compile, bash -n) | — | [~] | scope-gate block-test + SAST/dep-audit (S2, P2-SC) |
+| CI | `.github/workflows/ci.yml` (ruff, py_compile, bash -n, scope-gate-dispatch) | — | [~] | SAST/dep-audit (P2-SC) |
 | Execution isolation / sandbox | **none** (grep=0) | — | **[ ]** | Tier-2 (S5/S6) |
 | Telemetry / coverage / postmortem / provenance | **none** | — | **[ ]** | P2 work packages |
 | schemathesis / discovery amplification | **absent** | — | **[ ]** | P3 |
@@ -55,7 +55,7 @@ begins.** Tier-2 is NOT optional.*
 | ID | St | Task · Why | Deps | v3 § |
 |---|---|---|---|---|
 | **S1** | [x] | Scope hook **fail-closed** for target-touching calls (internal error blocks the *gated call*, not the session). *Why:* current hook fails open; SPOF. | — | §6 Tier-1 |
-| **S2** | [~] | CI **scope-gate block-test** — prove an out-of-scope call is actually blocked. *Why:* fail-open registration SPOF. Implementation + tests + local verification done (incl. a clean-clone run reproducing CI's exact job/dependency set); the tracker's own §10 evidence requirement ("CI run") is not yet satisfied since this job hasn't executed on GitHub Actions — flip to [x] after the first real CI run passes. | S1 | §6 Tier-1 |
+| **S2** | [x] | CI **scope-gate block-test** — prove an out-of-scope call is actually blocked. *Why:* fail-open registration SPOF. Verified: [PR #103](https://github.com/ankitsingh015/HuntMCP/pull/103), merged `017a2cd` — the `scope-gate-dispatch` job ran green in GitHub Actions alongside the rest of CI, satisfying the §10 "CI run" evidence requirement. | S1 | §6 Tier-1 |
 | **S3** | [ ] | **Secrets-out** of untrusted execution — per-key injection; `.env` unreadable by sandboxed exec. *Why:* full-`.env` load is harvestable. | — | §6 Tier-1 |
 | **S4** | [ ] | **`--os-shell` / state-changing confirmation tier** — explicit human confirm. *Why:* persistent RCE, no distinct gate today. | — | §6 Tier-1 |
 | **S5** | [ ] | **Rootless per-run execution boundary** (swappable; no root; egress-restricted). *Why:* whole-host TCB. | S1–S4 | §6 Tier-2 |
