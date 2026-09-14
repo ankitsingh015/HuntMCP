@@ -275,15 +275,86 @@ def _mcp_tool_name(tool_name: str) -> str:
 
 
 
+def _block(msg: str) -> int:
+    print(msg, file=sys.stderr)
+    return 2
+
+
 def main() -> int:
+    # S1 (fail-closed target-touching scope behavior): malformed stdin means
+    # this hook cannot even determine which tool call it's guarding -- it
+    # might be a raw Tier-2 curl/nuclei/etc. call to an out-of-scope host,
+    # which is exactly what this hook exists to catch. Previously returned 0
+    # here ("fail open, never break the session over this"); that let a
+    # corrupted/tampered hook invocation silently allow the one class of
+    # call this hook is the sole enforcement point for. Block instead --
+    # this stops only the ONE gated tool call that produced the malformed
+    # payload (exit 2, clear stderr reason), not the session itself. In real
+    # operation Claude Code/OpenCode construct this JSON themselves from the
+    # tool call already in flight, so this is not expected to fire on
+    # ordinary Read/Edit/git-status traffic.
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
-        return 0  # malformed input -- fail open, never break the session over this
+        return _block(
+            "BLOCKED by scope gate: could not parse the hook's own stdin "
+            "payload (malformed JSON). Failing closed rather than silently "
+            "allowing a tool call this hook could not inspect -- retry the "
+            "tool call; if this persists, the hook invocation itself is "
+            "broken and needs a human look."
+        )
+
+    # Syntactically valid JSON that isn't shaped like {"tool_name": ...,
+    # "tool_input": {...}} (a bare null/list/string/number, or a dict whose
+    # tool_name isn't a string) leaves this hook just as unable to identify
+    # the tool call as the parse-failure case above -- same reasoning, same
+    # fail-closed response. Found live during review: e.g. `echo null |
+    # ...` previously crashed on payload.get() with an uncaught
+    # AttributeError (exit 1), which both real callers (.claude/
+    # settings.json's PreToolUse dispatch and .opencode/plugin/
+    # scope-gate.ts's `exitCode === 2` check) treat as an implicit allow --
+    # the exact fail-open gap S1 exists to close, just reachable one step
+    # earlier than the Tier-2 evaluation below.
+    if not isinstance(payload, dict):
+        return _block(
+            "BLOCKED by scope gate: hook payload is not a JSON object. "
+            "Failing closed rather than silently allowing a tool call this "
+            "hook could not inspect."
+        )
 
     tool_name = payload.get("tool_name", "")
-    tool_input = payload.get("tool_input", {}) or {}
+    if not isinstance(tool_name, str):
+        return _block(
+            "BLOCKED by scope gate: hook payload's tool_name is not a "
+            "string. Failing closed rather than silently allowing a tool "
+            "call this hook could not inspect."
+        )
+
+    # Decided purely from tool_name, before tool_input is ever touched --
+    # this is what keeps the fail-closed shape-checks below from widening
+    # the gate to non-Tier2 tools. A malformed/unexpected tool_input on a
+    # tool this hook was never going to gate (Read, Grep, WebFetch, ...)
+    # must still pass straight through untouched.
+    if tool_name != "Bash" and not tool_name.startswith("mcp__"):
+        return 0
+
+    tool_input = payload.get("tool_input", {})
+    if tool_input is None:
+        tool_input = {}
+    if not isinstance(tool_input, dict):
+        return _block(
+            f"BLOCKED by scope gate: {tool_name!r} call's tool_input is not "
+            "a JSON object. Failing closed rather than silently allowing a "
+            "tool call this hook could not inspect."
+        )
+
     command = tool_input.get("command", "")
+    if tool_name == "Bash" and not isinstance(command, str):
+        return _block(
+            "BLOCKED by scope gate: this Bash call's command is not a "
+            "string. Failing closed rather than silently allowing a tool "
+            "call this hook could not inspect."
+        )
 
     # Blanket rm block -- unconditional, independent of scope/engagement
     # state entirely (this is a "never run rm, never ask" rule, not a
@@ -297,55 +368,81 @@ def main() -> int:
     # several pattern/ordering attempts, so this hook is the real
     # enforcement point on that harness, same as it already is for scope.
     if tool_name == "Bash" and _is_rm_command(command):
-        print(
+        return _block(
             "BLOCKED: rm is disabled by default in this repo (both Claude "
             "Code and OpenCode) -- ask the user to delete the file "
-            "themselves, or move it aside instead of removing it.",
-            file=sys.stderr,
+            "themselves, or move it aside instead of removing it."
         )
-        return 2
 
-    if tool_name == "Bash":
-        candidates = _extract_hosts_from_bash(command)
-    elif tool_name.startswith("mcp__"):
-        server = _mcp_server_name(tool_name)
-        if server in TIER2_MCP_SERVERS:
-            candidates = _extract_hosts_from_tool_input(tool_input)
-        elif server in TIER2_MCP_TOOLS:
-            # Mixed server: only the named network tools are gated; every other
-            # tool on it is local and passes straight through.
-            if _mcp_tool_name(tool_name) not in TIER2_MCP_TOOLS[server]:
-                return 0
-            candidates = _extract_hosts_from_tool_input(tool_input)
-        else:
-            return 0
-    else:
-        return 0
-
-    if not candidates:
-        return 0
-
+    # S1 (fail-closed target-touching scope behavior): everything in this
+    # try -- binary/server narrowing, host extraction from tool_input,
+    # engagement load, in-scope check -- is the Tier-2 (target-touching)
+    # evaluation this hook exists to perform. A `return 0` for a tool this
+    # hook has determined is NOT Tier-2 (non-Tier-2 MCP server, a
+    # locally-scoped tool on a mixed server) is an ordinary, intentional
+    # exit from inside the try -- returning doesn't raise, so it never
+    # reaches the except below, and this does NOT widen the gate to
+    # non-Tier2 tools. What the except DOES catch is any unexpected
+    # exception raised while evaluating a call already identified as
+    # Tier-2 (a malformed engagement.yaml, a bug in host extraction, etc.)
+    # -- previously such an exception propagated uncaught, and since only
+    # exit 2 is this harness's documented block signal, that silently
+    # allowed the call through. Block instead. load_engagement()'s own two
+    # documented exceptions still get their own specific message via a
+    # small nested try immediately around that one call (see below); this
+    # outer except is the generic net for everything else.
     try:
-        engagement = load_engagement()
-    except (NoEngagementFile, RuntimeError):
-        print(
-            "BLOCKED by scope gate: no engagement.yaml found, but this call "
-            f"names a real-looking target host ({candidates[0]!r}). Write "
-            "engagement.yaml at Phase 0 before any Tier-2 action, or use a "
-            "known test host (example.com/localhost) for MCP server dev work.",
-            file=sys.stderr,
-        )
-        return 2
+        if tool_name == "Bash":
+            candidates = _extract_hosts_from_bash(command)
+        else:
+            server = _mcp_server_name(tool_name)
+            if server in TIER2_MCP_SERVERS:
+                candidates = _extract_hosts_from_tool_input(tool_input)
+            elif server in TIER2_MCP_TOOLS:
+                # Mixed server: only the named network tools are gated; every
+                # other tool on it is local and passes straight through.
+                if _mcp_tool_name(tool_name) not in TIER2_MCP_TOOLS[server]:
+                    return 0
+                candidates = _extract_hosts_from_tool_input(tool_input)
+            else:
+                return 0
 
-    for host in candidates:
-        if not is_in_scope(host, engagement):
-            print(
-                f"BLOCKED by scope gate: {host!r} is not in engagement.yaml's "
-                f"in_scope list for {engagement.target!r}. Refusing this tool "
-                "call -- do not work around this.",
-                file=sys.stderr,
+        if not candidates:
+            return 0
+
+        # load_engagement()'s own two documented exceptions get a nested,
+        # specific try/except here rather than sharing the outer except
+        # below -- `candidates` is only guaranteed bound by this point (the
+        # `if not candidates: return 0` above already ran), so the
+        # candidates[0] reference in this message would be unsafe if
+        # NoEngagementFile/RuntimeError could somehow be raised any
+        # earlier. Nesting keeps that guarantee explicit instead of relying
+        # on "the extraction helpers happen not to raise those two types."
+        try:
+            engagement = load_engagement()
+        except (NoEngagementFile, RuntimeError):
+            return _block(
+                "BLOCKED by scope gate: no engagement.yaml found, but this call "
+                f"names a real-looking target host ({candidates[0]!r}). Write "
+                "engagement.yaml at Phase 0 before any Tier-2 action, or use a "
+                "known test host (example.com/localhost) for MCP server dev work."
             )
-            return 2
+
+        for host in candidates:
+            if not is_in_scope(host, engagement):
+                return _block(
+                    f"BLOCKED by scope gate: {host!r} is not in engagement.yaml's "
+                    f"in_scope list for {engagement.target!r}. Refusing this tool "
+                    "call -- do not work around this."
+                )
+    except Exception as exc:  # noqa: BLE001 -- deliberate fail-closed net, see comment above
+        return _block(
+            "BLOCKED by scope gate: internal error while evaluating this "
+            f"Tier-2 call ({exc!r}). Failing closed rather than silently "
+            "allowing a call this hook could not verify -- do not work "
+            "around this; fix the underlying error (e.g. a malformed "
+            "engagement.yaml) instead."
+        )
 
     # curl/wget/curl-rl.sh have no dedicated MCP wrapper (see the module
     # docstring/TIER2_BASH_TOOLS comment above), so nothing else in this
