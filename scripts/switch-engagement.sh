@@ -7,6 +7,10 @@
 #       Refuses (exit 3) instead of silently switching if a DIFFERENT,
 #       not-yet-complete target is already active -- add --force to switch
 #       anyway once you've decided that's what you want.
+#   scripts/switch-engagement.sh complete [<target>] -> marks the active
+#       engagement complete. Pass <target> (the one you believe is active)
+#       so this refuses instead of silently completing a DIFFERENT
+#       engagement if a concurrent session switched the pointer.
 #   scripts/switch-engagement.sh current        -> prints the active slug+dir
 #   scripts/switch-engagement.sh list           -> JSON, every known engagement
 #   scripts/switch-engagement.sh sessions       -> copy-paste-ready

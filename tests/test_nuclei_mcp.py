@@ -1,5 +1,7 @@
 import importlib.util
 import os
+import shutil
+import subprocess
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -89,6 +91,45 @@ def test_check_scan_surfaces_waf_block(monkeypatch):
     out = nuclei_server.check_scan("job-waf")
     assert "WAF" in out
     assert "BLOCK DETECTED" in out
+
+
+def test_scan_target_builds_args_with_jsonl_not_json(monkeypatch):
+    """Regression test: nuclei v3 removed the old `-json` flag entirely
+    (only `-jsonl` remains), which made every real scan_target()/
+    scan_with_templates() call fail immediately with "flag provided but
+    not defined: -json" -- reported live in a real engagement retrospective
+    as the primary scan capability being completely dead. _format_findings
+    already parses line-delimited JSON, so the fix is the flag name, not
+    the parser."""
+    captured = {}
+
+    def _fake_start_job(tool, args, timeout, jobs):
+        captured["args"] = args
+        return {"job_id": "job-flags", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", _fake_start_job)
+    nuclei_server.scan_target("target.com")
+    assert "-jsonl" in captured["args"]
+    assert "-json" not in captured["args"]
+
+    nuclei_server.scan_with_templates("target.com", "cves/2021")
+    assert "-jsonl" in captured["args"]
+    assert "-json" not in captured["args"]
+
+
+def test_scan_target_flags_are_accepted_by_the_installed_nuclei_binary():
+    """Live compatibility check (skipped if nuclei isn't installed): builds
+    the same args scan_target() sends and runs them against a closed local
+    port, so nuclei fails on connection refused rather than touching any
+    real target -- but a flag-parsing failure ("flag provided but not
+    defined") is caught immediately, which is exactly how the `-json`
+    bug surfaced in practice."""
+    nuclei_path = shutil.which("nuclei")
+    if not nuclei_path:
+        return
+    args = [nuclei_path, "-u", "http://127.0.0.1:1", "-severity", "medium,high,critical", "-silent", "-jsonl"]
+    result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    assert "flag provided but not defined" not in result.stderr
 
 
 def test_check_scan_timeout_status_returns_error_and_cleans_up(monkeypatch):

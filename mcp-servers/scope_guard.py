@@ -182,8 +182,25 @@ def is_in_scope(target: str, engagement: Engagement) -> bool:
     host = _host_of(target)
     if is_safe_test_host(host):
         return True
+
+    # A broad out_of_scope wildcard (e.g. "*.example.com", meant to express
+    # "no sibling hosts of the same root domain") used to silently shadow an
+    # explicit, specific in_scope literal (e.g. "app.example.com") -- the
+    # guard checked out_of_scope first with no awareness of in_scope at all,
+    # so a self-contradictory-looking-but-actually-fine engagement file
+    # (a program that scopes specific hosts under a domain it otherwise
+    # excludes) blocked hosts the operator explicitly authorized, with no
+    # indication why. Reported live, independently, in two engagements.
+    # Fix: an EXACT in_scope literal wins over a WILDCARD out_of_scope
+    # match on the same host -- this is unambiguous (the operator spelled
+    # this exact host out by name) and strictly more precise, not looser:
+    # an exact out_of_scope literal (a genuine, deliberate exclusion of
+    # this precise host) still wins over everything, same as before.
+    exact_in_scope = host in engagement.in_scope
     for pattern in engagement.out_of_scope:
         if _matches(host, pattern):
+            if exact_in_scope and "*" in pattern:
+                continue
             return False
     return any(_matches(host, pattern) for pattern in engagement.in_scope)
 

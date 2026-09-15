@@ -13,9 +13,11 @@ def save(target: str, data_json: str) -> str:
     """Upsert this target's hunt record -- safe to call repeatedly across
     an engagement (Phase 1-2, Phase 3, and a final call at Phase 6), each
     call merges in whatever's new. data_json is a JSON object with any of:
-    findings (list), chains (list), tech_stack (list of strings),
-    subdomains (list of strings), bounty_estimate (string),
-    summary (string) -- all optional, omit what you don't have yet."""
+    findings (list of {finding, vuln_class, confidence} objects, or plain
+    strings -- either shape is accepted), chains (list of strings),
+    tech_stack (list of strings), subdomains (list of strings),
+    bounty_estimate (string), summary (string) -- all optional, omit what
+    you don't have yet."""
     try:
         data = json.loads(data_json)
     except json.JSONDecodeError as e:

@@ -152,6 +152,31 @@ HOSTNAME_RE = re.compile(
 
 URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 
+# Matches a whole email address (local-part@domain), so it can be blanked
+# out of a command BEFORE the HOSTNAME_RE fallback scan runs -- reported
+# live, independently, across two engagements: a curl call whose JSON
+# request body or header value contained a free-text email address was
+# blocked as "host not in scope" even though the actual request target
+# (matched separately, via URL_RE, before this fallback regex ever runs)
+# was fully in scope. An email domain is data being sent IN a request, not
+# a destination the request is being sent TO -- it was never a real scope
+# violation to begin with, so this loses no genuine detection.
+#
+# Deliberately a whole-span removal (same pattern as URL_RE's span removal
+# below), NOT a bare `(?<!@)` lookbehind on HOSTNAME_RE itself -- a
+# lookbehind only blocks a match from STARTING immediately after "@", but
+# HOSTNAME_RE's own label pattern allows hyphens inside a label, so for a
+# hyphenated domain (e.g. "tester@my-mail-host.example.org") the regex
+# engine can still re-enter and match a bogus PARTIAL suffix like
+# "mail-host.example.org" starting right after the hyphen -- confirmed by
+# hand: `(?<!@)`-only left "corp.com" leaking out of
+# "tester@realtarget-corp.com". Removing the whole matched email span
+# first closes that; there's no substring left for HOSTNAME_RE to
+# re-enter on.
+EMAIL_RE = re.compile(
+    r"[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}"
+)
+
 # SAFE_TEST_HOSTS/DEV_INFRA_HOSTS/NON_TLD_FILE_EXTENSIONS and the
 # is_safe_test_host() check itself moved to scope_guard.py 2026-08-29 -- it's
 # the shared authority scripts/check-scope.sh's CLI also needs (that script
@@ -369,6 +394,11 @@ def _extract_hosts_from_bash(command: str) -> list[str]:
     remainder = command
     for start, end in sorted(seen_spans, reverse=True):
         remainder = remainder[:start] + " " + remainder[end:]
+
+    # Also remove whole email-address spans (see EMAIL_RE's own comment for
+    # why this has to be a full-span removal, not a lookbehind on
+    # HOSTNAME_RE itself) before the fallback scan.
+    remainder = EMAIL_RE.sub(" ", remainder)
 
     hosts.extend(HOSTNAME_RE.findall(remainder))
     return [h for h in hosts if not _is_candidate_exempt(h)]

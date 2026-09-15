@@ -160,11 +160,15 @@ file). Two distinct things it protects, together:
   the right move is almost always a fresh chat session for the new target,
   not continuing here; only proceed in the same chat if the user explicitly
   says so.
-- Call `scripts/switch-engagement.sh complete` at Phase 6 (below), once the
-  engagement's final `save()` and report are done — this marks the target
-  complete so a *future* chat's `check` on a different target won't warn
-  about it anymore. An engagement you never mark complete stays "mid-hunt"
-  from `check`'s perspective indefinitely, which is the conservative
+- Call `scripts/switch-engagement.sh complete <target>` at Phase 6 (below),
+  once the engagement's final `save()` and report are done — this marks
+  the target complete so a *future* chat's `check` on a different target
+  won't warn about it anymore. Always pass `<target>` explicitly (the one
+  THIS chat has been hunting) — a concurrent session on a different target
+  could have switched the shared pointer since you last checked it, and
+  passing it makes this refuse instead of silently marking the wrong
+  engagement complete. An engagement you never mark complete stays
+  "mid-hunt" from `check`'s perspective indefinitely, which is the conservative
   default (better an unnecessary prompt than a silently mixed chat).
 - `scripts/switch-engagement.sh list` shows every known target with its
   Tier-2 call count and complete/incomplete status — a quick view of
@@ -244,7 +248,16 @@ never being the only place data lives:
 
 15. Spawn `exploit-agent` with scan findings + chain-planner's analysis.
     Only CONFIRMED findings (validated, reproduced) continue to Phase 5 —
-    an unconfirmed candidate never reaches the report.
+    an unconfirmed candidate never reaches the report. This applies EVEN
+    when you are the one holding a live credential (a bearer token/cookie
+    the user just supplied) and it would be quicker to test the
+    authenticated surface yourself with a raw `curl` — don't. Reported
+    live: doing so bypasses exploit-agent's entire validation machinery
+    (OOB callback confirmation, browser-execution confirmation,
+    cross-model second opinion, the evidence-gated finding lifecycle) at
+    exactly the moment it matters most, since your own tool scope
+    deliberately excludes those MCPs. Pass the credential to exploit-agent
+    in its spawn prompt instead and let it drive the authenticated testing.
 
 ## Phase 5 — Report
 
@@ -284,10 +297,13 @@ never being the only place data lives:
     with `mcp-servers/content_scanner.py` before being trusted, same as
     any other new content (see "Self-expanding toolkit" in ARCHITECTURE.md
     for the full design rationale).
-20. Run `scripts/switch-engagement.sh complete` — marks this target's
-    engagement complete so a future chat starting a different target
-    won't get an unnecessary "still mid-hunt" warning from `check` (see
-    "Multi-target hunting" above). Only run this once the engagement is
+20. Run `scripts/switch-engagement.sh complete <target>` — marks this
+    target's engagement complete so a future chat starting a different
+    target won't get an unnecessary "still mid-hunt" warning from `check`
+    (see "Multi-target hunting" above). Always pass `<target>` explicitly
+    (the one THIS chat has been hunting) so this refuses instead of
+    silently completing a different engagement if a concurrent session
+    switched the shared pointer. Only run this once the engagement is
     genuinely done, not after a partial/interrupted run you intend to
     resume later.
 21. Summarize results to the user: what was found, severity, attack

@@ -76,7 +76,7 @@ def scan_target(target: str, severity: str = "medium,high,critical", timeout: in
     than an MCP client's own per-call timeout. Poll check_scan(job_id) for
     the result. Use scan_with_templates() instead to run a specific
     template/category rather than everything at that severity."""
-    args = ["-u", target, "-severity", severity, "-silent", "-json"]
+    args = ["-u", target, "-severity", severity, "-silent", "-jsonl"]
     return _start(target, args, timeout, f"No vulnerabilities found on {target} (severity: {severity}).")
 
 
@@ -87,7 +87,7 @@ def scan_with_templates(target: str, templates: str, timeout: int = 300) -> str:
     (e.g. "cves/2021" or "exposed-panels"), a file path, a directory path,
     or a comma-separated list of any of those. Also backgrounded -- poll
     check_scan(job_id) for the result."""
-    args = ["-u", target, "-t", templates, "-silent", "-json"]
+    args = ["-u", target, "-t", templates, "-silent", "-jsonl"]
     return _start(target, args, timeout, "No vulnerabilities found with the specified templates.")
 
 
