@@ -43,10 +43,15 @@ CLI usage (what HuntBrain runs via Bash at Phase 0):
            for a target that already has a directory (a resume, not a
            fresh start) does NOT touch its existing budget/work-registry/
            findings-seen/engagement.yaml; it only switches the pointer.
-    python3 mcp-servers/engagement_paths.py complete
+    python3 mcp-servers/engagement_paths.py complete [<target>]
         -> marks the CURRENTLY active target's directory complete (Phase 6
            write-back). Lets a later `check` on a different target proceed
            without a warning, since this target's hunt is genuinely done.
+           Pass <target> (the one YOU believe is active) so this refuses
+           (exit 3) instead of silently completing a DIFFERENT engagement
+           if a concurrent session switched the pointer since you last
+           checked it -- always pass it; the no-arg form is kept only for
+           backward compatibility with callers that haven't been updated.
     python3 mcp-servers/engagement_paths.py current
         -> prints the active slug and its directory, or "none" if unset
     python3 mcp-servers/engagement_paths.py list
@@ -101,6 +106,13 @@ class ActiveEngagementConflict(Exception):
     """Raised by set_active_target() when switching would silently drop a
     different, not-yet-complete engagement without the caller deciding
     that's what they want. .args[0] is the human-readable warning."""
+
+
+class ActiveEngagementMismatch(Exception):
+    """Raised by mark_complete() when the caller's expected_target doesn't
+    match whatever the global pointer currently points at -- the signal
+    that a concurrent session changed the pointer since this caller last
+    checked it. .args[0] is the human-readable warning."""
 
 
 def slugify(target: str) -> str:
@@ -225,16 +237,44 @@ def is_complete(slug: str, engagements_root: str | None = None) -> bool:
     return os.path.isfile(_complete_marker(slug, engagements_root))
 
 
-def mark_complete(pointer_path: str | None = None,
-                   engagements_root: str | None = None) -> str | None:
+def mark_complete(pointer_path: str | None = None, engagements_root: str | None = None,
+                   *, expected_target: str | None = None) -> str | None:
     """Mark the currently active target's directory complete. Returns the
-    slug marked, or None if no target is active."""
-    slug = get_active_target(pointer_path)
-    if not slug:
-        return None
-    with open(_complete_marker(slug, engagements_root), "w") as f:
-        f.write("")
-    return slug
+    slug marked, or None if no target is active.
+
+    This is a target-LESS terminal action by default -- it acts on
+    whatever the global pointer currently says, which is exactly the bug
+    reported live (twice, independently) in real engagements: a concurrent
+    session changed the pointer mid-hunt, and a `complete` call intended
+    for one engagement silently marked a DIFFERENT one complete instead.
+
+    Pass expected_target (the target the CALLER believes is active) to
+    close that gap -- if the pointer doesn't match, this raises
+    ActiveEngagementMismatch instead of silently acting on the wrong
+    engagement. The check-then-write happens under the same pointer-path
+    lock set_active_target() uses, so a concurrent switch can't land
+    between the check and the write either.
+
+    expected_target defaults to None (old, unguarded behavior) only for
+    backward compatibility with any caller that hasn't been updated yet --
+    every caller should pass it."""
+    with file_lock.locked(ACTIVE_POINTER if pointer_path is None else pointer_path):
+        slug = get_active_target(pointer_path)
+        if not slug:
+            return None
+        if expected_target is not None:
+            expected_slug = slugify(expected_target)
+            if expected_slug != slug:
+                raise ActiveEngagementMismatch(
+                    f"Refusing to mark {expected_slug!r} complete: the active pointer currently "
+                    f"points at {slug!r} instead (a concurrent session likely switched it since "
+                    "you last checked). No action taken -- re-run "
+                    f"`scripts/switch-engagement.sh set {expected_target!r}` first if you still "
+                    "want to complete your own engagement, or investigate the concurrent session."
+                )
+        with open(_complete_marker(slug, engagements_root), "w") as f:
+            f.write("")
+        return slug
 
 
 def check_conflict(target: str, pointer_path: str | None = None,
@@ -350,7 +390,12 @@ def _cli() -> None:
             sys.exit(3)
         print(slug)
     elif cmd == "complete":
-        slug = mark_complete()
+        expected_target = sys.argv[2] if len(sys.argv) > 2 else None
+        try:
+            slug = mark_complete(expected_target=expected_target)
+        except ActiveEngagementMismatch as e:
+            print(e.args[0], file=sys.stderr)
+            sys.exit(3)
         if slug:
             print(f"marked {slug} complete")
         else:

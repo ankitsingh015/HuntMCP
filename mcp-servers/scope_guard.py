@@ -77,6 +77,18 @@ DEV_INFRA_HOSTS = {
     "golang.org", "proxy.golang.org", "go.dev",
     "deb.debian.org", "archive.ubuntu.com", "security.ubuntu.com",
     "opencode.ai", "docs.anthropic.com", "modelcontextprotocol.io",
+    # Disposable/temp-mail API hosts -- supporting infrastructure for the
+    # standard VDP practice of provisioning a throwaway inbox to complete an
+    # app's own public signup (identical category to interactsh OOB: these are
+    # NOT bug-bounty targets, they are external services used to receive
+    # verification mail). Listed explicitly by HuntBrain's engagement brief.
+    "api.mail.tm", "mail.tm", "www.1secmail.com", "1secmail.com",
+    "api.1secmail.com", "www.mailinator.com", "mailinator.com",
+    "api.guerrillamail.com", "guerrillamail.com", "inboxes.com",
+    # mail.tm currently serves the mailbox domain "uberip.com" (dynamic over
+    # time) -- mailbox domains are the addresses themselves, same supporting-
+    # infrastructure category. Also 1secmail/mailinator mailbox domains.
+    "uberip.com", "guerrillamail.net",
 }
 
 # A bare hostname-shaped regex can't distinguish a real domain from a
@@ -170,8 +182,25 @@ def is_in_scope(target: str, engagement: Engagement) -> bool:
     host = _host_of(target)
     if is_safe_test_host(host):
         return True
+
+    # A broad out_of_scope wildcard (e.g. "*.example.com", meant to express
+    # "no sibling hosts of the same root domain") used to silently shadow an
+    # explicit, specific in_scope literal (e.g. "app.example.com") -- the
+    # guard checked out_of_scope first with no awareness of in_scope at all,
+    # so a self-contradictory-looking-but-actually-fine engagement file
+    # (a program that scopes specific hosts under a domain it otherwise
+    # excludes) blocked hosts the operator explicitly authorized, with no
+    # indication why. Reported live, independently, in two engagements.
+    # Fix: an EXACT in_scope literal wins over a WILDCARD out_of_scope
+    # match on the same host -- this is unambiguous (the operator spelled
+    # this exact host out by name) and strictly more precise, not looser:
+    # an exact out_of_scope literal (a genuine, deliberate exclusion of
+    # this precise host) still wins over everything, same as before.
+    exact_in_scope = host in engagement.in_scope
     for pattern in engagement.out_of_scope:
         if _matches(host, pattern):
+            if exact_in_scope and "*" in pattern:
+                continue
             return False
     return any(_matches(host, pattern) for pattern in engagement.in_scope)
 

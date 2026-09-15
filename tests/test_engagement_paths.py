@@ -5,6 +5,8 @@ import sys
 import threading
 import time
 
+import pytest
+
 import engagement_paths
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -271,6 +273,71 @@ def test_mark_complete_returns_none_when_nothing_active(tmp_path):
     pointer = str(tmp_path / ".active-engagement")
     root = str(tmp_path / "engagements")
     assert engagement_paths.mark_complete(pointer, root) is None
+
+
+def test_mark_complete_refuses_when_expected_target_does_not_match_pointer(tmp_path):
+    """Regression test for the concurrent-session pointer race reported
+    live (independently, twice) in real engagements: session A sets the
+    pointer to target-a, a concurrent session B switches it to target-b,
+    and session A's `complete` call -- believing it's still completing
+    target-a -- must refuse rather than silently marking target-b
+    complete."""
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    # A concurrent session switches the shared pointer to a different target.
+    engagement_paths.set_active_target("target-b.com", pointer, root, force=True)
+
+    with pytest.raises(engagement_paths.ActiveEngagementMismatch) as exc_info:
+        engagement_paths.mark_complete(pointer, root, expected_target="target-a.com")
+    assert "target-a-com" in str(exc_info.value)
+    assert "target-b-com" in str(exc_info.value)
+    # And target-b must NOT have been silently marked complete.
+    assert engagement_paths.is_complete("target-b-com", root) is False
+
+
+def test_mark_complete_succeeds_when_expected_target_matches_pointer(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    slug = engagement_paths.mark_complete(pointer, root, expected_target="target-a.com")
+    assert slug == "target-a-com"
+    assert engagement_paths.is_complete("target-a-com", root) is True
+
+
+def test_mark_complete_without_expected_target_keeps_old_unguarded_behavior(tmp_path):
+    """Backward compatibility: omitting expected_target preserves the old
+    behavior (act on whatever the pointer says) for any caller not yet
+    updated to pass it."""
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    slug = engagement_paths.mark_complete(pointer, root)
+    assert slug == "target-a-com"
+
+
+def test_cli_complete_refuses_on_pointer_mismatch_and_exits_3(tmp_path):
+    pointer = "data/.active-engagement"
+    root = str(tmp_path / "engagements")
+    env = {"HUNTMCP_ACTIVE_POINTER": pointer, "HUNTMCP_ENGAGEMENTS_ROOT": root}
+    _run_cli(["set", "target-a.com"], env, cwd=tmp_path)
+    _run_cli(["set", "target-b.com", "--force"], env, cwd=tmp_path)
+    result = subprocess.run(
+        [sys.executable, _ENGAGEMENT_PATHS_CLI, "complete", "target-a.com"],
+        cwd=tmp_path, env={**os.environ, **env}, capture_output=True, text=True,
+    )
+    assert result.returncode == 3
+    assert "target-a-com" in result.stderr
+    assert "target-b-com" in result.stderr
+
+
+def test_cli_complete_with_matching_target_succeeds(tmp_path):
+    pointer = "data/.active-engagement"
+    root = str(tmp_path / "engagements")
+    env = {"HUNTMCP_ACTIVE_POINTER": pointer, "HUNTMCP_ENGAGEMENTS_ROOT": root}
+    _run_cli(["set", "target-a.com"], env, cwd=tmp_path)
+    result = _run_cli(["complete", "target-a.com"], env, cwd=tmp_path)
+    assert "target-a-com" in result.stdout
 
 
 def test_is_complete_false_until_marked(tmp_path):

@@ -122,6 +122,19 @@ def test_extract_hosts_from_bash_curl_does_not_flag_output_filename():
     assert hosts == ["realtarget-corp.com"]
 
 
+def test_extract_hosts_from_bash_does_not_flag_email_domain_in_request_body():
+    """Regression test reported live, independently, across two engagement
+    retrospectives: a curl POST whose JSON body contained a free-text email
+    address was blocked as "host not in scope" even though the actual
+    request target was fully in scope -- an email address's domain is data
+    being SENT, not a destination being contacted."""
+    hosts = hook._extract_hosts_from_bash(
+        "curl -X POST https://realtarget-corp.com/signup -d '{\"email\":\"tester@notarealhost.com\"}'"
+    )
+    assert hosts == ["realtarget-corp.com"]
+    assert "notarealhost.com" not in hosts
+
+
 def test_extract_hosts_from_bash_curl_exempts_attacker_origin_placeholder():
     """Regression: a CORS/CSRF PoC's -H 'Origin: https://evil.com' names the
     attacker's own probe origin, not a live target -- evil.com must not be

@@ -82,9 +82,21 @@ def save_hunt(
         if findings:
             conn.execute("DELETE FROM findings WHERE target = ?", (target,))
             for f in findings:
+                if isinstance(f, dict):
+                    finding_text = f.get("finding", "")
+                    vuln_class = f.get("vuln_class", "")
+                    confidence = f.get("confidence", "MEDIUM")
+                else:
+                    # Callers sometimes send findings as plain strings rather
+                    # than {finding, vuln_class, confidence} objects -- accept
+                    # either shape instead of crashing (was 'str' object has
+                    # no attribute 'get').
+                    finding_text = str(f)
+                    vuln_class = ""
+                    confidence = "MEDIUM"
                 conn.execute(
                     "INSERT INTO findings (target, finding, vuln_class, confidence) VALUES (?, ?, ?, ?)",
-                    (target, f.get("finding", ""), f.get("vuln_class", ""), f.get("confidence", "MEDIUM")),
+                    (target, finding_text, vuln_class, confidence),
                 )
         if chains:
             conn.execute("DELETE FROM chains WHERE target = ?", (target,))

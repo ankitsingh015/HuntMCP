@@ -33,6 +33,37 @@ def test_accepts_full_url_not_just_bare_host():
     assert is_in_scope("https://api.example.com/path?x=1", e) is True
 
 
+def test_exact_in_scope_literal_overrides_broader_out_of_scope_wildcard():
+    """Regression test reported live, independently, in two engagement
+    retrospectives: an out_of_scope wildcard meant to express "no sibling
+    hosts of the same root domain" silently shadowed specific, explicitly
+    authorized in_scope hosts, blocking legitimate work on a correctly
+    scoped target."""
+    e = Engagement(
+        target="example.com",
+        in_scope=["app.example.com", "api.example.com"],
+        out_of_scope=["*.example.com"],
+    )
+    assert is_in_scope("app.example.com", e) is True
+    assert is_in_scope("api.example.com", e) is True
+    # A host NOT explicitly named in in_scope is still correctly excluded --
+    # the fix only rescues an exact, specific in_scope literal, not every
+    # subdomain the wildcard would otherwise have blocked.
+    assert is_in_scope("other.example.com", e) is False
+
+
+def test_exact_out_of_scope_literal_still_wins_over_exact_in_scope_literal():
+    """A genuine, deliberate exact exclusion of a specific host must still
+    win -- the fix only rescues the case where the ONLY reason a host was
+    excluded is a broader wildcard, not a real, specific exclusion."""
+    e = Engagement(
+        target="example.com",
+        in_scope=["internal.example.com"],
+        out_of_scope=["internal.example.com"],
+    )
+    assert is_in_scope("internal.example.com", e) is False
+
+
 def test_load_engagement_missing_file_raises(tmp_path):
     with pytest.raises(NoEngagementFile):
         load_engagement(str(tmp_path / "nope.yaml"))
