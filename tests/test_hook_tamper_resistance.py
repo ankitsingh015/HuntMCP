@@ -248,6 +248,113 @@ def test_main_allows_cp_with_protected_source_only(monkeypatch):
     assert _run_main(monkeypatch, payload) == 0
 
 
+# ---- wrapper-word bypass (S-GATE adversarial-regression finding, ---------
+# CONFIRMED, 4 independent verification passes, 9/10 confidence each) ------
+#
+# _strip_prefix_words() only recognized "sudo"/"env" as strippable leading
+# wrapper words -- every write-detecting branch below it (cp/mv/install/
+# rsync/ln/sed -i/tee/dd/curl/wget/tar/unzip/7z/git checkout/restore) keys
+# off the FIRST remaining word after that stripping. Any other wrapper
+# (`timeout N`, `nice`, `nohup`, `stdbuf -oFLAG`) left the real command name
+# in second-or-later position, so none of those branches ever matched --
+# live-reproduced: `timeout 5 cp /tmp/x scripts/hooks/scope_gate_hook.py`
+# returned exit 0 (ALLOWED, no confirm prompt at all), while the bare `cp`
+# and `sudo cp` forms were (correctly) already blocked. This is the exact
+# "wrapper defeats first-word matching" bug class _is_persistent_rce_
+# command() was already fixed for elsewhere in this file -- that fix was
+# never ported to _strip_prefix_words()/_writes_protected_path() itself.
+
+@pytest.mark.parametrize(
+    "wrapped_command",
+    [
+        "timeout 5 cp /tmp/malicious.py scripts/hooks/scope_gate_hook.py",
+        "nice cp /tmp/malicious.py scripts/hooks/scope_gate_hook.py",
+        "nohup cp /tmp/malicious.py scripts/hooks/scope_gate_hook.py",
+        "stdbuf -o0 cp /tmp/malicious.py scripts/hooks/scope_gate_hook.py",
+        "timeout 5 tee scripts/hooks/scope_gate_hook.py",
+        "timeout 5 mv /tmp/malicious.py scripts/hooks/scope_gate_hook.py",
+        "timeout 5 git checkout HEAD~5 -- scripts/hooks/scope_gate_hook.py",
+    ],
+)
+def test_main_blocks_protected_path_write_behind_a_wrapper(monkeypatch, wrapped_command):
+    payload = {"tool_name": "Bash", "tool_input": {"command": wrapped_command}}
+    assert _run_main(monkeypatch, payload) == 2, f"{wrapped_command!r} should still be caught"
+
+
+def test_main_allows_a_wrapped_write_to_an_unrelated_file(monkeypatch):
+    """Utility sibling: the wrapper fix must not turn every `timeout`/
+    `nice`/`nohup`-prefixed command into a false block."""
+    payload = {"tool_name": "Bash", "tool_input": {
+        "command": "timeout 5 cp /tmp/report.md data/engagements/realtarget/report.md",
+    }}
+    assert _run_main(monkeypatch, payload) == 0
+
+
+def test_main_allows_wrapped_write_once_a_human_confirms(monkeypatch):
+    _confirm(monkeypatch)
+    payload = {"tool_name": "Bash", "tool_input": {
+        "command": "timeout 5 cp /tmp/malicious.py scripts/hooks/scope_gate_hook.py",
+    }}
+    assert _run_main(monkeypatch, payload) == 0
+
+
+def test_main_does_not_claim_to_catch_a_wrapper_needing_its_own_space_separated_value(monkeypatch):
+    """ACKNOWLEDGED, NOT FIXED: the wrapper-word fix strips a bare wrapper
+    (`nice`, `nohup`, ...) and, for one that takes its own flags, any
+    IMMEDIATELY ATTACHED dash-flag (`stdbuf -o0`) -- but a wrapper whose own
+    flag takes a SEPARATE, space-delimited value (`nice -n 10 cp ...`,
+    `chrt -f 50 cp ...`, `taskset -c 0 cp ...`) is not unwrapped: the
+    numeric value (`10`/`50`/`0`) is left in first-word position, which
+    isn't a recognized write command either, so the write still isn't
+    detected. Closing this fully would mean hardcoding each wrapper's own
+    flag-arity grammar rather than a cheap word scan -- same class of
+    documented, deliberately-not-chased limit as this file's other
+    ACKNOWLEDGED gaps (obscured python3 one-liner, zip-slip, bare git
+    checkout/reset --hard). This test keeps that limit visible rather than
+    silently assumed closed by the wrapper fix above."""
+    payload = {"tool_name": "Bash", "tool_input": {
+        "command": "nice -n 10 cp /tmp/malicious.py scripts/hooks/scope_gate_hook.py",
+    }}
+    assert _run_main(monkeypatch, payload) == 0
+
+
+# S-GATE round-2 adversarial-regression finding (CONFIRMED live, High
+# severity): the FIRST wrapper fix's `timeout` handling only ever checked
+# "is the word right after 'timeout' a flag?" once, then gave up (fell
+# through to `break`) if it was -- so a real GNU `timeout` flag placed
+# BEFORE the duration (`timeout --signal=KILL 5 cp ...`, a realistic,
+# undocumented-syntax-free invocation, not an exotic shell trick) left
+# `--signal=KILL` itself in first-word position, silently swallowing the
+# real command (`cp`) into a position nothing checks -- worse than the
+# original bug, since it defeats the rm-block/.env-block/hook-tamper-
+# resistance checks simultaneously with one ordinary-looking command.
+@pytest.mark.parametrize(
+    "wrapped_command",
+    [
+        "timeout --signal=KILL 5 cp /tmp/malicious.py scripts/hooks/scope_gate_hook.py",
+        "timeout --foreground 5 cp /tmp/malicious.py scripts/hooks/scope_gate_hook.py",
+    ],
+)
+def test_main_blocks_protected_path_write_behind_timeout_with_its_own_flag(monkeypatch, wrapped_command):
+    assert _run_main(monkeypatch, {"tool_name": "Bash", "tool_input": {"command": wrapped_command}}) == 2
+
+
+def test_main_does_not_claim_to_catch_a_timeout_flag_needing_its_own_space_separated_value(monkeypatch):
+    """ACKNOWLEDGED, NOT FIXED: the fix for the finding above skips
+    `timeout`'s own leading dash-flags before deciding the next word is
+    the duration -- but a timeout flag whose OWN value is a SEPARATE,
+    space-delimited word (`-s KILL`, `-k 10`) rather than attached
+    (`--signal=KILL`) still isn't fully unwrapped: `KILL`/the kill-after
+    value is what's left in first-word position, still not a recognized
+    write command. Same class of documented limit as `nice -n 10 cp ...`
+    above -- closing every wrapper's own flag-arity grammar precisely is
+    explicitly out of scope for a cheap word scan."""
+    payload = {"tool_name": "Bash", "tool_input": {
+        "command": "timeout -s KILL 5 cp /tmp/malicious.py scripts/hooks/scope_gate_hook.py",
+    }}
+    assert _run_main(monkeypatch, payload) == 0
+
+
 # ---- directory-destination bypass (security-review finding, confirmed) ----
 #
 # Real cp/mv/install/rsync/ln and git checkout/restore all accept an

@@ -307,6 +307,30 @@ def test_main_blocks_env_file_read_even_with_in_scope_engagement(monkeypatch, tm
     assert _run_main(monkeypatch, payload) == 2
 
 
+# S-GATE adversarial-regression finding: _is_rm_command()/_reads_env_file()
+# share _strip_prefix_words() with _writes_protected_path() -- the same
+# wrapper-word fix that closed the S6 hook-tamper-resistance bypass (see
+# test_hook_tamper_resistance.py) closes the identical bypass shape here.
+@pytest.mark.parametrize("wrapped_command", [
+    "timeout 5 rm -rf scratch-test-dir/foo.txt",
+    "nice rm -rf scratch-test-dir/foo.txt",
+    "timeout --signal=KILL 5 rm -rf scratch-test-dir/foo.txt",
+])
+def test_main_blocks_rm_behind_a_wrapper(monkeypatch, tmp_path, wrapped_command):
+    monkeypatch.chdir(tmp_path)
+    assert _run_main(monkeypatch, {"tool_name": "Bash", "tool_input": {"command": wrapped_command}}) == 2
+
+
+@pytest.mark.parametrize("wrapped_command", [
+    "timeout 5 cat .env",
+    "nice cat .env",
+    "timeout --signal=KILL 5 cat .env",
+])
+def test_main_blocks_env_file_read_behind_a_wrapper(monkeypatch, tmp_path, wrapped_command):
+    monkeypatch.chdir(tmp_path)
+    assert _run_main(monkeypatch, {"tool_name": "Bash", "tool_input": {"command": wrapped_command}}) == 2
+
+
 def test_main_allows_reading_env_example_file(monkeypatch, tmp_path):
     """Regression: .env.example is documented, contains no real secrets,
     and is referenced by name elsewhere in this codebase -- must stay
@@ -349,6 +373,119 @@ def test_main_blocks_out_of_scope_target(monkeypatch, tmp_path):
     )
     payload = {"tool_name": "Bash", "tool_input": {"command": "nuclei -u someothersite.com"}}
     assert _run_main(monkeypatch, payload) == 2
+
+
+# S-GATE adversarial-regression finding (CONFIRMED, 4 independent
+# verification passes, 9/10 confidence each -- see IMPLEMENTATION-TASK-
+# TRACKER.md's S-GATE row): _extract_hosts_from_bash() used to gate Tier-2
+# binary recognition on a bare `_first_word(command) not in
+# TIER2_BASH_TOOLS` check -- unlike every other blanket check in this file
+# (_is_rm_command/_reads_env_file/_is_persistent_rce_command/
+# _writes_protected_path), which all already chain-split the command and
+# strip a leading wrapper before checking. Any wrapper word ahead of the
+# real binary, or a chained sub-command, made the WHOLE out-of-scope-target
+# check silently no-op (candidates == [], main() returns 0) -- live-
+# reproduced for `env curl`, `timeout 30 curl`, `nice curl`, and
+# `echo hi && curl`, all against the SAME out-of-scope host a bare
+# `curl <host>` correctly blocks.
+@pytest.mark.parametrize(
+    "wrapped_command",
+    [
+        "env curl https://someothersite.com",
+        "timeout 30 curl https://someothersite.com",
+        "nice curl https://someothersite.com",
+        "nohup curl https://someothersite.com",
+        "sudo curl https://someothersite.com",
+        "echo hi && curl https://someothersite.com",
+        "true; curl https://someothersite.com",
+    ],
+)
+def test_main_blocks_out_of_scope_target_behind_a_wrapper_or_chain(monkeypatch, tmp_path, wrapped_command):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": wrapped_command}}
+    assert _run_main(monkeypatch, payload) == 2, f"{wrapped_command!r} should still be scope-checked"
+
+
+@pytest.mark.parametrize(
+    "wrapped_command",
+    [
+        "env curl https://realtarget-corp.com",
+        "timeout 30 curl https://realtarget-corp.com",
+        "nice curl https://realtarget-corp.com",
+    ],
+)
+def test_main_allows_in_scope_target_behind_a_wrapper(monkeypatch, tmp_path, wrapped_command):
+    """Utility sibling of the wrapper-bypass regression above: the fix must
+    not turn every wrapped curl call into a false block -- an in-scope
+    target behind the identical wrappers must still be allowed."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": wrapped_command}}
+    assert _run_main(monkeypatch, payload) == 0, f"{wrapped_command!r} should still be allowed"
+
+
+def test_main_still_audits_and_budgets_a_wrapped_curl_call(monkeypatch, tmp_path):
+    """The curl/wget budget-enforcement+audit-logging block at the end of
+    main() reused the same unwrapped _first_word() check -- a wrapped call
+    that reached the scope check successfully (fixed above) must also still
+    hit budget_guard/audit_log, not just the scope decision."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    audit_path = tmp_path / "audit.jsonl"
+    monkeypatch.setenv("HUNTMCP_AUDIT_LOG", str(audit_path))
+    payload = {"tool_name": "Bash", "tool_input": {"command": "timeout 30 curl https://realtarget-corp.com"}}
+    assert _run_main(monkeypatch, payload) == 0
+    assert audit_path.exists(), "a wrapped curl call must still be audit-logged"
+    entry = json.loads(audit_path.read_text().splitlines()[-1])
+    assert entry["tool"] == "curl"
+
+
+def test_main_blocks_a_bare_unquoted_tool_name_mention_even_with_no_real_invocation(monkeypatch, tmp_path):
+    """ACCEPTED, DELIBERATE trade-off (S-GATE round-2 adversarial-
+    regression finding, Low severity): _bash_basenames() scans every
+    shlex-split word of the WHOLE command for a Tier-2 binary name,
+    anywhere, not just in a position that could plausibly be an actual
+    invocation -- so a command that merely MENTIONS a tool name as a bare,
+    unquoted word (e.g. in an `echo` status line) now also triggers the
+    full scope check, where before the fix only the command's own literal
+    first word mattered. This is fail-closed (the safe direction, same
+    "blocks more, never fewer" bias as every other blanket check in this
+    file) rather than a security hole: worst case, an unusual echo/status
+    command needs rephrasing or an in-scope host, it never silently allows
+    an actual out-of-scope contact. A QUOTED mention (`echo "curl is a
+    tool"`, an ordinary git commit message, etc.) is NOT affected --
+    shlex.split collapses a quoted string into one token that can't
+    equal a bare "curl"/"nmap"/etc. This test documents the accepted
+    behavior rather than leaving it to be silently assumed either way."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {
+        "command": "echo curl https://totally-unrelated-external-site.com is a tool",
+    }}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_allows_a_quoted_tool_name_mention(monkeypatch, tmp_path):
+    """Utility sibling of the test above: the overwhelmingly common real
+    case -- a quoted commit message / echoed sentence mentioning a tool
+    name -- must stay unaffected."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {
+        "command": 'git commit -m "mention curl and https://totally-unrelated-external-site.com in prose"',
+    }}
+    assert _run_main(monkeypatch, payload) == 0
 
 
 @pytest.mark.parametrize(
