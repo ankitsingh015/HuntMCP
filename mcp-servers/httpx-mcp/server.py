@@ -97,7 +97,10 @@ def probe_hosts(domains: str, ports: str = "80,443", threads: int = 50, timeout:
         "-json",
     ]
     try:
-        result = job_runtime.start_job("httpx", args, timeout, _jobs)
+        # S5 (rootless sandboxing): input_path (the domains file httpx
+        # reads via -l) must be explicitly declared via extra_mounts=, or
+        # it's invisible inside the sandboxed container.
+        result = job_runtime.start_job("httpx", args, timeout, _jobs, extra_mounts=[input_path])
     except FileNotFoundError:
         os.unlink(input_path)
         return "Error: httpx not found. Install with: go install github.com/projectdiscovery/httpx/cmd/httpx@latest"
@@ -144,7 +147,13 @@ def screenshot_hosts(domains: str, ports: str = "80,443", timeout: int = 180) ->
         args.append("-system-chrome")
 
     try:
-        result = job_runtime.start_job("httpx", args, timeout, _jobs, cwd=work_dir)
+        # S5 (rootless sandboxing): work_dir is already covered via cwd=,
+        # but input_path (the domains file, -l) is a SEPARATE path that
+        # also needs explicit declaration -- or httpx can't read it inside
+        # the sandboxed container.
+        result = job_runtime.start_job(
+            "httpx", args, timeout, _jobs, cwd=work_dir, extra_mounts=[input_path],
+        )
     except FileNotFoundError:
         os.unlink(input_path)
         shutil.rmtree(work_dir, ignore_errors=True)

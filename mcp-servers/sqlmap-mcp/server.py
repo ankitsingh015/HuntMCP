@@ -57,7 +57,13 @@ def _parse_vulns(output: str, include_type: bool) -> list[str]:
 def _start(args: list[str], timeout: int, tmpdir: str,
            no_result_message: str, found_header: str, include_type: bool) -> str:
     try:
-        result = job_runtime.start_job("sqlmap", args, timeout, _jobs)
+        # S5 (rootless sandboxing): sqlmap now runs inside an ephemeral
+        # container that sees nothing from the host by default -- tmpdir
+        # (the --output-dir sqlmap writes into and this module reads back
+        # from after the job completes) must be explicitly declared via
+        # extra_mounts_rw= (sqlmap must WRITE its findings there), or it's
+        # invisible inside the sandbox.
+        result = job_runtime.start_job("sqlmap", args, timeout, _jobs, extra_mounts_rw=[tmpdir])
     except FileNotFoundError:
         shutil.rmtree(tmpdir, ignore_errors=True)
         return "Error: sqlmap not found. Install with: pip install sqlmap"

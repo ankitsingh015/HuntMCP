@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import time
 
+import sandbox_runner
 from audit_log import log_call as _log_call
 from budget_guard import enforce as _enforce_budget
 
@@ -146,7 +147,6 @@ def run_tool(
     BudgetExceeded instead of running the tool once the hard cap is hit.
     """
     _enforce_budget(name)
-    binary = resolve_tool(name)
     kwargs.setdefault("capture_output", True)
     kwargs.setdefault("text", True)
     # S3: scrub secrets out of the child's environment by default -- see
@@ -188,22 +188,80 @@ def run_tool(
     # crashed ad-recon-mcp's password-authenticated Kerberoast loudly.
     if "input" not in kwargs:
         kwargs.setdefault("stdin", subprocess.DEVNULL)
-    start = time.monotonic()
-    result = subprocess.run([binary, *args], **kwargs)
 
-    block = None
-    if retry_on_rate_limit:
-        combined = (result.stdout or "") + (result.stderr or "")
-        block = classify_block(combined)
-        if block == "rate_limit":
-            time.sleep(5)
-            result = subprocess.run([binary, *args], **kwargs)
-            # Re-classify the retry's own output rather than assuming it
-            # succeeded -- the retry can still be rate-limited (or now hit a
-            # WAF), and logging block=None unconditionally here made the
-            # audit trail claim it wasn't.
+    # S5 (rootless per-run execution boundary): every subprocess.run() call
+    # below runs inside a fresh, ephemeral, isolated container rather than
+    # directly on the host -- see sandbox_runner.py's own module docstring
+    # for exactly what this does and does NOT provide (notably: no
+    # per-target network egress restriction in V1). "Per-run" = one fresh
+    # container per subprocess.run() attempt, including the rate-limit
+    # retry below (its own independent run, not a resumption of the first
+    # container -- a --rm container that already exited can't be resumed).
+    cwd = kwargs.pop("cwd", None)
+    # extra_mounts/extra_mounts_rw: host paths a caller explicitly,
+    # deliberately wants bind-mounted at the same path -- read-only vs
+    # read-write, e.g. secrets-mcp's own scan target directory (read-only)
+    # and its gitleaks report directory (read-write). Not real
+    # subprocess.run() kwargs, so popped here the same way cwd already is.
+    # See sandbox_runner.build_argv()'s own docstring for why this must
+    # always be an explicit, named choice, never scraped from `args`, and
+    # why read-only is the safer default (a real, demonstrated data-loss
+    # risk was found live from an unnecessary :rw mount).
+    extra_mounts = kwargs.pop("extra_mounts", None)
+    extra_mounts_rw = kwargs.pop("extra_mounts_rw", None)
+    run_env = kwargs.get("env")
+    container_name = sandbox_runner.new_container_name()
+
+    def _sandboxed_argv() -> list[str]:
+        if not sandbox_runner.podman_available():
+            raise FileNotFoundError(
+                "podman not found -- S5 sandboxing requires it. Install with: "
+                "sudo apt install podman (see IMPLEMENTATION-TASK-TRACKER.md S5)."
+            )
+        try:
+            return sandbox_runner.build_argv(
+                name, args, scratch_dir, cwd=cwd, env=run_env,
+                extra_mounts=extra_mounts, extra_mounts_rw=extra_mounts_rw,
+                container_name=container_name,
+            )
+        except sandbox_runner.UnknownSandboxTool as e:
+            # Re-raised as FileNotFoundError (not the original type) so
+            # every existing caller's own `except FileNotFoundError:`
+            # handling (the same shape as "binary not found on host" used
+            # to raise) keeps working completely unchanged -- see this
+            # module's own migration notes in IMPLEMENTATION-TASK-TRACKER.md.
+            raise FileNotFoundError(str(e)) from e
+
+    scratch_dir = sandbox_runner.new_scratch_dir()
+    try:
+        start = time.monotonic()
+        result = subprocess.run(_sandboxed_argv(), **kwargs)
+
+        block = None
+        if retry_on_rate_limit:
             combined = (result.stdout or "") + (result.stderr or "")
             block = classify_block(combined)
+            if block == "rate_limit":
+                time.sleep(5)
+                sandbox_runner.cleanup_scratch_dir(scratch_dir)
+                scratch_dir = sandbox_runner.new_scratch_dir()
+                container_name = sandbox_runner.new_container_name()
+                result = subprocess.run(_sandboxed_argv(), **kwargs)
+                # Re-classify the retry's own output rather than assuming it
+                # succeeded -- the retry can still be rate-limited (or now hit a
+                # WAF), and logging block=None unconditionally here made the
+                # audit trail claim it wasn't.
+                combined = (result.stdout or "") + (result.stderr or "")
+                block = classify_block(combined)
+    finally:
+        sandbox_runner.cleanup_scratch_dir(scratch_dir)
+        # Safety net: a caller-supplied timeout=... firing here makes
+        # Python's own subprocess.run() SIGKILL the `podman run` process
+        # directly, which can skip its normal --rm cleanup-on-exit. Targets
+        # ONLY this run's own, precisely-named container (never a blind
+        # sweep -- see remove_container()'s own docstring for why that's
+        # unsafe) -- a cheap no-op if it already exited normally.
+        sandbox_runner.remove_container(container_name)
 
     _log_call(name, args, result.returncode, (time.monotonic() - start) * 1000, block)
     return result

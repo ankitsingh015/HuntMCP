@@ -26,14 +26,50 @@ _jobs: dict = {}
 _meta: dict[str, dict] = {}
 
 
+_APPROVED_WORDLIST_ROOTS = tuple(
+    os.path.realpath(d) for d in (PROJECT_WORDLIST_DIR, SYSTEM_WORDLIST_DIR)
+)
+
+
+class WordlistNotApproved(Exception):
+    """Raised by _resolve_wordlist() when the resolved path falls outside
+    both approved wordlist roots -- see that function's own docstring."""
+
+
 def _resolve_wordlist(wordlist: str) -> str:
     """Prefer HuntMCP's own curated wordlists (knowledge/wordlists/) over
     the system default -- those are project-tracked, reviewed content;
     /usr/share/wordlists is whatever happened to get installed on this
-    machine, if anything did. Absolute paths and explicit system-relative
-    names (e.g. "seclists/...") still work unchanged."""
+    machine, if anything did.
+
+    Only ever returns a path under one of the two approved roots
+    (_APPROVED_WORDLIST_ROOTS) -- raises WordlistNotApproved otherwise.
+    This is a real security boundary, not a convenience default: `wordlist`
+    is an agent-facing MCP tool parameter, and an agent's choice of value
+    can be influenced by content it read off a hostile target (classic
+    tool-argument prompt injection -- the same threat model
+    scope_gate_hook.py exists for elsewhere in this codebase). Before this
+    validation existed, an absolute path outside either root (e.g.
+    "/home/<user>/.ssh/id_rsa") was accepted completely unchecked and
+    handed to ffuf as its wordlist, which under S5 sandboxing would then
+    have needed to be bind-mounted read-write into the container to work
+    at all -- found in review to be a real path for a prompt-injected
+    agent to get a sensitive host file's contents read (and, via the
+    sandbox's own mount-permission fixup, its host permissions
+    permanently widened) with no container escape required. Restricting
+    to two specific, reviewed, non-credential-bearing directories closes
+    that at its actual source, independent of whatever the sandbox layer
+    does or doesn't mount."""
     if wordlist.startswith("/"):
-        return wordlist
+        resolved = os.path.realpath(wordlist)
+        if not any(resolved == root or resolved.startswith(root + os.sep)
+                   for root in _APPROVED_WORDLIST_ROOTS):
+            raise WordlistNotApproved(
+                f"{wordlist!r} is outside the approved wordlist directories "
+                f"({', '.join(_APPROVED_WORDLIST_ROOTS)}) -- refusing to use it. "
+                f"Use a filename relative to one of those instead."
+            )
+        return resolved
     if not wordlist:
         default = os.path.join(PROJECT_WORDLIST_DIR, "directories.txt")
         if os.path.isfile(default):
@@ -83,9 +119,24 @@ def _format_results(url: str | None, stdout: str, returncode: int, stderr: str,
 
 
 def _start(args: list[str], timeout: int, url: str | None,
-           no_results_message: str, field_key: str) -> str:
+           no_results_message: str, field_key: str, wordlist_path: str) -> str:
+    # S5 (rootless sandboxing): ffuf's default scraper feature reads a
+    # bundled rules file at $HOME/.config/ffuf/scraper on first use --
+    # this minimal sandbox image doesn't ship one (we don't use ffuf's
+    # response-scraping feature at all here), so without disabling it
+    # ffuf fails at startup with "open .../scraper: no such file or
+    # directory" and falls back to printing usage/help, which looked
+    # exactly like an argv-parsing bug at first. -scrapers "" (empty
+    # active-groups list) skips loading it entirely.
+    args = [*args, "-scrapers", ""]
     try:
-        result = job_runtime.start_job("ffuf", args, timeout, _jobs)
+        # S5 (rootless sandboxing): the resolved wordlist file must be
+        # explicitly declared via extra_mounts=, or ffuf can't read it
+        # inside the sandboxed container. Safe to do unconditionally here
+        # -- _resolve_wordlist() already guarantees wordlist_path is
+        # confined to one of the two approved, reviewed, non-credential
+        # directories before this is ever reached.
+        result = job_runtime.start_job("ffuf", args, timeout, _jobs, extra_mounts=[wordlist_path])
     except FileNotFoundError:
         return "Error: ffuf not found. Install with: go install github.com/ffuf/ffuf/v2@latest"
     except Exception as e:
@@ -113,7 +164,10 @@ def fuzz_directory(url: str, wordlist: str = "", extensions: str = "", timeout: 
     empty defaults to knowledge/wordlists/directories.txt. `extensions` is
     comma-separated, no leading dots (e.g. "php,bak"). 404 responses are
     filtered out automatically. Poll check_scan(job_id) for the result."""
-    wordlist = _resolve_wordlist(wordlist)
+    try:
+        wordlist = _resolve_wordlist(wordlist)
+    except WordlistNotApproved as e:
+        return f"Error: {e}"
     args = [
         "-u", f"{url}/FUZZ",
         "-w", f"{wordlist}:FUZZ",
@@ -124,7 +178,7 @@ def fuzz_directory(url: str, wordlist: str = "", extensions: str = "", timeout: 
     ]
     if extensions:
         args.extend(["-e", extensions])
-    return _start(args, timeout, url, f"No directories found on {url}.", "path")
+    return _start(args, timeout, url, f"No directories found on {url}.", "path", wordlist)
 
 
 @app.tool()
@@ -137,7 +191,10 @@ def fuzz_with_data(url: str, wordlist: str = "", method: str = "POST",
     username). `wordlist` resolves the same way as fuzz_directory()'s. 404
     responses are filtered out automatically. Poll check_scan(job_id) for
     the result."""
-    wordlist = _resolve_wordlist(wordlist)
+    try:
+        wordlist = _resolve_wordlist(wordlist)
+    except WordlistNotApproved as e:
+        return f"Error: {e}"
     args = [
         "-u", url,
         "-w", f"{wordlist}:FUZZ",
@@ -148,7 +205,7 @@ def fuzz_with_data(url: str, wordlist: str = "", method: str = "POST",
         "-o", "-",
         "-t", "30",
     ]
-    return _start(args, timeout, None, "No results found.", "fuzz")
+    return _start(args, timeout, None, "No results found.", "fuzz", wordlist)
 
 
 @app.tool()

