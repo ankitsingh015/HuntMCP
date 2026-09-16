@@ -28,12 +28,47 @@ def _fake_run_tool_factory(findings):
     """Returns a run_tool stand-in that, instead of actually invoking
     gitleaks, writes `findings` to whatever --report-path was requested --
     same contract the real gitleaks binary fulfills."""
-    def _fake_run_tool(name, args, retry_on_rate_limit=False, timeout=None):
+    def _fake_run_tool(name, args, retry_on_rate_limit=False, timeout=None,
+                        extra_mounts=None, extra_mounts_rw=None):
         report_path = args[args.index("--report-path") + 1]
         with open(report_path, "w") as f:
             json.dump(findings, f)
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
     return _fake_run_tool
+
+
+def test_scan_directory_declares_both_scan_target_and_report_dir_as_mounts(tmp_path, monkeypatch):
+    """Regression test for a real bug found in review: gitleaks now runs
+    inside an S5 sandboxed container that sees nothing from the host by
+    default. An earlier version relied on the sandbox layer
+    auto-detecting the report path as an existing file, which it never
+    was (mkstemp()+unlink() reserves a path that doesn't exist at
+    build_argv() time) -- gitleaks silently wrote its report inside the
+    container's own private tmpfs, and scan_directory() reported "No
+    findings" on every single scan regardless of what gitleaks actually
+    found. `path` (so gitleaks can even read the target directory, read-only)
+    and the report's own directory (read-write, since gitleaks must WRITE
+    its report there) must be explicitly passed via extra_mounts=/
+    extra_mounts_rw= respectively."""
+    captured = {}
+
+    def _fake_run_tool(name, args, retry_on_rate_limit=False, timeout=None,
+                        extra_mounts=None, extra_mounts_rw=None):
+        captured["extra_mounts"] = extra_mounts
+        captured["extra_mounts_rw"] = extra_mounts_rw
+        report_path = args[args.index("--report-path") + 1]
+        with open(report_path, "w") as f:
+            json.dump([], f)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(secrets_server, "run_tool", _fake_run_tool)
+    target_dir = str(tmp_path)
+    secrets_server.scan_directory(target_dir, redact=False)
+
+    assert captured["extra_mounts"] == [target_dir]
+    assert captured["extra_mounts_rw"] is not None
+    assert len(captured["extra_mounts_rw"]) == 1
+    assert captured["extra_mounts_rw"][0] != target_dir
 
 
 def test_public_build_env_vars_are_labeled_not_dropped(tmp_path, monkeypatch):

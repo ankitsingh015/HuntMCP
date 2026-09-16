@@ -66,9 +66,10 @@ import time
 import uuid
 from typing import Any, Callable, NamedTuple
 
+import sandbox_runner
 from audit_log import log_call as _log_call
 from budget_guard import enforce as _enforce_budget
-from tool_resolver import classify_block, minimal_subprocess_env, resolve_tool
+from tool_resolver import classify_block, minimal_subprocess_env
 
 # Past this many seconds since the last poll saw it running, list_jobs()
 # flags a job as likely-abandoned -- informational only, never auto-killed
@@ -86,14 +87,33 @@ class _Job(NamedTuple):
     stderr_path: str
     started_monotonic: float
     max_wall_seconds: int
+    scratch_dir: str
+    container_name: str
 
 
 def start_job(tool_name: str, args: list[str], max_wall_seconds: int, jobs: dict,
-              cwd: str | None = None) -> dict:
+              cwd: str | None = None, extra_mounts: list[str] | None = None,
+              extra_mounts_rw: list[str] | None = None) -> dict:
     """Launch `tool_name` with `args` in the background and return
     immediately. Stores the live handle in the caller's `jobs` dict under
     a fresh uuid4 job_id (collision-proof by construction, unlike
     caller-supplied keys -- no TOCTOU reservation dance needed here).
+
+    `extra_mounts`, if given, is a list of host paths the CALLER
+    explicitly, deliberately wants bind-mounted READ-ONLY into the sandbox
+    at the same path -- e.g. httpx-mcp's own domains file. `extra_mounts_rw`
+    is the same, mounted READ-WRITE, for the rarer case where the
+    sandboxed process must also write there -- e.g. sqlmap-mcp's own
+    `--output-dir <tmpdir>` or secrets-mcp's gitleaks report directory.
+    Read-only is the safer default: a real, demonstrated data-loss risk
+    (an unnecessary `:rw` mount let a sandboxed process delete a real host
+    file during this feature's own testing) is why write access is a
+    separate, deliberate opt-in rather than the default. See
+    sandbox_runner.build_argv()'s own docstring for why this must always
+    be an explicit, named choice by this codebase's calling code, never a
+    path scraped generically out of `args` (an MCP tool parameter an
+    agent controls, like ffuf-mcp's `wordlist`, could otherwise steer an
+    arbitrary host path into being mounted).
 
     Output is redirected to temp files rather than PIPE: a Popen with
     stdout=PIPE/stderr=PIPE deadlocks if the child writes enough output to
@@ -102,35 +122,74 @@ def start_job(tool_name: str, args: list[str], max_wall_seconds: int, jobs: dict
     no such limit.
     """
     _enforce_budget(tool_name)
-    binary = resolve_tool(tool_name)
 
-    stdout_fd, stdout_path = tempfile.mkstemp(prefix=f"{tool_name}-out-", suffix=".log")
-    stderr_fd, stderr_path = tempfile.mkstemp(prefix=f"{tool_name}-err-", suffix=".log")
-    os.close(stdout_fd)
-    os.close(stderr_fd)
-
+    # S5 (rootless per-run execution boundary): the actual tool now runs
+    # inside a fresh, ephemeral, isolated container rather than directly
+    # on the host -- see sandbox_runner.py's own module docstring for
+    # exactly what this does and does NOT provide (notably: no per-target
+    # network egress restriction in V1). This is the PRIMARY execution
+    # path -- httpx-mcp/nuclei-mcp/katana-mcp/nmap-mcp/dalfox-mcp/
+    # ffuf-mcp/sqlmap-mcp/subfinder-mcp's real enumeration all call
+    # start_job(), not tool_resolver.run_tool() -- so without this, S5
+    # would sandbox almost nothing that actually matters.
+    #
+    # Everything from here down is inside one try/except so that ANY
+    # failure -- including sandbox_runner.new_scratch_dir() itself raising
+    # (e.g. disk full), not just the podman/build_argv steps below --
+    # cleans up whatever was already created rather than leaking it
+    # (found in review: an earlier version created the two tempfiles
+    # BEFORE this try started, so a scratch-dir failure leaked them).
+    stdout_path = stderr_path = None
+    scratch_dir = None
     try:
+        stdout_fd, stdout_path = tempfile.mkstemp(prefix=f"{tool_name}-out-", suffix=".log")
+        stderr_fd, stderr_path = tempfile.mkstemp(prefix=f"{tool_name}-err-", suffix=".log")
+        os.close(stdout_fd)
+        os.close(stderr_fd)
+
+        scratch_dir = sandbox_runner.new_scratch_dir()
+        container_name = sandbox_runner.new_container_name()
+
+        if not sandbox_runner.podman_available():
+            raise FileNotFoundError(
+                "podman not found -- S5 sandboxing requires it. Install with: "
+                "sudo apt install podman (see IMPLEMENTATION-TASK-TRACKER.md S5)."
+            )
+        try:
+            argv = sandbox_runner.build_argv(
+                tool_name, args, scratch_dir, env=minimal_subprocess_env(), cwd=cwd,
+                extra_mounts=extra_mounts, extra_mounts_rw=extra_mounts_rw,
+                container_name=container_name,
+            )
+        except sandbox_runner.UnknownSandboxTool as e:
+            # Re-raised as FileNotFoundError (not the original type) so
+            # every existing caller's own `except FileNotFoundError:`
+            # handling (the same shape as "binary not found on host" used
+            # to raise) keeps working completely unchanged.
+            raise FileNotFoundError(str(e)) from e
+
         with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
             proc = subprocess.Popen(
-                [binary, *args],
-                stdout=out, stderr=err, stdin=subprocess.DEVNULL, cwd=cwd,
-                # S3 (code-review finding, CONFIRMED): this is the actual
-                # subprocess-spawn chokepoint every real scan goes through
-                # (httpx-mcp/nuclei-mcp/katana-mcp/nmap-mcp/dalfox-mcp/
-                # ffuf-mcp/sqlmap-mcp/subfinder-mcp's real enumeration all
-                # call start_job(), not tool_resolver.run_tool() -- see
-                # this module's own docstring for why). Without this, none
-                # of tool_resolver.py's env-scrubbing fix actually applied
-                # to a real engagement's scan traffic. Reuses the same
-                # allowlist run_tool() uses rather than duplicating it.
+                argv,
+                stdout=out, stderr=err, stdin=subprocess.DEVNULL,
+                # NOT cwd=cwd here -- cwd is now handled INSIDE the
+                # container via build_argv()'s own --workdir, since the
+                # actual tool runs in the container, not as this Popen's
+                # direct child (that child is now `podman run` itself,
+                # whose own host-side working directory doesn't matter).
                 env=minimal_subprocess_env(),
             )
     except Exception:
-        # Launch itself failed (e.g. binary missing) -- nothing was
-        # started, so clean up the temp files immediately rather than
-        # leaking them, and let the caller's own FileNotFoundError/
-        # Exception handling produce the usual "tool not found" message.
+        # Launch itself failed (e.g. podman missing, unknown tool) --
+        # nothing was started, so clean up whatever was already created
+        # (temp files, scratch dir) rather than leaking it, and let the
+        # caller's own FileNotFoundError/Exception handling produce the
+        # usual "tool not found" message.
+        if scratch_dir:
+            sandbox_runner.cleanup_scratch_dir(scratch_dir)
         for p in (stdout_path, stderr_path):
+            if p is None:
+                continue
             try:
                 os.unlink(p)
             except OSError:
@@ -142,6 +201,7 @@ def start_job(tool_name: str, args: list[str], max_wall_seconds: int, jobs: dict
         proc=proc, tool_name=tool_name, args=args,
         stdout_path=stdout_path, stderr_path=stderr_path,
         started_monotonic=time.monotonic(), max_wall_seconds=max_wall_seconds,
+        scratch_dir=scratch_dir, container_name=container_name,
     )
     return {"job_id": job_id, "status": "running", "tool": tool_name}
 
@@ -163,12 +223,21 @@ def _read_and_cleanup(job: _Job) -> tuple[str, str]:
             os.unlink(p)
         except OSError:
             pass
+    sandbox_runner.cleanup_scratch_dir(job.scratch_dir)
     return stdout, stderr
 
 
 def _kill_and_collect(job_id: str, job: _Job, elapsed: float, jobs: dict) -> dict:
     job.proc.kill()
     job.proc.wait()
+    # Safety net: kill() is SIGKILL to the `podman run` wrapper process
+    # directly -- uncatchable, so it can skip Podman's normal
+    # cleanup-on-graceful-exit and leave the container running. Targets
+    # ONLY this job's own, precisely-named container (never a blind sweep
+    # by label -- see sandbox_runner.remove_container()'s own docstring
+    # for why that's unsafe with concurrent engagements) -- a cheap no-op
+    # if it already exited normally.
+    sandbox_runner.remove_container(job.container_name)
     stdout, stderr = _read_and_cleanup(job)
     jobs.pop(job_id, None)
     _log_call(job.tool_name, job.args, returncode=-9, duration_ms=elapsed * 1000, block=None)

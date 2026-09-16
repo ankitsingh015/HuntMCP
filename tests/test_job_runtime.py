@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import shutil
 import sys
 import threading
 import time
@@ -25,8 +26,30 @@ def _no_audit(monkeypatch):
     monkeypatch.setattr(job_runtime, "_log_call", lambda *a, **k: None)
 
 
+def _bypass_sandbox(monkeypatch):
+    """S5: these tests use a fake "tool_name" (sleep/echo/true) purely as a
+    stand-in real binary to exercise start_job()/poll_job()'s own
+    lifecycle mechanics (immediate return, polling, timeout-kill, dedup,
+    budget-once-per-start) -- none of that is specific to sandboxing, which
+    has its own separate tests in test_sandbox_runner.py. None of these
+    names are approved sandboxed tools (see sandbox_runner._TOOL_MAP --
+    deliberately only real Tier-2 tools), so resolve `tool_name` directly
+    off PATH here and skip containerization, preserving every existing
+    test's exact original intent without needing podman."""
+    def _fake_build_argv(tool_name, args, scratch_dir, env, cwd=None,
+                          extra_mounts=None, extra_mounts_rw=None, container_name=None):
+        binary = shutil.which(tool_name)
+        if binary is None:
+            raise FileNotFoundError(tool_name)
+        return [binary, *args]
+
+    monkeypatch.setattr(job_runtime.sandbox_runner, "podman_available", lambda: True)
+    monkeypatch.setattr(job_runtime.sandbox_runner, "build_argv", _fake_build_argv)
+
+
 def test_start_job_returns_immediately_with_running_status(monkeypatch):
     _no_budget(monkeypatch)
+    _bypass_sandbox(monkeypatch)
     jobs = {}
     result = job_runtime.start_job("sleep", ["2"], max_wall_seconds=30, jobs=jobs)
     try:
@@ -39,6 +62,7 @@ def test_start_job_returns_immediately_with_running_status(monkeypatch):
 
 def test_poll_job_reports_running_before_completion(monkeypatch):
     _no_budget(monkeypatch)
+    _bypass_sandbox(monkeypatch)
     jobs = {}
     started = job_runtime.start_job("sleep", ["5"], max_wall_seconds=30, jobs=jobs)
     try:
@@ -52,6 +76,7 @@ def test_poll_job_reports_running_before_completion(monkeypatch):
 
 def test_poll_job_captures_stdout_once_finished(monkeypatch):
     _no_budget(monkeypatch)
+    _bypass_sandbox(monkeypatch)
     _no_audit(monkeypatch)
     jobs = {}
     started = job_runtime.start_job(
@@ -75,6 +100,7 @@ def test_poll_job_captures_stdout_once_finished(monkeypatch):
 
 def test_poll_job_pops_job_so_second_poll_reports_no_job(monkeypatch):
     _no_budget(monkeypatch)
+    _bypass_sandbox(monkeypatch)
     _no_audit(monkeypatch)
     jobs = {}
     started = job_runtime.start_job("true", [], max_wall_seconds=30, jobs=jobs)
@@ -105,6 +131,7 @@ def test_start_job_subprocess_does_not_inherit_secret_env_vars(monkeypatch):
     import json
 
     _no_budget(monkeypatch)
+    _bypass_sandbox(monkeypatch)
     _no_audit(monkeypatch)
     monkeypatch.setenv("HUNTMCP_TEST_FAKE_SECRET", "super-secret-value")
     jobs = {}
@@ -128,6 +155,7 @@ def test_start_job_subprocess_does_not_inherit_secret_env_vars(monkeypatch):
 
 def test_poll_job_kills_process_past_max_wall_seconds(monkeypatch):
     _no_budget(monkeypatch)
+    _bypass_sandbox(monkeypatch)
     _no_audit(monkeypatch)
     jobs = {}
     started = job_runtime.start_job("sleep", ["30"], max_wall_seconds=30, jobs=jobs)
@@ -143,6 +171,7 @@ def test_poll_job_kills_process_past_max_wall_seconds(monkeypatch):
 
 def test_start_job_missing_binary_raises_filenotfounderror(monkeypatch):
     _no_budget(monkeypatch)
+    _bypass_sandbox(monkeypatch)
     jobs = {}
     try:
         job_runtime.start_job("definitely-not-a-real-binary-xyz", [], max_wall_seconds=30, jobs=jobs)
@@ -154,6 +183,7 @@ def test_start_job_missing_binary_raises_filenotfounderror(monkeypatch):
 
 def test_list_jobs_reports_elapsed_time_and_no_destructive_side_effect(monkeypatch):
     _no_budget(monkeypatch)
+    _bypass_sandbox(monkeypatch)
     jobs = {}
     started = job_runtime.start_job("sleep", ["5"], max_wall_seconds=30, jobs=jobs)
     try:
@@ -171,6 +201,7 @@ def test_list_jobs_reports_elapsed_time_and_no_destructive_side_effect(monkeypat
 
 def test_list_jobs_flags_likely_abandoned_past_threshold(monkeypatch):
     _no_budget(monkeypatch)
+    _bypass_sandbox(monkeypatch)
     jobs = {}
     started = job_runtime.start_job("sleep", ["5"], max_wall_seconds=9999, jobs=jobs)
     job_id = started["job_id"]
@@ -192,6 +223,7 @@ def test_poll_job_reaps_other_stale_sibling_jobs(monkeypatch):
     # sweep up other abandoned jobs in the same dict past their own
     # max_wall_seconds, not just the one being polled.
     _no_budget(monkeypatch)
+    _bypass_sandbox(monkeypatch)
     _no_audit(monkeypatch)
     jobs = {}
     abandoned = job_runtime.start_job("sleep", ["30"], max_wall_seconds=30, jobs=jobs)
@@ -219,6 +251,7 @@ def test_budget_is_enforced_exactly_once_per_start_job_not_per_poll(monkeypatch)
     calls = []
     monkeypatch.setattr(job_runtime, "_enforce_budget", lambda name: calls.append(name))
     _no_audit(monkeypatch)
+    _bypass_sandbox(monkeypatch)
     jobs = {}
     started = job_runtime.start_job("true", [], max_wall_seconds=30, jobs=jobs)
     job_id = started["job_id"]

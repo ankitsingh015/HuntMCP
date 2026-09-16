@@ -17,6 +17,7 @@ secrets it's leaking while doing it.
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 
@@ -49,13 +50,25 @@ def scan_directory(path: str, redact: bool = True) -> str:
     if not os.path.isdir(path):
         return f"Error: {path!r} is not a directory."
 
-    # mkstemp() (not the deprecated, TOCTOU-prone mktemp()) reserves a
-    # unique path atomically; immediately remove the empty file it creates
-    # so gitleaks writes the real report there fresh, preserving the
-    # "no report" check below.
-    fd, report_path = tempfile.mkstemp(suffix=".json")
-    os.close(fd)
-    os.unlink(report_path)
+    # S5 (rootless sandboxing): gitleaks now runs inside an ephemeral
+    # container that sees NOTHING from the host by default -- both `path`
+    # (the directory being scanned, read-only via extra_mounts=) and the
+    # report file's directory (read-write via extra_mounts_rw=, since
+    # gitleaks must WRITE its report there) must be explicitly declared,
+    # or gitleaks can neither read the target directory nor have its
+    # output survive the container's teardown.
+    #
+    # The report is written into a real, pre-existing DIRECTORY (mkdtemp),
+    # not a single mkstemp()'d-then-unlinked file -- a path that doesn't
+    # exist yet can't be usefully declared as a mount target ahead of
+    # time. (Found in review: the previous mkstemp()+unlink() version
+    # relied on the sandbox layer auto-detecting report_path as an
+    # existing file at build_argv() time, which it never was -- gitleaks
+    # silently wrote its report inside the container's own private tmpfs
+    # instead, and every scan_directory() call reported "No findings"
+    # regardless of what gitleaks actually found.)
+    report_dir = tempfile.mkdtemp(prefix="huntmcp-gitleaks-")
+    report_path = os.path.join(report_dir, "report.json")
 
     args = [
         "detect", "--no-git", "--source", path,
@@ -66,23 +79,25 @@ def scan_directory(path: str, redact: bool = True) -> str:
         args.append("--redact")
 
     try:
-        result = run_tool("gitleaks", args, retry_on_rate_limit=False, timeout=120)
-    except FileNotFoundError:
-        return "Error: gitleaks not found. Install with: go install github.com/zricethezav/gitleaks/v8@latest"
-    except Exception as e:
-        return f"Error: {e}"
+        try:
+            result = run_tool(
+                "gitleaks", args, retry_on_rate_limit=False, timeout=120,
+                extra_mounts=[path], extra_mounts_rw=[report_dir],
+            )
+        except FileNotFoundError:
+            return "Error: gitleaks not found. Install with: go install github.com/zricethezav/gitleaks/v8@latest"
+        except Exception as e:
+            return f"Error: {e}"
 
-    if result.returncode != 0:
-        return f"gitleaks failed (exit {result.returncode}): {result.stderr.strip()[:500]}"
+        if result.returncode != 0:
+            return f"gitleaks failed (exit {result.returncode}): {result.stderr.strip()[:500]}"
 
-    try:
         if not os.path.isfile(report_path):
             return "No findings (gitleaks produced no report)."
         with open(report_path) as f:
             findings = json.load(f)
     finally:
-        if os.path.isfile(report_path):
-            os.unlink(report_path)
+        shutil.rmtree(report_dir, ignore_errors=True)
 
     if not findings:
         return f"No secrets found in {path!r}."

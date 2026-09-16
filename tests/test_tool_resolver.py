@@ -1,7 +1,27 @@
 import json
 import os
+import shutil
 
+import sandbox_runner
 from tool_resolver import classify_block, resolve_tool, run_tool
+
+
+def _bypass_sandbox_for_python3(monkeypatch):
+    """S5: run_tool()'s own env-scrubbing logic (what these tests actually
+    verify) runs BEFORE sandboxing and is unchanged by it -- the scrubbed
+    env still flows into subprocess.run()'s own env= kwarg exactly as
+    before, sandboxing only changed WHAT gets executed (the argv
+    sandbox_runner.build_argv() returns). python3 isn't an approved
+    sandboxed tool (see sandbox_runner._TOOL_MAP -- deliberately only real
+    Tier-2 tools), so these tests replace build_argv() with a passthrough
+    that runs python3 directly, unsandboxed, to keep testing exactly the
+    env-scrub behavior they're named for without needing podman."""
+    monkeypatch.setattr(sandbox_runner, "podman_available", lambda: True)
+    monkeypatch.setattr(
+        sandbox_runner, "build_argv",
+        lambda tool_name, args, scratch_dir, env, cwd=None, extra_mounts=None,
+               extra_mounts_rw=None, container_name=None: [shutil.which("python3"), *args],
+    )
 
 
 def test_classify_block_none_on_clean_output():
@@ -72,6 +92,7 @@ def test_resolve_tool_falls_back_to_bare_name_when_not_found():
 def _dump_env_result(monkeypatch, extra_env: dict[str, str] | None = None):
     monkeypatch.setattr("tool_resolver._enforce_budget", lambda name: None)
     monkeypatch.setattr("tool_resolver._log_call", lambda *a, **k: None)
+    _bypass_sandbox_for_python3(monkeypatch)
     for k, v in (extra_env or {}).items():
         monkeypatch.setenv(k, v)
     result = run_tool(
@@ -93,10 +114,11 @@ def test_run_tool_subprocess_does_not_inherit_secret_env_vars(monkeypatch):
     assert "HUNTMCP_TEST_FAKE_SECRET" not in child_env
 
 
-def test_run_tool_subprocess_still_has_path():
+def test_run_tool_subprocess_still_has_path(monkeypatch):
     """Sanity check that the environment scrub isn't so aggressive the
     child can't function -- PATH must survive, or resolve_tool()'s own
     binary resolution and the tool's own internal exec calls would break."""
+    _bypass_sandbox_for_python3(monkeypatch)
     result = run_tool(
         "python3",
         ["-c", "import os, sys; sys.stdout.write(os.environ.get('PATH', ''))"],
@@ -113,6 +135,7 @@ def test_run_tool_respects_explicit_env_override(monkeypatch):
     (capture_output, text, stdin)."""
     monkeypatch.setattr("tool_resolver._enforce_budget", lambda name: None)
     monkeypatch.setattr("tool_resolver._log_call", lambda *a, **k: None)
+    _bypass_sandbox_for_python3(monkeypatch)
     result = run_tool(
         "python3",
         ["-c", "import os, sys; sys.stdout.write(os.environ.get('HUNTMCP_EXPLICIT_OVERRIDE', 'MISSING'))"],
@@ -130,6 +153,7 @@ def test_run_tool_env_none_does_not_bypass_the_scrub(monkeypatch):
     env=None must still get the scrubbed environment, not the raw one."""
     monkeypatch.setattr("tool_resolver._enforce_budget", lambda name: None)
     monkeypatch.setattr("tool_resolver._log_call", lambda *a, **k: None)
+    _bypass_sandbox_for_python3(monkeypatch)
     monkeypatch.setenv("HUNTMCP_TEST_FAKE_SECRET", "super-secret-value")
     result = run_tool(
         "python3",
@@ -149,6 +173,7 @@ def test_run_tool_allowlist_includes_proxy_and_tls_trust_vars(monkeypatch):
     regression, not just hardening."""
     monkeypatch.setattr("tool_resolver._enforce_budget", lambda name: None)
     monkeypatch.setattr("tool_resolver._log_call", lambda *a, **k: None)
+    _bypass_sandbox_for_python3(monkeypatch)
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
     monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/custom-ca.pem")
     result = run_tool(

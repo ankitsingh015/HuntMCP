@@ -1,6 +1,8 @@
 import importlib.util
 import os
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _spec = importlib.util.spec_from_file_location(
@@ -36,6 +38,89 @@ def test_format_results_lists_matches_with_fuzz_field():
     out = ffuf_server._format_results(None, FFUF_JSON, 0, "", "nothing here", "fuzz")
     assert "ffuf found 1 result(s):" in out
     assert "FUZZ=admin" in out
+
+
+# ---------------------------------------------------------------------------
+# _resolve_wordlist -- security boundary added after a real vulnerability
+# was found in review: `wordlist` is an agent-facing MCP tool parameter
+# whose value can be influenced by content the agent read off a hostile
+# target (prompt injection). Before this validation existed, an arbitrary
+# absolute path (e.g. "/home/<user>/.ssh/id_rsa") was accepted completely
+# unchecked -- under S5 sandboxing that path would then need to be
+# bind-mounted read-write into the sandbox to work at all, letting a
+# prompt-injected agent get a sensitive host file's contents read (and its
+# host permissions permanently widened by the sandbox's own mount-fixup)
+# with no container escape required. Restricting to the two specific,
+# reviewed, non-credential wordlist directories closes this at its source.
+# ---------------------------------------------------------------------------
+
+def test_resolve_wordlist_accepts_a_path_under_the_project_wordlist_dir(tmp_path, monkeypatch):
+    # Regression test for a real, DEMONSTRATED data-loss bug: an earlier
+    # version of this test created its fixture file directly inside the
+    # real (unmocked) PROJECT_WORDLIST_DIR -- i.e. the actual git-tracked
+    # knowledge/wordlists/ directory -- using a name ("directories.txt")
+    # that collides with a real project file, then unconditionally
+    # os.unlink()'d it in `finally` regardless of whether the test created
+    # it. Every full test-suite run silently deleted the real file. Isolate
+    # PROJECT_WORDLIST_DIR to a tmp_path so this test can never touch real
+    # project content.
+    monkeypatch.setattr(ffuf_server, "PROJECT_WORDLIST_DIR", str(tmp_path))
+    # _APPROVED_WORDLIST_ROOTS is resolved once at import time from
+    # PROJECT_WORDLIST_DIR/SYSTEM_WORDLIST_DIR -- patching PROJECT_WORDLIST_DIR
+    # alone doesn't change what _resolve_wordlist actually validates against.
+    monkeypatch.setattr(
+        ffuf_server, "_APPROVED_WORDLIST_ROOTS",
+        (os.path.realpath(str(tmp_path)), os.path.realpath(ffuf_server.SYSTEM_WORDLIST_DIR)),
+    )
+    approved = os.path.join(ffuf_server.PROJECT_WORDLIST_DIR, "directories.txt")
+    open(approved, "a").close()
+    resolved = ffuf_server._resolve_wordlist(approved)
+    assert resolved == os.path.realpath(approved)
+
+
+def test_resolve_wordlist_rejects_a_path_outside_approved_roots():
+    with pytest.raises(ffuf_server.WordlistNotApproved):
+        ffuf_server._resolve_wordlist(os.path.expanduser("~/.ssh/id_rsa"))
+
+
+def test_resolve_wordlist_rejects_a_prompt_injection_style_absolute_path():
+    """The exact scenario found in review: an agent steered into passing
+    an absolute path to a sensitive file it was never meant to reference."""
+    with pytest.raises(ffuf_server.WordlistNotApproved):
+        ffuf_server._resolve_wordlist("/etc/shadow")
+
+
+def test_resolve_wordlist_rejects_a_traversal_out_of_the_project_dir():
+    with pytest.raises(ffuf_server.WordlistNotApproved):
+        ffuf_server._resolve_wordlist(
+            os.path.join(ffuf_server.PROJECT_WORDLIST_DIR, "..", "..", "..", "etc", "shadow")
+        )
+
+
+def test_fuzz_directory_reports_a_clean_error_for_a_rejected_wordlist():
+    out = ffuf_server.fuzz_directory("https://target.com", wordlist="/etc/shadow")
+    assert "Error:" in out
+    assert "not approved" not in out  # message names the actual class-name text below
+    assert "approved wordlist directories" in out
+
+
+def test_fuzz_with_data_reports_a_clean_error_for_a_rejected_wordlist():
+    out = ffuf_server.fuzz_with_data("https://target.com", wordlist="/etc/shadow")
+    assert "Error:" in out
+    assert "approved wordlist directories" in out
+
+
+def test_start_declares_the_wordlist_path_as_an_explicit_mount(monkeypatch):
+    captured = {}
+
+    def _fake_start_job(tool_name, args, timeout, jobs, extra_mounts=None):
+        captured["extra_mounts"] = extra_mounts
+        return {"job_id": "job-1", "status": "running", "tool": tool_name}
+
+    monkeypatch.setattr(ffuf_server.job_runtime, "start_job", _fake_start_job)
+    ffuf_server.fuzz_directory("https://target.com", wordlist="")
+    assert captured["extra_mounts"] is not None
+    assert len(captured["extra_mounts"]) == 1
 
 
 def test_format_results_url_with_braces_does_not_crash():

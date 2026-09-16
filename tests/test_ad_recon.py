@@ -39,24 +39,18 @@ class _FakeResult:
 
 
 # ---------------------------------------------------------------------------
-# _find_binary
+# S5: impacket now runs inside the sandbox image via canonical tool names
+# (KERBEROAST_TOOL/ASREPROAST_TOOL), not a host-PATH lookup across several
+# possible binary aliases -- _find_binary() and *_CANDIDATES were removed
+# (a real bug found in review: they always failed "not found" on any
+# properly-sandboxed machine that doesn't ALSO have impacket on the host).
+# run_tool() itself is what fails closed if podman/the sandbox image
+# genuinely aren't available.
 # ---------------------------------------------------------------------------
 
-def test_find_binary_returns_first_match(monkeypatch):
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: "/usr/bin/" + name if name == "GetUserSPNs.py" else None)
-    assert ad_recon._find_binary(ad_recon.KERBEROAST_CANDIDATES) == "GetUserSPNs.py"
-
-
-def test_find_binary_returns_none_when_nothing_found(monkeypatch):
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: None)
-    assert ad_recon._find_binary(ad_recon.KERBEROAST_CANDIDATES) is None
-
-
-def test_find_binary_prefers_earlier_candidate(monkeypatch):
-    # both impacket-getuserspns AND GetUserSPNs.py "exist" -- earlier
-    # candidate in the list wins.
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: "/usr/bin/" + name)
-    assert ad_recon._find_binary(ad_recon.KERBEROAST_CANDIDATES) == "impacket-getuserspns"
+def test_kerberoast_and_asreproast_use_canonical_tool_names():
+    assert ad_recon.KERBEROAST_TOOL == "GetUserSPNs.py"
+    assert ad_recon.ASREPROAST_TOOL == "GetNPUsers.py"
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +81,6 @@ def test_build_target_with_no_credentials_at_all():
 # ---------------------------------------------------------------------------
 
 def test_kerberoast_extracts_crackable_hash(monkeypatch):
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: "/usr/bin/" + name if name == "impacket-getuserspns" else None)
     monkeypatch.setattr(ad_recon, "run_tool", lambda *a, **k: _FakeResult(0, KERBEROAST_SAMPLE_OUTPUT, ""))
 
     result = ad_recon.kerberoast("corp.local", "alice", "10.0.0.1", password="S3cret!")
@@ -96,7 +89,6 @@ def test_kerberoast_extracts_crackable_hash(monkeypatch):
 
 
 def test_kerberoast_no_hashes_found(monkeypatch):
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: "/usr/bin/" + name if name == "impacket-getuserspns" else None)
     monkeypatch.setattr(ad_recon, "run_tool", lambda *a, **k: _FakeResult(0, NO_HASHES_OUTPUT, ""))
 
     result = ad_recon.kerberoast("corp.local", "alice", "10.0.0.1", password="S3cret!")
@@ -104,18 +96,32 @@ def test_kerberoast_no_hashes_found(monkeypatch):
     assert result["crackable_hashes"] == []
 
 
-def test_kerberoast_reports_error_when_binary_missing(monkeypatch):
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: None)
+def test_kerberoast_reports_error_when_sandbox_unavailable(monkeypatch):
+    def _raise(*a, **k):
+        raise FileNotFoundError("podman not found")
+
+    monkeypatch.setattr(ad_recon, "run_tool", _raise)
     result = ad_recon.kerberoast("corp.local", "alice", "10.0.0.1", password="S3cret!")
     assert "error" in result
-    assert "pip install impacket" in result["error"]
+    assert "sandbox unavailable" in result["error"]
+
+
+def test_kerberoast_calls_run_tool_with_the_canonical_tool_name(monkeypatch):
+    captured = {}
+
+    def fake_run_tool(tool_name, args, **kwargs):
+        captured["tool_name"] = tool_name
+        return _FakeResult(0, NO_HASHES_OUTPUT, "")
+
+    monkeypatch.setattr(ad_recon, "run_tool", fake_run_tool)
+    ad_recon.kerberoast("corp.local", "alice", "10.0.0.1", password="x")
+    assert captured["tool_name"] == ad_recon.KERBEROAST_TOOL
 
 
 def test_kerberoast_pipes_password_via_stdin_not_argv(monkeypatch):
     captured = {}
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: "/usr/bin/" + name if name == "impacket-getuserspns" else None)
 
-    def fake_run_tool(binary, args, **kwargs):
+    def fake_run_tool(tool_name, args, **kwargs):
         captured["args"] = args
         captured["kwargs"] = kwargs
         return _FakeResult(0, NO_HASHES_OUTPUT, "")
@@ -129,9 +135,8 @@ def test_kerberoast_pipes_password_via_stdin_not_argv(monkeypatch):
 
 def test_kerberoast_uses_hashes_flag_for_ntlm_hash(monkeypatch):
     captured = {}
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: "/usr/bin/" + name if name == "impacket-getuserspns" else None)
 
-    def fake_run_tool(binary, args, **kwargs):
+    def fake_run_tool(tool_name, args, **kwargs):
         captured["args"] = args
         return _FakeResult(0, NO_HASHES_OUTPUT, "")
 
@@ -142,8 +147,6 @@ def test_kerberoast_uses_hashes_flag_for_ntlm_hash(monkeypatch):
 
 
 def test_kerberoast_handles_timeout(monkeypatch):
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: "/usr/bin/" + name if name == "impacket-getuserspns" else None)
-
     def fake_run_tool(*a, **k):
         raise subprocess.TimeoutExpired(cmd="GetUserSPNs.py", timeout=60)
 
@@ -157,7 +160,6 @@ def test_kerberoast_handles_timeout(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_asreproast_extracts_crackable_hash(monkeypatch):
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: "/usr/bin/" + name if name == "impacket-getnpusers" else None)
     monkeypatch.setattr(ad_recon, "run_tool", lambda *a, **k: _FakeResult(0, ASREPROAST_SAMPLE_OUTPUT, ""))
 
     result = ad_recon.asreproast("corp.local", "10.0.0.1", username="svc-legacy")
@@ -165,18 +167,28 @@ def test_asreproast_extracts_crackable_hash(monkeypatch):
     assert result["crackable_hashes"][0].startswith("$krb5asrep$23$")
 
 
-def test_asreproast_requires_username_or_users_file(monkeypatch):
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: "/usr/bin/impacket-getnpusers")
+def test_asreproast_requires_username_or_users_file():
     result = ad_recon.asreproast("corp.local", "10.0.0.1")
     assert "error" in result
     assert "username" in result["error"]
 
 
+def test_asreproast_calls_run_tool_with_the_canonical_tool_name(monkeypatch):
+    captured = {}
+
+    def fake_run_tool(tool_name, args, **kwargs):
+        captured["tool_name"] = tool_name
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(ad_recon, "run_tool", fake_run_tool)
+    ad_recon.asreproast("corp.local", "10.0.0.1", username="alice")
+    assert captured["tool_name"] == ad_recon.ASREPROAST_TOOL
+
+
 def test_asreproast_always_passes_no_pass_flag(monkeypatch):
     captured = {}
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: "/usr/bin/" + name if name == "impacket-getnpusers" else None)
 
-    def fake_run_tool(binary, args, **kwargs):
+    def fake_run_tool(tool_name, args, **kwargs):
         captured["args"] = args
         return _FakeResult(0, "", "")
 
@@ -185,21 +197,43 @@ def test_asreproast_always_passes_no_pass_flag(monkeypatch):
     assert "-no-pass" in captured["args"]
 
 
-def test_asreproast_uses_users_file_when_given(monkeypatch):
+def test_asreproast_uses_users_file_when_given(tmp_path, monkeypatch):
     captured = {}
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: "/usr/bin/" + name if name == "impacket-getnpusers" else None)
+    users_file = tmp_path / "candidates.txt"
+    users_file.write_text("alice\nbob\n")
 
-    def fake_run_tool(binary, args, **kwargs):
+    def fake_run_tool(tool_name, args, **kwargs):
         captured["args"] = args
+        captured["kwargs"] = kwargs
         return _FakeResult(0, "", "")
 
     monkeypatch.setattr(ad_recon, "run_tool", fake_run_tool)
-    ad_recon.asreproast("corp.local", "10.0.0.1", users_file="/tmp/candidates.txt")
+    ad_recon.asreproast("corp.local", "10.0.0.1", users_file=str(users_file))
     assert "-usersfile" in captured["args"]
-    assert "/tmp/candidates.txt" in captured["args"]
+    assert str(users_file) in captured["args"]
+    # S5: users_file is a real host path impacket must read -- must be
+    # explicitly declared as a mount, or it's invisible in the sandbox
+    # (regression: an earlier version never passed this at all).
+    assert captured["kwargs"].get("extra_mounts") == [str(users_file)]
 
 
-def test_asreproast_reports_error_when_binary_missing(monkeypatch):
-    monkeypatch.setattr(ad_recon.shutil, "which", lambda name: None)
+def test_asreproast_does_not_pass_extra_mounts_when_no_users_file(monkeypatch):
+    captured = {}
+
+    def fake_run_tool(tool_name, args, **kwargs):
+        captured["kwargs"] = kwargs
+        return _FakeResult(0, "", "")
+
+    monkeypatch.setattr(ad_recon, "run_tool", fake_run_tool)
+    ad_recon.asreproast("corp.local", "10.0.0.1", username="alice")
+    assert captured["kwargs"].get("extra_mounts") is None
+
+
+def test_asreproast_reports_error_when_sandbox_unavailable(monkeypatch):
+    def _raise(*a, **k):
+        raise FileNotFoundError("podman not found")
+
+    monkeypatch.setattr(ad_recon, "run_tool", _raise)
     result = ad_recon.asreproast("corp.local", "10.0.0.1", username="alice")
     assert "error" in result
+    assert "sandbox unavailable" in result["error"]
