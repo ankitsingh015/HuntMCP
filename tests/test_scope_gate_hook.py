@@ -764,10 +764,18 @@ def test_main_ignores_non_bash_non_mcp_tools(monkeypatch, tool_name):
 # scope-gate.ts) treat as an implicit allow. Verified live before this fix:
 # `echo 'null' | python3 scripts/hooks/scope_gate_hook.py` exited 1 with an
 # unhandled traceback. These tests close that gap without widening the gate
-# to non-Tier2 tools -- a malformed tool_input on a definitely-non-Tier2
-# tool_name (see test_main_ignores_malformed_tool_input_on_non_tier2_tool
-# below) must still pass straight through, since tool_input is never even
-# inspected until tool_name is confirmed to be Bash or mcp__*.
+# to non-Tier2 tools -- a malformed tool_input on a tool_name this hook
+# never inspects tool_input for at all (see
+# test_main_ignores_malformed_tool_input_on_non_tier2_tool below) must
+# still pass straight through.
+#
+# S6 (hook tamper-resistance) NARROWED this exemption: Edit/Write/
+# NotebookEdit are no longer in that "never inspects tool_input" set (S6
+# needs their file_path/notebook_path to detect a protected-path write),
+# so a malformed tool_input on one of THOSE three now correctly fails
+# closed instead -- see test_main_fails_closed_on_malformed_tool_input_for_write
+# below, which replaced "Write" in this parametrize list for exactly that
+# reason. Read/Grep/WebFetch remain genuinely untouched by this hook.
 
 
 @pytest.mark.parametrize("raw_stdin", ["null", "[1, 2, 3]", '"just a string"', "42"])
@@ -805,11 +813,26 @@ def test_main_fails_closed_on_non_string_command_for_bash(monkeypatch, capsys):
     assert "BLOCKED" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("tool_name", ["Read", "Write", "Grep", "WebFetch"])
+@pytest.mark.parametrize("tool_name", ["Read", "Grep", "WebFetch"])
 def test_main_ignores_malformed_tool_input_on_non_tier2_tool(monkeypatch, tool_name):
     """Narrow-boundary regression: tool_name is checked BEFORE tool_input is
     ever inspected, so a definitely-non-Tier2 tool with a garbage tool_input
     shape must still pass straight through -- the fail-closed net for
-    payload shape must not widen the gate to tools this hook never gated."""
+    payload shape must not widen the gate to tools this hook never gated.
+    Write is deliberately NOT in this list (see the test below) -- S6 made
+    it one of the tools this hook DOES inspect tool_input for."""
     payload = {"tool_name": tool_name, "tool_input": "totally-not-a-dict"}
     assert _run_main(monkeypatch, payload) == 0
+
+
+def test_main_fails_closed_on_malformed_tool_input_for_write(monkeypatch, capsys):
+    """S6 (hook tamper-resistance) contract change: Write is now one of the
+    tools this hook inspects tool_input for (to detect a protected-path
+    write), so a garbage tool_input shape on a Write call is exactly the
+    'a call this hook could not inspect' case S1's fail-closed philosophy
+    exists for -- it must now BLOCK, not silently pass through. Before S6,
+    Write fell into the same bucket as Read/Grep/WebFetch above; this test
+    replaces its former membership in that parametrized list."""
+    payload = {"tool_name": "Write", "tool_input": "totally-not-a-dict"}
+    assert _run_main(monkeypatch, payload) == 2
+    assert "BLOCKED" in capsys.readouterr().err
