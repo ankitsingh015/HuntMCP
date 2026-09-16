@@ -56,9 +56,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "mcp-servers"))
 from audit_log import log_call as _log_call  # noqa: E402
 from budget_guard import BudgetExceeded  # noqa: E402
 from budget_guard import enforce as _enforce_budget  # noqa: E402
+import hook_confirm  # noqa: E402
 import rce_confirm  # noqa: E402
 from scope_guard import NoEngagementFile, is_in_scope, load_engagement  # noqa: E402
 from scope_guard import is_safe_test_host as _is_safe_test_host  # noqa: E402
+
+# S6 (Phase-S Tier-2, hook tamper-resistance): the repo root this hook's own
+# path and every protected-path entry below is anchored to -- NOT the
+# caller's cwd (same rationale as engagement_paths.py's own _REPO_ROOT: a
+# relative Bash-write target must resolve consistently regardless of what
+# directory the agent happened to be in when it ran the command).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # The exact binaries HuntMCP's MCP servers shell out to (mcp-servers/*/server.py
 # run_tool() calls) -- the real Tier-2 boundary, not a guess. curl/wget are
@@ -373,6 +381,419 @@ def _is_persistent_rce_command(command: str) -> bool:
     return False
 
 
+# S6 (hook tamper-resistance): the files that constitute the scope-gate
+# enforcement boundary itself -- scope_gate_hook.py, every module it
+# imports to do real enforcement (scope/budget/audit/RCE-confirm/sandbox/
+# secrets), both harnesses' hook registration (.claude/settings.json for
+# Claude Code, .opencode/plugin/scope-gate.ts + opencode.jsonc for
+# OpenCode), .claude/settings.local.json (gitignored but still carries
+# permission allows / the disabled-MCP-servers list), and both confirm
+# scripts. *Why this file exists at all*: without this, an agent with
+# ordinary Edit/Write/Bash access could simply overwrite scope_gate_hook.py
+# (or drop its registration) to silently neutralize every S1-S5 control
+# mid-session -- see MASTER-ROADMAP-FINAL-v3.md's Phase-S Tier-2 spec
+# ("hook neutralizable mid-session").
+_PROTECTED_RELATIVE_PATHS = (
+    "scripts/hooks/scope_gate_hook.py",
+    "mcp-servers/scope_guard.py",
+    "mcp-servers/budget_guard.py",
+    "mcp-servers/audit_log.py",
+    "mcp-servers/rce_confirm.py",
+    "mcp-servers/sandbox_runner.py",
+    "mcp-servers/dotenv_loader.py",
+    "mcp-servers/hook_confirm.py",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".opencode/plugin/scope-gate.ts",
+    "opencode.jsonc",
+    "scripts/confirm-os-shell.sh",
+    "scripts/confirm-hook-edit.sh",
+)
+
+
+def _resolve_maybe_relative(raw: str) -> Path | None:
+    # A relative path is anchored to _REPO_ROOT, not the hook process's own
+    # cwd -- deterministic and testable, matching every other path-free
+    # check in this file. HONEST LIMIT: if an agent has `cd`'d elsewhere
+    # and a real Bash command's relative path would actually resolve
+    # against that different cwd, this can miss it (or, far less
+    # dangerously, over-match) -- the overwhelmingly common case (repo-root
+    # cwd, or an absolute path, which is what Edit/Write/NotebookEdit's own
+    # tool schemas require) is unaffected.
+    try:
+        p = Path(raw)
+        if not p.is_absolute():
+            p = _REPO_ROOT / p
+        return p.resolve()
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def _protected_paths() -> frozenset[Path]:
+    # Recomputed on every call, not cached at import time: the two confirm-
+    # token paths (rce_confirm's os-shell-confirm.json, hook_confirm's own
+    # hook-edit-confirm.json) depend on an env override or the currently
+    # active engagement, either of which can change between hook
+    # invocations. Including them closes the exact gap rce_confirm.py's own
+    # module docstring names as an unclosed S4 limit: "an agent with
+    # Write/Edit access can fabricate a valid-looking token at the exact
+    # path this module resolves to and skip request_confirmation()
+    # entirely" -- now that path is itself protected by this same check.
+    paths = {_resolve_maybe_relative(rel) for rel in _PROTECTED_RELATIVE_PATHS}
+    paths.add(Path(rce_confirm._token_path()).resolve())
+    paths.add(Path(hook_confirm._token_path()).resolve())
+    return frozenset(p for p in paths if p is not None)
+
+
+def _protected_hit(candidate: Path | None, protected: frozenset[Path]) -> Path | None:
+    """Returns the protected path `candidate` writes to -- either because
+    `candidate` IS a protected path, or because `candidate` is a directory
+    that is an ANCESTOR of one. Closes a directory-destination gap found in
+    adversarial security review of S6 itself: real `cp`/`mv`/`install`/
+    `rsync`/`ln` place a file INSIDE an existing directory destination
+    using the source's own basename (`cp x scripts/hooks/` writes
+    scripts/hooks/scope_gate_hook.py on disk), and `git checkout <ref> --
+    <dir>`/`git restore <dir>` restore an entire subtree from history --
+    neither ever puts the protected file's own literal text in the
+    destination argument this hook inspects. Checking ancestry (does the
+    destination directory CONTAIN a protected file) rather than trying to
+    precisely replicate each tool's own basename-join semantics is
+    deliberately the more conservative choice (blocks more, never fewer,
+    e.g. any write into mcp-servers/ is now gated since 7 protected files
+    live directly under it) -- matching this file's existing fail-closed
+    bias (S1's rm-block, S3's .env-block) over a narrower, easier-to-miss
+    alternative."""
+    if candidate is None:
+        return None
+    if candidate in protected:
+        return candidate
+    for p in protected:
+        if candidate in p.parents:
+            return p
+    return None
+
+
+# Claude Code's Edit/Write and NotebookEdit tools carry the target path
+# under different argument names (NotebookEdit uses notebook_path, not
+# file_path) -- both are documented as requiring an ABSOLUTE path already,
+# so _resolve_maybe_relative's relative-path fallback above is defensive,
+# not the expected real-world shape.
+_EDIT_FILE_PATH_KEYS = {"Edit": "file_path", "Write": "file_path", "NotebookEdit": "notebook_path"}
+
+
+def _protected_path_from_edit_tool(tool_name: str, tool_input: dict) -> Path | None:
+    key = _EDIT_FILE_PATH_KEYS.get(tool_name)
+    if key is None:
+        return None
+    raw = tool_input.get(key)
+    if not isinstance(raw, str) or not raw:
+        return None
+    resolved = _resolve_maybe_relative(raw)
+    if resolved is None:
+        return None
+    return resolved if resolved in _protected_paths() else None
+
+
+# Bash commands whose LAST non-flag positional argument is the write
+# destination -- an overwrite only counts if the DESTINATION is protected;
+# `cp <protected> /tmp/x` is a read (copying the file elsewhere), not a
+# tamper, same principle as `cat`ing it for review. `ln` fits the same
+# shape (`ln [-s] TARGET LINK_NAME`) -- `ln -sf /tmp/x <protected>`
+# replaces the protected path's own dirent with a symlink to attacker
+# content, same real tamper as an overwrite; `ln <protected> /tmp/x` is
+# just a read, same as cp's.
+_WRITE_DEST_LAST_ARG_COMMANDS = {"cp", "install", "rsync", "ln"}
+
+# `mv` makes the SOURCE vanish from its expected path as well as creating
+# content at the destination -- either one touching a protected path is a
+# real tamper (a missing/renamed hook file is just as broken as a rewritten
+# one), so every non-flag argument is checked, not just the last.
+_WRITE_ANY_ARG_COMMANDS = {"mv"}
+
+
+# Security-review round 2 (post-S6-landing): curl/wget are already
+# recognized Tier-2 tools elsewhere in this file (TIER2_BASH_TOOLS), but
+# their own output-file flags were never checked here -- curl -o/--output
+# or wget -O/--output-document can write attacker-controlled bytes to any
+# local path, including a protected one, from an always-exempt dev-infra
+# host (e.g. raw.githubusercontent.com), with zero confirm/block.
+def _curl_output_target(words: list[str]) -> str | None:
+    """curl -o/--output <file> (space, `=`, or attached `-o<file>` form)
+    writes to an explicit destination. curl -O/--remote-name takes NO
+    argument -- it derives the local filename from the URL's own last
+    path segment, saved in the invoking process's cwd (same "assumed
+    repo-root cwd" honest limit _resolve_maybe_relative already
+    documents for every relative Bash-write target, not a new one).
+    Returns the raw destination text, or None if this curl call has no
+    local-file destination at all (the common case: printed to
+    stdout)."""
+    for i, w in enumerate(words):
+        if w in ("-o", "--output"):
+            if i + 1 < len(words):
+                return words[i + 1]
+        elif w.startswith("--output="):
+            return w[len("--output="):]
+        elif w.startswith("-o") and w != "-o" and not w.startswith("--"):
+            return w[2:]
+    if "-O" in words or "--remote-name" in words:
+        for w in words:
+            m = URL_RE.search(w)
+            if m:
+                name = urlsplit(m.group(0)).path.rsplit("/", 1)[-1]
+                if name:
+                    return name
+    return None
+
+
+def _wget_output_target(words: list[str]) -> str | None:
+    """wget -O/--output-document <file> (space, `=`, or attached
+    `-O<file>` form) -- unlike curl's -O, wget's -O always takes an
+    explicit argument; wget has no URL-derived-filename flag needing
+    the same treatment as curl's bare -O."""
+    for i, w in enumerate(words):
+        if w in ("-O", "--output-document"):
+            if i + 1 < len(words):
+                return words[i + 1]
+        elif w.startswith("--output-document="):
+            return w[len("--output-document="):]
+        elif w.startswith("-O") and w != "-O" and not w.startswith("--"):
+            return w[2:]
+    return None
+
+
+# Archive extraction (tar/unzip/7z) into an existing protected directory
+# is the same "directory destination" family the _protected_hit() ancestry
+# check already closes for cp/mv/git -- these three were simply never
+# wired through it at all. ACKNOWLEDGED, NOT FIXED (same honesty as the
+# python3-one-liner/git-apply-diff-body gaps): a "zip-slip" archive member
+# whose own name contains ../ traversal, extracted into an UNRELATED
+# (non-ancestor) destination directory, is NOT caught here -- this only
+# checks whether the STATED destination directory argument is itself
+# protected or an ancestor of a protected path, not each archive member's
+# own name (that would mean actually reading the archive's own index, not
+# a cheap word scan).
+def _tar_directory_target(words: list[str]) -> str | None:
+    """tar -C/--directory <dir> (space or `=` form; tar's short -C has
+    no attached-value form, always a separate argument). Checked
+    unconditionally, not gated on extract-mode (-x) being present --
+    the same conservative "blocks more, never fewer" bias as every other
+    check in this function: a -C used only to change cwd for archive
+    CREATION (not extraction) would be an unnecessary confirm prompt,
+    never a missed tamper."""
+    for i, w in enumerate(words):
+        if w in ("-C", "--directory"):
+            if i + 1 < len(words):
+                return words[i + 1]
+        elif w.startswith("--directory="):
+            return w[len("--directory="):]
+    return None
+
+
+def _unzip_directory_target(words: list[str]) -> str | None:
+    """unzip -d <dir> (extraction target directory; always a separate
+    argument, no attached form)."""
+    for i, w in enumerate(words):
+        if w == "-d":
+            if i + 1 < len(words):
+                return words[i + 1]
+    return None
+
+
+def _sevenzip_directory_target(words: list[str]) -> str | None:
+    """7z/7za x -o<dir> (extraction target directory) -- ALWAYS the
+    attached form, no space allowed between -o and the path, per
+    7-Zip's own CLI convention (unlike every other -o-shaped flag in
+    this file, which also accepts a spaced form)."""
+    for w in words:
+        if w.startswith("-o") and w != "-o":
+            return w[2:]
+    return None
+
+
+def _writes_protected_path(command: str) -> Path | None:
+    """S6 blanket, unconditional Bash-write detector -- same 'cheap word/
+    arg scan, not a full shell parser' honesty as _reads_env_file()/
+    _is_persistent_rce_command() above. Catches: shell redirects (`>`/
+    `>>`, spaced or not), `sed -i`, `tee`, `cp`/`install`/`rsync`/`ln` with
+    a protected destination, `mv` with a protected source-or-destination,
+    `dd of=`, `curl -o`/`--output`/`-O` and `wget -O`/`--output-document`
+    (round-2 security-review finding: both are already-recognized Tier-2
+    tools elsewhere in this file, but their own output-file flags were
+    never checked here), `tar -C`/`--directory`, `unzip -d`, and `7z -o`
+    extraction destinations (round-2 finding: entirely absent before,
+    same directory-destination family `_protected_hit()` already covers
+    for cp/mv/git, just never wired through it), and `git checkout <ref>
+    -- <path>`/`git restore <path>` (overwrite the working tree from
+    history, no shell redirect involved -- found in adversarial
+    self-review: a pre-S6 commit's unprotected hook could otherwise be
+    silently restored). Every destination check goes through
+    `_protected_hit()`, not a bare set-membership test -- a destination
+    that resolves to an existing protected file's PARENT DIRECTORY is
+    also caught (`cp x scripts/hooks/` and `git restore mcp-servers/`
+    both reach a protected file via real directory-destination/subtree-
+    checkout semantics without the destination argument ever being the
+    protected file's own literal text). Returns the matched protected
+    path, or None.
+
+    ACKNOWLEDGED, NOT FIXED (same class of gap as the .env-block's own
+    documented limit): a write obscured inside an interpreter one-liner
+    (`python3 -c "open('scope_gate_hook.py','w').write(...)"`) or inside a
+    `git apply`/`patch` diff's own content (the target path lives in the
+    patch body, not as a command-line arg) is NOT caught -- closing either
+    would mean actually parsing arbitrary Python/shell/diff syntax, not a
+    cheap word scan. A "zip-slip" archive member (its own name containing
+    `../` traversal) extracted into an UNRELATED, non-ancestor destination
+    directory is likewise NOT caught -- this only checks the STATED
+    destination directory argument, not each archive member's own name,
+    which would mean reading the archive's own index. `git checkout <ref>`
+    with no path, and `git reset --hard <ref>`, are ALSO NOT caught --
+    round-2 finding (Vuln 5), deliberately not addressed by this function:
+    neither carries a destination argument at all for `_protected_hit()`
+    to inspect, since both replace the ENTIRE working tree keyed only by a
+    ref, not a per-file destination. ACCEPTED, DEFERRED (explicit human
+    decision, not an oversight): closing this would mean either diffing
+    the target ref's tree content against current protected-file content
+    (real tree-diffing, a materially bigger mechanism than this word-scan
+    approach) or gating the command SHAPE unconditionally regardless of
+    what it would actually change -- see IMPLEMENTATION-TASK-TRACKER.md's
+    S6 entry for the full writeup and the two mitigation options weighed
+    and explicitly deferred. Do not claim this covers any of these cases;
+    see tests/test_hook_tamper_resistance.py's own explicit regression
+    tests asserting the python3 one-liner, zip-slip, bare-git-checkout,
+    and git-reset-hard cases all do NOT get caught."""
+    protected = _protected_paths()
+    for piece in _CHAIN_SPLIT_RE.split(command):
+        try:
+            words = shlex.split(piece)
+        except ValueError:
+            words = piece.split()
+        words = _strip_prefix_words(words)
+        if not words:
+            continue
+
+        for i, word in enumerate(words):
+            target = None
+            if word in (">", ">>"):
+                if i + 1 < len(words):
+                    target = words[i + 1]
+            elif word.startswith(">>"):
+                target = word[2:]
+            elif word.startswith(">"):
+                target = word[1:]
+            if target:
+                hit = _protected_hit(_resolve_maybe_relative(target), protected)
+                if hit:
+                    return hit
+
+        basenames = [w.rsplit("/", 1)[-1] for w in words]
+        first = basenames[0]
+
+        if first == "sed" and any(w == "-i" or w.startswith("-i") for w in words[1:]):
+            for w in reversed(words[1:]):
+                if w.startswith("-"):
+                    continue
+                hit = _protected_hit(_resolve_maybe_relative(w), protected)
+                if hit:
+                    return hit
+                break
+
+        if first == "tee":
+            for w in words[1:]:
+                if w.startswith("-"):
+                    continue
+                hit = _protected_hit(_resolve_maybe_relative(w), protected)
+                if hit:
+                    return hit
+
+        if first in _WRITE_DEST_LAST_ARG_COMMANDS:
+            positional = [w for w in words[1:] if not w.startswith("-")]
+            if positional:
+                hit = _protected_hit(_resolve_maybe_relative(positional[-1]), protected)
+                if hit:
+                    return hit
+
+        if first in _WRITE_ANY_ARG_COMMANDS:
+            for w in words[1:]:
+                if w.startswith("-"):
+                    continue
+                hit = _protected_hit(_resolve_maybe_relative(w), protected)
+                if hit:
+                    return hit
+
+        if first == "dd":
+            for w in words[1:]:
+                if w.startswith("of="):
+                    hit = _protected_hit(_resolve_maybe_relative(w[len("of="):]), protected)
+                    if hit:
+                        return hit
+
+        if first == "curl":
+            target = _curl_output_target(words[1:])
+            if target:
+                hit = _protected_hit(_resolve_maybe_relative(target), protected)
+                if hit:
+                    return hit
+
+        if first == "wget":
+            target = _wget_output_target(words[1:])
+            if target:
+                hit = _protected_hit(_resolve_maybe_relative(target), protected)
+                if hit:
+                    return hit
+
+        if first == "tar":
+            target = _tar_directory_target(words[1:])
+            if target:
+                hit = _protected_hit(_resolve_maybe_relative(target), protected)
+                if hit:
+                    return hit
+
+        if first == "unzip":
+            target = _unzip_directory_target(words[1:])
+            if target:
+                hit = _protected_hit(_resolve_maybe_relative(target), protected)
+                if hit:
+                    return hit
+
+        if first == "7z":
+            target = _sevenzip_directory_target(words[1:])
+            if target:
+                hit = _protected_hit(_resolve_maybe_relative(target), protected)
+                if hit:
+                    return hit
+
+        # git checkout/restore overwrite the working tree from a historical
+        # commit WITHOUT any shell redirect -- a distinct bypass from every
+        # case above: if an older, pre-S6 commit exists with an unprotected
+        # hook, `git checkout <ref> -- <path>` or `git restore <path>`
+        # would silently roll it back. `git checkout <ref>` alone (no
+        # `--`) is deliberately NOT matched -- it's ambiguous with an
+        # ordinary branch/tag switch, and treating every checkout arg as a
+        # path would false-positive-block normal `git checkout main`.
+        # `git restore`'s positional args are unambiguous paths already
+        # (that's the whole command's purpose), so no `--` is required
+        # there; `--source=<ref>` is a flag, skipped like any other `-...`.
+        # `_protected_hit`'s ancestry check also covers a directory
+        # pathspec here (`git checkout <ref> -- scripts/hooks/`/`git
+        # restore mcp-servers/`), which restores the WHOLE subtree from
+        # history -- second adversarial-review finding, post-S6.
+        if first == "git" and len(basenames) > 1 and basenames[1] in ("checkout", "restore"):
+            subcmd = basenames[1]
+            after_dashdash = subcmd == "restore"
+            for w in words[2:]:
+                if w == "--":
+                    after_dashdash = True
+                    continue
+                if w.startswith("-"):
+                    continue
+                if not after_dashdash:
+                    continue
+                hit = _protected_hit(_resolve_maybe_relative(w), protected)
+                if hit:
+                    return hit
+    return None
+
+
 def _extract_hosts_from_bash(command: str) -> list[str]:
     if _first_word(command) not in TIER2_BASH_TOOLS:
         return []
@@ -494,7 +915,17 @@ def main() -> int:
     # the gate to non-Tier2 tools. A malformed/unexpected tool_input on a
     # tool this hook was never going to gate (Read, Grep, WebFetch, ...)
     # must still pass straight through untouched.
-    if tool_name != "Bash" and not tool_name.startswith("mcp__"):
+    #
+    # S6 (hook tamper-resistance) widens this narrowing to also let
+    # Edit/Write/NotebookEdit through -- previously EVERY tool call other
+    # than Bash/mcp__ returned 0 here immediately, meaning this hook never
+    # evaluated an Edit/Write/NotebookEdit call at all, regardless of what
+    # file it targeted. Read/Grep/WebFetch/etc. are still exempt.
+    if (
+        tool_name != "Bash"
+        and not tool_name.startswith("mcp__")
+        and tool_name not in _EDIT_FILE_PATH_KEYS
+    ):
         return 0
 
     tool_input = payload.get("tool_input", {})
@@ -513,6 +944,56 @@ def main() -> int:
             "BLOCKED by scope gate: this Bash call's command is not a "
             "string. Failing closed rather than silently allowing a tool "
             "call this hook could not inspect."
+        )
+
+    # S6 (hook tamper-resistance) -- same blanket, unconditional category
+    # as the rm/.env/os-shell blocks below, but the ONLY one of these that
+    # evaluates non-Bash tool calls (Edit/Write/NotebookEdit) at all.
+    # Covers a call that would write to scope_gate_hook.py itself or a
+    # file it depends on to enforce S1-S5 (see _PROTECTED_RELATIVE_PATHS).
+    # Own fail-closed try/except, same discipline as the RCE-confirm gate
+    # below: an internal error here must not silently allow a tamper
+    # attempt through -- that would reopen the exact S1 bug class one
+    # check later, just for a different surface.
+    try:
+        protected_hit = None
+        if tool_name in _EDIT_FILE_PATH_KEYS:
+            protected_hit = _protected_path_from_edit_tool(tool_name, tool_input)
+        elif tool_name == "Bash":
+            protected_hit = _writes_protected_path(command)
+
+        if protected_hit is not None:
+            if hook_confirm.check_valid():
+                # Confirmed-and-allowed action gets its own audit trail,
+                # same reasoning as the RCE-confirm gate below: a protected-
+                # path write has no other audit_log wiring anywhere in this
+                # file.
+                _log_call(
+                    "hook-tamper-resistance-confirmed",
+                    [tool_name, str(protected_hit)],
+                    returncode=None, duration_ms=0.0, block=None,
+                )
+            else:
+                return _block(
+                    "BLOCKED by hook tamper-resistance: this call would "
+                    f"write to {str(protected_hit)!r}, part of the "
+                    "scope-gate enforcement boundary itself (scope_gate_"
+                    "hook.py or a file it depends on to enforce scope/"
+                    "secrets/RCE-confirm controls). This needs an "
+                    "explicit, interactive human confirm before it's "
+                    "allowed -- ask the user to run "
+                    "`scripts/confirm-hook-edit.sh` themselves, in their "
+                    "own terminal (it refuses if not run interactively), "
+                    "then retry this exact call. Valid for ~30 minutes "
+                    "and covers multiple protected-path writes, not just "
+                    "one."
+                )
+    except Exception as exc:  # noqa: BLE001 -- deliberate fail-closed net, see comment above
+        return _block(
+            "BLOCKED by hook tamper-resistance: internal error while "
+            f"evaluating the protected-path check ({exc!r}). Failing "
+            "closed rather than silently allowing a call this hook could "
+            "not verify."
         )
 
     # Blanket rm block -- unconditional, independent of scope/engagement

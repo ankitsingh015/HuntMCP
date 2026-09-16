@@ -38,7 +38,47 @@
 // target, webfetch's real use in this agent system is read-only research
 // (CVE pages, writeups, vendor docs) that never touches the target at
 // all, and gating it identically to curl blocked that research entirely.
+//
+// S6 (hook tamper-resistance) added the edit/write branch below.
+// OpenCode's real native tool ids were NOT guessed or scraped from binary
+// strings (an earlier draft of this comment claimed that and was WRONG --
+// the string match it relied on was actually the desktop app's Electron
+// "Edit" menu, an unrelated false positive found during S6's own
+// adversarial review). Verified instead against the live, running system:
+// `opencode serve` was started locally and its own OpenAPI doc queried
+// (`curl localhost:<port>/experimental/tool/ids`), which returns the
+// authoritative tool-id list this build actually registers: ["invalid",
+// "question","bash","read","glob","grep","edit","write","task","webfetch",
+// "todowrite","websearch","skill","apply_patch"]. Only "bash" (already
+// handled above), "edit", and "write" carry a single target-file argument
+// this hook can check -- confirmed via three independent tool-result
+// renderer functions in the same bundle, all reading `t.input.filePath`
+// (camelCase) for read/write/edit tool results. Translated into the same
+// file_path-keyed JSON contract scope_gate_hook.py's own
+// _EDIT_FILE_PATH_KEYS already expects. Before this, OpenCode forwarded
+// ONLY bash + mcp__ tool calls to the hook at all -- an edit/write call
+// was invisible to it entirely, the exact "hook neutralizable
+// mid-session" gap on this harness specifically. "read" is deliberately
+// NOT forwarded, matching Claude Code's own Read exemption (see
+// scope_gate_hook.py's _EDIT_FILE_PATH_KEYS comment).
+//
+// ACKNOWLEDGED, NOT COVERED: "apply_patch" (a real tool id, per the list
+// above) is NOT in EDIT_LIKE_TOOLS -- its real argument shape was not
+// found to carry a single `filePath` string (the analogous session-event
+// schema for a patch instead carries a multi-file diff), so mapping it
+// the same way as edit/write would either silently never match (dead
+// code pretending to be coverage) or require actually parsing a diff
+// body -- the same "not a full parser" boundary already accepted for
+// `git apply`/`patch` on the Bash side (see scope_gate_hook.py's
+// _writes_protected_path docstring). Do not claim this covers
+// apply_patch; see tests/test_scope_gate_plugin.mjs's own explicit
+// regression case asserting it does NOT.
 import type { Plugin } from "@opencode-ai/plugin"
+
+const EDIT_LIKE_TOOLS = {
+  edit: "Edit",
+  write: "Write",
+}
 
 export const ScopeGate: Plugin = async ({ directory }) => {
   return {
@@ -49,6 +89,13 @@ export const ScopeGate: Plugin = async ({ directory }) => {
         const command = output.args?.command
         if (typeof command !== "string" || !command.trim()) return
         payload = JSON.stringify({ tool_name: "Bash", tool_input: { command } })
+      } else if (input.tool in EDIT_LIKE_TOOLS) {
+        const filePath = output.args?.filePath
+        if (typeof filePath !== "string" || !filePath) return
+        payload = JSON.stringify({
+          tool_name: EDIT_LIKE_TOOLS[input.tool],
+          tool_input: { file_path: filePath },
+        })
       } else if (input.tool.includes(":")) {
         const sepIndex = input.tool.indexOf(":")
         const server = input.tool.slice(0, sepIndex)

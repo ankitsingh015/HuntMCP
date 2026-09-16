@@ -93,6 +93,12 @@ async function main() {
   // inherits process.env by default.
   process.env.HUNTMCP_AUDIT_LOG = path.join(tmp, "audit.jsonl");
   process.env.HUNTMCP_BUDGET_PATH = path.join(tmp, "budget.json");
+  // S6: isolate the hook-tamper-resistance confirm token too -- without
+  // this, a real, currently-valid scripts/confirm-hook-edit.sh token on
+  // THIS machine (e.g. from an in-progress maintenance session) would let
+  // every "S6: ... is blocked" case below through for the wrong reason.
+  process.env.HUNTMCP_HOOK_CONFIRM_PATH = path.join(tmp, "hook-edit-confirm.json");
+  process.env.HUNTMCP_RCE_CONFIRM_PATH = path.join(tmp, "os-shell-confirm.json");
   let allPass;
   try {
     execSync(
@@ -105,6 +111,48 @@ async function main() {
       { label: "out-of-scope curl is blocked", command: "curl https://someothersite.com/api", expectBlocked: true },
       { label: "non-tier2 command ignored", command: "git status", expectBlocked: false },
       { label: "non-bash tool call ignored", tool: "read", expectBlocked: false },
+      {
+        // S6: OpenCode's native edit/write tools are forwarded now (they
+        // weren't before S6 -- see scope-gate.ts's own EDIT_LIKE_TOOLS
+        // comment), translating filePath (camelCase) into the file_path
+        // key scope_gate_hook.py's protected-path check expects.
+        label: "S6: edit of the scope-gate hook itself is blocked",
+        tool: "edit",
+        args: { filePath: path.join(REPO_ROOT, "scripts/hooks/scope_gate_hook.py"), oldString: "x", newString: "y" },
+        expectBlocked: true,
+      },
+      {
+        label: "S6: write of .claude/settings.json is blocked",
+        tool: "write",
+        args: { filePath: path.join(REPO_ROOT, ".claude/settings.json"), content: "{}" },
+        expectBlocked: true,
+      },
+      {
+        // ACKNOWLEDGED, NOT COVERED (see scope-gate.ts's own EDIT_LIKE_TOOLS
+        // comment): "apply_patch" is a real OpenCode tool id but its real
+        // argument shape doesn't carry a single filePath string the way
+        // edit/write do, so it's deliberately not forwarded -- this
+        // documents that gap rather than claiming false coverage, same
+        // spirit as the Python-side python3-one-liner regression test.
+        label: "S6: apply_patch is NOT covered (documented gap, not a false claim)",
+        tool: "apply_patch",
+        args: { filePath: path.join(REPO_ROOT, ".opencode/plugin/scope-gate.ts") },
+        expectBlocked: false,
+      },
+      {
+        label: "S6: edit of an unrelated file is allowed",
+        tool: "edit",
+        args: { filePath: path.join(REPO_ROOT, "mcp-servers/nuclei-mcp/server.py"), oldString: "x", newString: "y" },
+        expectBlocked: false,
+      },
+      {
+        // "read" is deliberately not in EDIT_LIKE_TOOLS -- even a
+        // protected-looking filePath arg must never be forwarded for it.
+        label: "S6: read of a protected-looking path is never forwarded",
+        tool: "read",
+        args: { filePath: path.join(REPO_ROOT, "scripts/hooks/scope_gate_hook.py") },
+        expectBlocked: false,
+      },
       {
         // OpenCode names MCP-provided tools "<server>:<tool>" (colon-
         // separated, confirmed empirically via a live "Invalid Tool"
@@ -196,6 +244,8 @@ async function main() {
   } finally {
     delete process.env.HUNTMCP_AUDIT_LOG;
     delete process.env.HUNTMCP_BUDGET_PATH;
+    delete process.env.HUNTMCP_HOOK_CONFIRM_PATH;
+    delete process.env.HUNTMCP_RCE_CONFIRM_PATH;
     execSync(`rm -rf '${tmp}'`);
   }
   process.exit(allPass ? 0 : 1);

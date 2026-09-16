@@ -70,6 +70,14 @@ findings-seen.json
 # Structured audit log — per-engagement Tier-2 call log, real target data.
 data/audit.jsonl
 
+# S6 hook-tamper-resistance confirm token (mcp-servers/hook_confirm.py) —
+# repo/toolchain-scoped, not per-engagement, so it lives directly under
+# data/ rather than data/engagements/<slug>/; regenerated locally each time
+# a human runs scripts/confirm-hook-edit.sh, never for git. The .lock
+# sibling is file_lock.py's own advisory lock file for it.
+data/hook-edit-confirm.json
+data/hook-edit-confirm.json.lock
+
 # OOB listener sessions (oob-mcp) — live target interaction data
 # (source IPs, callback hits), workstation-private like chat-logs/.
 data/oob-sessions/
