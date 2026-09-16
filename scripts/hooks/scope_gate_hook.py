@@ -240,16 +240,83 @@ def _first_word(command: str) -> str:
 _CHAIN_SPLIT_RE = re.compile(r"&&|\|\||[;&|\n]|\$\(")
 
 
-# Shared by _is_rm_command() and _reads_env_file() -- both need "the real
-# invoked binary, past any sudo/env wrapper" as their first word, and used
-# to each re-derive this independently (found in code review: two copies
-# of the same security-relevant matching rule that could silently drift).
-# Loops rather than a single unwrap: `sudo env cat .env` previously only
-# stripped "sudo", leaving "env" (itself unrecognized) as the first word --
-# a doubled-wrapper bypass found live in code review.
+# Shared by _is_rm_command()/_reads_env_file()/_is_persistent_rce_command()/
+# _writes_protected_path() -- all need "the real invoked binary, past any
+# wrapper" as their first word, and used to each re-derive this
+# independently (found in code review: two copies of the same
+# security-relevant matching rule that could silently drift).
+#
+# S-GATE adversarial-regression finding (CONFIRMED, 4 independent
+# verification passes, 9/10 confidence each): this only ever recognized
+# "sudo"/"env" as strippable -- any OTHER leading wrapper (`timeout N`,
+# `nice`, `nohup`, `stdbuf -oFLAG`, `ionice`, `chrt`, `taskset`, `setsid`)
+# left the real command in second-or-later position, silently defeating
+# every check built on top of this (the rm-block, the .env-block, and
+# especially _writes_protected_path()'s S6 hook-tamper-resistance check --
+# live-reproduced: `timeout 5 cp /tmp/x scripts/hooks/scope_gate_hook.py`
+# was ALLOWED with zero confirm prompt). `_is_persistent_rce_command()`
+# happened to survive this specific bug class only because IT ALSO scans
+# every word's basename rather than relying on this function's positional
+# result -- that workaround was never applied here, where several callers
+# genuinely need the correct first-word position (e.g. _writes_protected_
+# path()'s per-command destination-argument parsing).
+#
+# `timeout` is handled specially: unlike the others, its own next
+# positional argument is a duration, not the real command, so both words
+# must be dropped (`timeout 30 cp ...` -> `cp ...`, not `30 cp ...`).
+#
+# ACKNOWLEDGED, NOT FIXED (same "cheap word scan, not a full shell parser"
+# honesty as this file's other documented limits): a wrapper whose own
+# flag takes a SEPARATE, space-delimited value (`nice -n 10 cp ...`,
+# `chrt -f 50 cp ...`, `taskset -c 0 cp ...`, `timeout -s KILL 5 cp ...`,
+# `timeout -k 10 5 cp ...`) is not fully unwrapped -- only an ATTACHED
+# flag (`stdbuf -o0 cp ...`, `timeout --signal=KILL 5 cp ...`) or a bare
+# wrapper with no flags at all is. Closing that fully would mean
+# hardcoding each wrapper's own flag-arity grammar. See
+# test_hook_tamper_resistance.py's own explicit regression tests
+# asserting these specific remaining cases are NOT caught.
+#
+# S-GATE round-2 adversarial-regression finding (CONFIRMED live, High
+# severity, FIXED): an EARLIER version of the `timeout` branch below
+# didn't skip `timeout`'s own leading flags at all before checking for the
+# duration -- `timeout --signal=KILL 5 cp ...` (an ordinary, realistic
+# invocation, no exotic shell tricks) left `--signal=KILL` itself in
+# first-word position, silently swallowing `cp` into an unchecked
+# position -- worse than not stripping `timeout` at all, since it
+# defeated the rm-block/.env-block/hook-tamper-resistance checks
+# simultaneously. Fixed by skipping leading attached-form flags first.
+_BARE_PREFIX_WRAPPERS = ("sudo", "env", "nice", "nohup", "setsid", "ionice", "chrt", "taskset", "stdbuf")
+
+
 def _strip_prefix_words(words: list[str]) -> list[str]:
-    while len(words) > 1 and words[0].rsplit("/", 1)[-1] in ("sudo", "env"):
-        words = words[1:]
+    while len(words) > 1:
+        head = words[0].rsplit("/", 1)[-1]
+        if head == "timeout":
+            words = words[1:]
+            # S-GATE round-2 adversarial-regression finding (CONFIRMED
+            # live, High severity): a real GNU `timeout` flag placed
+            # BEFORE the duration (`timeout --signal=KILL 5 cp ...`) used
+            # to make this stop immediately (the next word was a flag, not
+            # a bare duration), leaving the FLAG ITSELF in first-word
+            # position -- silently swallowing the real command into a
+            # position nothing checks, worse than not stripping at all.
+            # Skip every leading ATTACHED-form flag (`--signal=KILL`,
+            # `--foreground`) before checking for the duration positional.
+            while len(words) > 1 and words[0].startswith("-"):
+                words = words[1:]
+            if len(words) > 1 and not words[0].startswith("-"):
+                words = words[1:]  # timeout's own duration positional, not the real command
+            continue
+        if head in _BARE_PREFIX_WRAPPERS:
+            words = words[1:]
+            # Skip any of the wrapper's OWN attached-form flags
+            # (`stdbuf -o0 cmd`) so the loop lands on the real command --
+            # a SEPARATE, space-delimited flag value (`nice -n 10 cmd`) is
+            # the documented, not-fully-handled case above.
+            while len(words) > 1 and words[0].startswith("-"):
+                words = words[1:]
+            continue
+        break
     return words
 
 
@@ -794,8 +861,39 @@ def _writes_protected_path(command: str) -> Path | None:
     return None
 
 
+def _bash_basenames(command: str) -> set[str]:
+    """Every word of `command`, basename-stripped, as a set -- used to
+    detect whether a Tier-2 binary is invoked ANYWHERE in the command
+    regardless of a leading wrapper or shell-chain position (see
+    _extract_hosts_from_bash()'s own comment for why a bare first-word
+    check isn't enough). shlex.split can raise on malformed quoting (a
+    stray unclosed quote); fall back to a bare .split() rather than
+    letting that propagate -- same defensive pattern already used by
+    _is_persistent_rce_command()/_writes_protected_path()."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    return {w.rsplit("/", 1)[-1] for w in words}
+
+
 def _extract_hosts_from_bash(command: str) -> list[str]:
-    if _first_word(command) not in TIER2_BASH_TOOLS:
+    # Regression (S-GATE adversarial-regression finding, CONFIRMED, 4
+    # independent verification passes, 9/10 confidence each): a bare
+    # `_first_word(command) not in TIER2_BASH_TOOLS` check only recognized
+    # the invoked binary when it was the LITERAL first token of the whole
+    # command -- unlike _is_rm_command()/_reads_env_file()/
+    # _is_persistent_rce_command()/_writes_protected_path(), which already
+    # handle a leading wrapper or a chained sub-command. `env curl ...`,
+    # `timeout 30 curl ...`, `nice curl ...`, and `echo hi && curl ...`
+    # (all live-reproduced) made this return [] -- skipping the
+    # out-of-scope-target check entirely, silently, with no audit log
+    # entry, for a call that would be BLOCKED as a bare `curl ...`.
+    # Scanning every word's basename (the same fix already applied to
+    # _is_persistent_rce_command() for the identical bug class) rather
+    # than relying on positional first-word matching closes this
+    # regardless of what wrapper/chaining precedes the real binary.
+    if not (_bash_basenames(command) & TIER2_BASH_TOOLS):
         return []
 
     # Prefer real URL parsing over blanket regex where a scheme is present --
@@ -1174,18 +1272,28 @@ def main() -> int:
     # captures the primary audit value (exact command + args + timestamp of
     # every real Tier-2 curl/wget/curl-rl.sh attempt) without the
     # schema-risk of correlating a second PostToolUse hook by callID.
-    if tool_name == "Bash" and _first_word(command) in ("curl", "wget", "curl-rl.sh"):
-        name = _first_word(command)
+    # Same wrapper/chain fix as _extract_hosts_from_bash() above, applied
+    # here too -- this used the identical unwrapped _first_word() check, so
+    # a wrapped call that now correctly reaches the scope check (fixed
+    # above) was still silently skipping budget enforcement AND the audit
+    # log entry even once allowed.
+    if tool_name == "Bash":
         try:
-            _enforce_budget(name)
-        except BudgetExceeded as e:
-            print(f"BLOCKED by scope gate: Tier-2 budget exceeded ({e}).", file=sys.stderr)
-            return 2
-        try:
-            args = shlex.split(command)[1:]
+            words = shlex.split(command)
         except ValueError:
-            args = []
-        _log_call(name, args, returncode=None, duration_ms=0.0, block=None)
+            words = command.split()
+        match_idx, name = next(
+            ((i, w.rsplit("/", 1)[-1]) for i, w in enumerate(words)
+             if w.rsplit("/", 1)[-1] in ("curl", "wget", "curl-rl.sh")),
+            (None, None),
+        )
+        if name is not None:
+            try:
+                _enforce_budget(name)
+            except BudgetExceeded as e:
+                print(f"BLOCKED by scope gate: Tier-2 budget exceeded ({e}).", file=sys.stderr)
+                return 2
+            _log_call(name, words[match_idx + 1:], returncode=None, duration_ms=0.0, block=None)
 
     return 0
 
