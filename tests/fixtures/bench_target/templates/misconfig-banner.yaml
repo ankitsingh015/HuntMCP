@@ -1,0 +1,17 @@
+id: bench-debug-panel-exposed
+
+info:
+  name: Bench Fixture Debug Panel Header Exposed
+  author: huntmcp-bench
+  severity: medium
+  description: Detects the HuntMCP benchmark fixture's planted debug-panel response header.
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/bench/status"
+    matchers:
+      - type: word
+        part: header
+        words:
+          - "X-Bench-Debug-Panel"
