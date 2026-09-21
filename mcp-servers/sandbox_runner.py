@@ -112,9 +112,22 @@ _CONTAINER_LABEL = "huntmcp-sandbox=1"
 
 WORKDIR_IN_CONTAINER = "/workspace"
 
-# Must match mcp-servers/sandbox/Dockerfile's `useradd -m -u 10001
-# sandboxuser` (the -m flag creates this as that user's real home dir).
-CONTAINER_HOME = "/home/sandboxuser"
+# Must be a path that is actually WRITABLE inside the container. It is
+# deliberately NOT the Dockerfile's `useradd -m` home (/home/sandboxuser,
+# uid 10001): the container runs --read-only together with
+# --userns=keep-id (see build_argv()), which remaps the container's
+# effective uid to the invoking host uid, so the image-owned
+# /home/sandboxuser is not writable by the process at all. Every
+# ProjectDiscovery tool creates $HOME/.config/<tool>/ on startup and dies
+# without it -- confirmed live on this engagement (2026-09-17): katana
+# failed even on `katana -version` with `Could not read flags ... no such
+# file or directory`, subfinder with `open .../.config/subfinder/config.yaml:
+# no such file or directory`, nuclei with `failed to create config
+# directory`, ffuf with `open .../.config/ffuf/scraper`.
+# /tmp is a container-private, size-capped, ephemeral tmpfs (see the
+# --tmpfs=/tmp flag in build_argv()) -- writable, and unlike a $HOME mount
+# it exposes no host path whatsoever.
+CONTAINER_HOME = "/tmp"
 
 
 class UnknownSandboxTool(Exception):
@@ -398,13 +411,14 @@ def build_argv(tool_name: str, args: list[str], scratch_dir: str, *,
         # through verbatim: `env` is the same dict used for the OUTER
         # podman-launching process too, where HOME correctly means the
         # real host user's home -- but INSIDE the container that value
-        # (e.g. "/home/ankit") doesn't exist at all, only CONTAINER_HOME
-        # ("/home/sandboxuser", per the Dockerfile's `useradd -m`) does.
-        # Found live: ffuf tries to read $HOME/.config/ffuf/scraper on
-        # startup and, given the host's HOME value, silently fails to find
-        # it and falls back to printing usage/help instead of running --
-        # the exact same failure mode a real "unknown flag" error would
-        # produce, which made this look like an argv-parsing bug at first.
+        # (e.g. "/home/ankit") doesn't exist at all, so CONTAINER_HOME
+        # (a writable tmpfs -- see its definition) is used instead.
+        # The Dockerfile's own `useradd -m` home is NOT usable for this:
+        # --read-only plus --userns=keep-id leave the image-owned
+        # /home/sandboxuser unwritable, and every tool that writes
+        # $HOME/.config/<tool>/ on startup then dies. Confirmed live for
+        # katana, subfinder, nuclei AND ffuf alike -- an earlier version
+        # of this comment claimed ffuf worked with that value; it did not.
         *[f"--env={k}={v}" for k, v in sorted(env.items()) if k != "HOME"],
         f"--env=HOME={CONTAINER_HOME}",
         SANDBOX_IMAGE,

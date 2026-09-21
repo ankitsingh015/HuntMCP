@@ -79,7 +79,7 @@ target hasn't been scanned yet.
 ## Phase 1 — Template-Based Scanning
 
 5. Call nuclei-mcp `scan_target(url, "medium,high,critical")` on each live host.
-6. For `--deep`: also run `scan_target(url, "low,medium,high,critical")` and `scan_with_templates(url, "exposures/")`.
+6. For `--deep`: also run `scan_target(url, "low,medium,high,critical")` and `scan_with_templates(url, "http/exposures/")`.
 
 ## Phase 2 — SQL Injection
 

@@ -78,6 +78,43 @@ jobs:
         # coverage instead of falling back to live-verified-only.
         run: pip install --no-cache-dir pytest pyyaml "mcp>=1.0.0,<2.0.0" boto3
 
+      # S5-follow-up (code review, 2026-09-18): without this, every test
+      # gated on templates_pin.templates_available() -- notably
+      # test_agent_docs_scan_with_templates_calls_match_the_pinned_template_layout,
+      # added specifically to catch a stale nuclei-templates path in an
+      # agent doc -- silently skips on every CI run, since this job never
+      # otherwise fetches the pinned snapshot. Cached and keyed off
+      # templates_pin.py's own content (not a fixed string) so a future
+      # TEMPLATES_PINNED_SHA bump automatically invalidates the cache and
+      # re-fetches, rather than someone having to remember to bump a
+      # separate cache key by hand. fetch-nuclei-templates.sh is itself
+      # idempotent (a cache hit already at the pinned commit is a fast
+      # `git rev-parse` no-op, no network call) so this step is safe and
+      # cheap to run unconditionally rather than gating it on the cache
+      # step's own hit/miss output. The ~100MB snapshot itself is never
+      # committed to git (data/nuclei-templates/ is gitignored) -- only
+      # cached as CI build state.
+      - name: Cache pinned nuclei-templates snapshot
+        uses: actions/cache@v4
+        with:
+          path: data/nuclei-templates
+          key: nuclei-templates-${{ hashFiles('mcp-servers/nuclei-mcp/templates_pin.py') }}
+
+      # timeout-minutes is a second, independent backstop on top of the
+      # script's own internal `timeout 60s` per fetch attempt (code
+      # review, 2026-09-18: a network STALL, not a clean failure, could
+      # otherwise block this step -- and therefore the whole shared
+      # unit-tests job, including every unrelated test in tests/ -- for
+      # GitHub's default 360-minute job ceiling). 6 minutes comfortably
+      # covers the script's own ~5.25min worst case (5 attempts * (60s
+      # timeout + 3s backoff)) plus the cheap local git/python work
+      # around it, while still failing this step promptly rather than
+      # silently eating the whole job's time budget if the internal
+      # timeout is ever somehow bypassed.
+      - name: Fetch pinned nuclei-templates snapshot
+        timeout-minutes: 6
+        run: scripts/fetch-nuclei-templates.sh
+
       - name: Run pytest
         run: python3 -m pytest tests/ -v
 

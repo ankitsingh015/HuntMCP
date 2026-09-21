@@ -1,6 +1,11 @@
 # Vector database (rebuilt locally from raw .md files)
 data/chroma/
 
+# Pinned nuclei-templates snapshot (fetched locally by
+# scripts/fetch-nuclei-templates.sh, see mcp-servers/nuclei-mcp/
+# templates_pin.py -- not authored by this repo, not committed here)
+data/nuclei-templates/
+
 # Local databases (each user has their own)
 data/memory.db
 data/watch.db
