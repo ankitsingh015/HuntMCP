@@ -84,20 +84,37 @@ def _start(args: list[str], timeout: int, tmpdir: str,
 
 @app.tool()
 def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1, risk: int = 1, timeout: int = 300) -> str:
-    """Start sqlmap against `url` (GET params in the URL itself, or POST
-    body via `data` when method="POST" -- `data` is silently ignored for
-    GET, it's not appended as a query string) in the background, returning
+    """Start sqlmap against `url`'s own GET parameters (or POST body via
+    `data` when method="POST" -- `data` is silently ignored for GET, it's
+    not appended as a query string) in the background, returning
     immediately with a job_id -- sqlmap runs can take longer than an MCP
     client's own per-call timeout, so this never blocks waiting for it to
-    finish. Also auto-detects and tests any HTML forms on the page
-    (--forms). `level`/`risk` are sqlmap's own 1-5 scales (higher = more
-    payloads tried, slower). Poll check_scan(job_id) for the result. Use
-    test_with_data() for a POST-only call without the GET/forms
-    auto-detection path."""
+    finish. Also auto-detects and tests any HTML forms on the page.
+    `level`/`risk` are sqlmap's own 1-5 scales (higher = more payloads
+    tried, slower). Poll check_scan(job_id) for the result. Use
+    test_with_data() for a POST-only call with an explicit body.
+
+    Passes --crawl=1 alongside --forms, NOT bare --forms: found live
+    (P2-BENCH real-tool fixture-proof testing, 2026-09-22) that this
+    sqlmap version treats `-u <url-with-params> --forms` (no --crawl) as
+    a FORMS-ONLY scan -- when the target page has no HTML <form> (the
+    common case for API/query-string-driven endpoints), sqlmap printed
+    "there were no forms found at the given target URL" and exited
+    WITHOUT testing the URL's own parameter at all, a silent false
+    negative for exactly the injection this function exists to find.
+    Adding --crawl=1 makes sqlmap treat `url` itself as a genuine crawl
+    target (tested directly, exactly as -u alone would) while --forms
+    keeps auto-testing any co-located form found during that crawl --
+    confirmed by direct reproduction that this combination detects the
+    URL-parameter injection AND does not regress to a false positive in
+    patched mode, unlike bare --forms which aborted before testing
+    anything on a formless page."""
     tmpdir = tempfile.mkdtemp(dir=_output_dir())
     args = [
         "-u", url,
         "--batch",
+        "--crawl=1",
+        "--forms",
         "--output-dir", tmpdir,
         "--level", str(level),
         "--risk", str(risk),
@@ -105,7 +122,6 @@ def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1
     ]
     if method.upper() == "POST" and data:
         args.extend(["--data", data])
-    args.extend(["--forms"])
     return _start(args, timeout, tmpdir,
                   f"No injection found at {url} (level={level}, risk={risk}).",
                   f"sqlmap results for {url}:", include_type=True)

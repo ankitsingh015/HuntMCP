@@ -175,8 +175,15 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(404, "not found")
 
 
-def _make_server(mode: str) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((LOOPBACK, 0), _Handler)
+def _make_server(mode: str, bind: str = LOOPBACK, port: int = 0) -> ThreadingHTTPServer:
+    """`bind`/`port` default to the loopback-only, ephemeral-port behavior
+    every existing caller (BenchApp.start(), below) relies on as a
+    deliberate security property. The only intended caller of a
+    non-default `bind` is bench_sandboxed_app.py's container entrypoint
+    (__main__ block below) -- that process runs inside its own throwaway,
+    network-isolated container, so a 0.0.0.0 bind there is scoped by the
+    container boundary, not a loopback-only host process."""
+    server = ThreadingHTTPServer((bind, port), _Handler)
     server.state = _State(mode)  # type: ignore[attr-defined]
     return server
 
@@ -210,3 +217,19 @@ class BenchApp:
     @property
     def request_log(self) -> list[dict]:
         return self._server.state.request_log  # type: ignore[attr-defined]
+
+
+if __name__ == "__main__":
+    # Container entrypoint ONLY -- invoked by bench_sandboxed_app.py inside
+    # bench_app's own throwaway, --internal (no host/internet route)
+    # container for P2-BENCH's real-tool fixture-proof tests (Tasks 12-17).
+    # Never invoked by BenchApp (the host-thread, loopback-only path Tasks
+    # 1-11's tests use) -- that class still calls _make_server() with its
+    # own unchanged defaults.
+    import os
+    import sys
+
+    _mode = sys.argv[1] if len(sys.argv) > 1 else "vulnerable"
+    _bind = os.environ.get("BENCH_APP_BIND", LOOPBACK)
+    _port = int(os.environ.get("BENCH_APP_PORT", "8000"))
+    _make_server(_mode, bind=_bind, port=_port).serve_forever()

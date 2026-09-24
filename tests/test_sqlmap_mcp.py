@@ -55,6 +55,44 @@ def test_injection_type_not_truncated_to_one_char(monkeypatch, tmp_path):
     assert "Type: b\n" not in out
 
 
+def test_injection_pairs_forms_with_crawl_so_it_never_aborts_on_a_formless_page(monkeypatch, tmp_path):
+    # Real bug found live via P2-BENCH's real-tool fixture-proof testing
+    # (Task 12): sqlmap 1.8.4 treats bare `-u <url-with-params> --forms`
+    # (no --crawl) as a FORMS-ONLY scan, not "test the URL param AND also
+    # check forms" as this function's own docstring promises -- confirmed
+    # by direct reproduction, `sqlmap -u <url-with-no-html-form> --forms
+    # --batch` prints "[CRITICAL] there were no forms found at the given
+    # target URL" and exits WITHOUT EVER TESTING THE URL'S OWN PARAMETER.
+    # Since --forms was unconditionally appended on every call,
+    # test_injection() silently reported "no injection found" for any
+    # URL-parameter SQLi on a page without an HTML <form> -- the common
+    # case for API/query-string-driven endpoints, and a genuine false
+    # negative in production use, not just a benchmark artifact.
+    #
+    # A bare removal of --forms would have fixed that but lost the
+    # documented form-auto-detection capability entirely (found in
+    # review). Adding --crawl=1 alongside --forms instead makes sqlmap
+    # treat `url` as a genuine crawl target (tested directly, same as -u
+    # alone) while --forms still auto-tests any co-located form found
+    # during that crawl -- confirmed by direct reproduction against both
+    # a vulnerable and a patched target that this combination detects the
+    # URL-parameter injection without the abort, and does not produce a
+    # false positive in patched mode.
+    fake_out_dir = tmp_path / "sqlmap-out"
+    fake_out_dir.mkdir()
+    monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
+    captured = {}
+
+    def _fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["args"] = args
+        return {"job_id": "job-forms", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(sqlmap_server.job_runtime, "start_job", _fake_start_job)
+    sqlmap_server.test_injection("https://example.com/?id=1")
+    assert "--forms" in captured["args"]
+    assert "--crawl=1" in captured["args"]
+
+
 def test_check_scan_actually_removes_the_scratch_tmpdir_from_disk(monkeypatch, tmp_path):
     # test_injection()'s scratch --output-dir used to be a
     # `with tempfile.TemporaryDirectory(...)` context manager, guaranteed

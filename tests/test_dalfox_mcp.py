@@ -47,6 +47,37 @@ def test_format_findings_compact_for_scan_parameter():
     assert "Parameter:" not in out  # compact form omits the per-line breakdown
 
 
+def test_scan_url_and_scan_parameter_request_jsonl_not_pretty_json(monkeypatch):
+    # Real bug found live via P2-BENCH's real-tool fixture-proof testing
+    # (Task 13): dalfox's --format json is a PRETTY-PRINTED JSON ARRAY
+    # ("[\n{...},\n{}]"), not one-JSON-object-per-line -- confirmed by
+    # direct reproduction. _format_findings() parses stdout line-by-line
+    # expecting each line to be its own complete JSON object (exactly
+    # dalfox's --format jsonl output), so with --format json every line
+    # ("[", "{...},", "{}]") fails json.loads() and is silently skipped,
+    # meaning check_scan() reported "No XSS found" even when dalfox found
+    # and verified a real XSS -- a false negative for every real scan,
+    # not just this benchmark. This test file's own FOUND_OUTPUT mock is
+    # already JSONL-shaped, which is exactly why this bug wasn't caught
+    # by the existing unit tests above -- they never exercised the real
+    # --format value passed to dalfox.
+    captured = {}
+
+    def _fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["args"] = args
+        return {"job_id": "job-format", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(dalfox_server.job_runtime, "start_job", _fake_start_job)
+
+    dalfox_server.scan_url("https://target.com/?q=1")
+    assert "jsonl" in captured["args"]
+    assert "json" not in captured["args"]  # exact-element check: "jsonl" != "json"
+
+    dalfox_server.scan_parameter("https://target.com/?q=1", "q")
+    assert "jsonl" in captured["args"]
+    assert "json" not in captured["args"]
+
+
 def test_scan_url_then_check_scan_round_trip(monkeypatch):
     monkeypatch.setattr(
         dalfox_server.job_runtime, "start_job",

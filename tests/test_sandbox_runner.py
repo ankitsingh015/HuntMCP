@@ -82,6 +82,64 @@ def test_build_argv_never_passes_env_host():
     assert "--env-host" not in argv
 
 
+def test_build_argv_never_sets_a_network_flag_by_default(monkeypatch):
+    """The core guarantee for every real hunt: with HUNTMCP_BENCH_NETWORK
+    unset (true for every production launch config -- it's never set in
+    opencode.jsonc), build_argv() must never add a --network flag at all,
+    preserving today's default per-container isolated network exactly."""
+    monkeypatch.delenv("HUNTMCP_BENCH_NETWORK", raising=False)
+    argv = sandbox_runner.build_argv("curl", ["https://example.com"], "/tmp/scratch", env={})
+    assert not any(a.startswith("--network") for a in argv)
+
+
+def test_build_argv_joins_the_bench_network_only_when_the_env_var_is_set(monkeypatch):
+    """P2-BENCH's real-tool fixture-proof tests (Tasks 12-17) are the only
+    intended caller of this: a dedicated, --internal (no host/internet
+    route), test-harness-owned Podman network so a sandboxed tool
+    container can reach its own throwaway bench_app container. This is
+    read directly from the process environment, never from a build_argv()
+    parameter or any MCP tool argument -- there is no code path from an
+    agent's tool-call input to this variable."""
+    monkeypatch.setenv("HUNTMCP_BENCH_NETWORK", "huntmcp-bench-net-deadbeef")
+    argv = sandbox_runner.build_argv("curl", ["https://example.com"], "/tmp/scratch", env={})
+    assert "--network=huntmcp-bench-net-deadbeef" in argv
+
+
+def test_build_argv_rejects_a_bench_network_value_not_matching_the_expected_prefix(monkeypatch):
+    """Defense in depth (found in adversarial review, 2026-09-23): the raw
+    env-var value was previously spliced into --network=<value> with no
+    validation at all -- a stray/typo'd/leftover-debug value of "host"
+    would have silently granted every subsequent real Tier-2 tool call in
+    that process full host networking, defeating S5 entirely. Only
+    SandboxedBenchApp's own generated names (always prefixed
+    huntmcp-bench-net-) are accepted; anything else, including Podman's
+    own special values (host/none/bridge/container:x), is refused."""
+    for dangerous in ("host", "none", "bridge", "container:evil", "huntmcp-sbx-not-a-real-bench-net"):
+        monkeypatch.setenv("HUNTMCP_BENCH_NETWORK", dangerous)
+        with pytest.raises(sandbox_runner.UnsafeBenchNetwork):
+            sandbox_runner.build_argv("curl", ["https://example.com"], "/tmp/scratch", env={})
+
+
+def test_build_argv_ignores_an_empty_bench_network_value(monkeypatch):
+    """An empty string is not a valid network name -- must behave exactly
+    like unset, not produce a bare/broken --network= flag."""
+    monkeypatch.setenv("HUNTMCP_BENCH_NETWORK", "")
+    argv = sandbox_runner.build_argv("curl", ["https://example.com"], "/tmp/scratch", env={})
+    assert not any(a.startswith("--network") for a in argv)
+
+
+def test_build_argv_never_leaks_the_bench_network_var_into_the_container_env(monkeypatch):
+    """Adversarial check: HUNTMCP_BENCH_NETWORK controls the PODMAN
+    NETWORK-JOIN flag only -- it must never also appear as one of the
+    sandboxed process's own --env= flags. tool_resolver.minimal_subprocess_env()
+    already excludes it (not in SUBPROCESS_ENV_ALLOWLIST), but this locks
+    the guarantee in at build_argv() itself: even if a caller's `env=`
+    dict is empty, the container never sees this variable."""
+    monkeypatch.setenv("HUNTMCP_BENCH_NETWORK", "huntmcp-bench-net-deadbeef")
+    argv = sandbox_runner.build_argv("curl", ["https://example.com"], "/tmp/scratch", env={})
+    assert not any(a.startswith("--env=HUNTMCP_BENCH_NETWORK") for a in argv)
+
+
 def test_build_argv_does_not_auto_mount_an_existing_path_from_args(tmp_path):
     """The core fix for a real security hole found in review: a path that
     merely APPEARS in `args` (as opposed to being explicitly passed via

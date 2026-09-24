@@ -86,7 +86,14 @@ def scan_url(url: str, timeout: int = 180) -> str:
     MCP client's own per-call timeout, so this never blocks waiting for
     dalfox to finish. Use scan_parameter() to target one specific
     parameter instead of all of them."""
-    args = ["url", url, "--silence", "--format", "json"]
+    # --format jsonl (one complete JSON object per line), NOT --format
+    # json: dalfox's "json" format is a pretty-printed JSON ARRAY across
+    # multiple lines, incompatible with _format_findings()'s line-by-line
+    # json.loads() parser -- confirmed live (P2-BENCH real-tool
+    # fixture-proof testing, 2026-09-22) that "json" silently made every
+    # real finding unparseable, always reporting "No XSS found" even when
+    # dalfox found and verified a real XSS.
+    args = ["url", url, "--silence", "--format", "jsonl"]
     return _start(url, args, timeout, verbose=True)
 
 
@@ -96,7 +103,9 @@ def scan_parameter(url: str, param: str, timeout: int = 180) -> str:
     and useful when you already suspect one specific parameter (e.g. a
     search/query field) rather than scanning every parameter on the page.
     Also backgrounded -- poll check_scan(job_id) for the result."""
-    args = ["url", url, "--param", param, "--silence", "--format", "json"]
+    # See scan_url()'s comment: --format jsonl, not "json" (a pretty-
+    # printed JSON array _format_findings() cannot parse line-by-line).
+    args = ["url", url, "--param", param, "--silence", "--format", "jsonl"]
     return _start(param, args, timeout, verbose=False)
 
 

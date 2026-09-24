@@ -17,8 +17,14 @@
 - `novel_findings` (unmatched confirmed claims) are never false positives and never discarded (principles 5–6).
 - False positives are ONLY confirmed claims against a case currently in `patched` mode (principle 6).
 - Every fixture module is prefixed `bench_` — never reuse `cem_target`'s bare names (`scenarios.py`, `answer_key.py`, `evaluator.py`, `harness.py`, `integrity.py`) to avoid Python module-cache collisions across the two fixture packages in one pytest process.
-- Zero lines changed under `tests/fixtures/cem_target/`, `cem_engine.py`, `case-mcp/server.py`, `tests/test_cem_benchmark.py`, or any `mcp-servers/*` production module (principle 9).
-- No change to `scope_gate_hook.py`, `sandbox_runner.py`, `job_runtime.py`, or any S1–S6/S-GATE file (principle 10).
+- Zero lines changed under `tests/fixtures/cem_target/`, `cem_engine.py`, `case-mcp/server.py`, `tests/test_cem_benchmark.py`, or any `mcp-servers/*` production module (principle 9) — **narrowly superseded for `sandbox_runner.py` only, see the 2026-09-22 note below.**
+- No change to `scope_gate_hook.py`, `job_runtime.py`, or any other S1–S6/S-GATE file (principle 10). `sandbox_runner.py` gets exactly one narrow, dormant-by-default exception, see below.
+
+**Networking-seam decision (2026-09-22, human-authorized, supersedes the Tasks 12–17 deferral):** Tasks 12–17 route through the real MCP tool functions, which always call `job_runtime.start_job()` → `sandbox_runner.build_argv()`, which give every real Tier-2 invocation its own isolated rootless-Podman network namespace with no host-loopback reverse connectivity (confirmed empirically, see the now-superseded blocker note previously recorded in `IMPLEMENTATION-TASK-TRACKER.md`'s P2-BENCH row). Rather than deferring these tasks or weakening S5 generally, `sandbox_runner.build_argv()` gains exactly one new internal check: if the process environment variable `HUNTMCP_BENCH_NETWORK` is set (a name reserved and documented as test-harness-only, never set by any production launch config in `opencode.jsonc`), append `--network=<value>` to the podman argv instead of the current default network handling. No new parameter is added to `build_argv()`, `start_job()`, or any MCP server tool function — the agent-facing surface of every MCP tool is completely unchanged, and there is no code path from an MCP tool-call argument to this variable. For every real hunt this variable is never present, so behavior is byte-identical to today.
+
+The benchmark harness (new code, under `tests/fixtures/bench_target/` only) is responsible for the full lifecycle: create a uniquely-named, `--internal` (no route to the internet or the host) Podman network per test run; start `bench_app` as its own container attached to that network with no published host port; set `HUNTMCP_BENCH_NETWORK` for the duration of the test process only (e.g. via `monkeypatch.setenv`); call the real, unmodified MCP tool function with the bench container's address as the `url`; tear down the container and network afterward. This mechanism is never imported by, or reachable from, any production code path — only `sandbox_runner.py` itself changes, and its change is inert outside a benchmark test process.
+
+**Hardening added in adversarial review (2026-09-23):** the initial version spliced `HUNTMCP_BENCH_NETWORK`'s value into `--network=<value>` with no validation at all -- a stray/typo'd/leftover-debug value of `"host"` (or Podman's other special values: `none`/`bridge`/`container:x`) would have silently granted every subsequent real Tier-2 tool call in that process full host networking, defeating S5 entirely. `sandbox_runner._validate_bench_network()` now rejects any value not matching `SandboxedBenchApp`'s own generated-name prefix (`huntmcp-bench-net-`), raising a new `UnsafeBenchNetwork` before it ever reaches argv. Regression: `tests/test_sandbox_runner.py::test_build_argv_rejects_a_bench_network_value_not_matching_the_expected_prefix`.
 - All target-app traffic binds `127.0.0.1` only, ephemeral port — never a real external target (`security.md`).
 - Every test file isolates its own budget/audit paths (`HUNTMCP_BUDGET_PATH`, `HUNTMCP_AUDIT_LOG` env overrides, or monkeypatching `_enforce_budget`/`_log_call`) so it never touches this machine's real active engagement's own ledger files — same pattern already used by `tests/test_job_runtime.py`'s `_no_budget`/`_no_audit` helpers.
 
@@ -1255,6 +1261,10 @@ git commit -m "feat(p2-bench): add loopback-only bench_harness for auxiliary che
 **Interfaces:**
 - Consumes: `mcp-servers/sqlmap-mcp/server.py`'s `test_injection(url, ...) -> str` and `check_scan(job_id) -> str` (loaded via `importlib.util.spec_from_file_location`, exactly as `test_cem_benchmark.py` already does for `case-mcp/server.py`)
 
+**Fixture note (2026-09-22, applies to Tasks 12-17):** these tests use `sandboxed_vulnerable_app`/`sandboxed_patched_app` (container-based, `bench_sandboxed_app.SandboxedBenchApp`), not the plan's originally-drafted `vulnerable_app`/`patched_app` (host-thread, loopback-only) -- see this file's own 2026-09-22 networking-seam decision note above for why. Otherwise the code below is unchanged from the original design.
+
+**Real bug found and fixed while implementing this task (2026-09-22, refined 2026-09-23 via adversarial review):** `test_injection()` unconditionally appended `--forms` to every sqlmap invocation. Direct reproduction confirmed this sqlmap version (1.8.4) treats `-u <url-with-params> --forms` (no `--crawl`) as a FORMS-ONLY scan: against a page with no HTML `<form>` (bench_app's `/bench/products?id=` -- and the common case for any API/query-string-driven endpoint), sqlmap prints `[CRITICAL] there were no forms found at the given target URL` and exits WITHOUT testing the URL's own parameter at all -- a silent false negative that would have affected every real hunt using this tool against a formless page, not just this benchmark. The first fix simply removed `--forms`, which correctly restored URL-parameter testing but was caught in adversarial review as ALSO silently losing the documented "auto-detects and tests any HTML forms on the page" capability for pages that do have one, with no replacement. The refined fix instead adds `--crawl=1` alongside `--forms`: `--crawl=1` makes sqlmap treat `url` as a genuine crawl target (tested directly, exactly as bare `-u` would), while `--forms` still auto-tests any co-located form found during that crawl -- confirmed by direct reproduction against both a vulnerable and a patched target (with `--flush-session` to rule out cached-result false positives) that this combination detects the URL-parameter injection at the plan's originally-specified `level=1, risk=1` without the abort, and produces no false positive in patched mode. Regression test: `tests/test_sqlmap_mcp.py::test_injection_pairs_forms_with_crawl_so_it_never_aborts_on_a_formless_page`.
+
 - [ ] **Step 1: Write the failing test**
 
 ```python
@@ -1343,6 +1353,10 @@ git commit -m "feat(p2-bench): real sqlmap-mcp fixture proof for the SQLi case"
 **Files:**
 - Test: `tests/test_p2_bench_fixture.py`
 
+**Fixture note:** uses `sandboxed_vulnerable_app`/`sandboxed_patched_app`, see Task 12's 2026-09-22 fixture note above.
+
+**Real bug found and fixed while implementing this task (2026-09-22):** `scan_url()`/`scan_parameter()` both passed `--format json` to dalfox. Direct reproduction confirmed dalfox's `json` format is a pretty-printed JSON ARRAY across multiple lines ("[", "{...},", "{}]"), not one-JSON-object-per-line -- `_format_findings()`'s line-by-line `json.loads()` parser therefore failed to parse EVERY line and always reported "No XSS found," even when dalfox found and verified a real XSS. dalfox has a distinct `--format jsonl` that produces true one-object-per-line output; switching to it fixed detection. This wasn't caught by `tests/test_dalfox_mcp.py`'s existing unit tests because their own mocked `stdout` fixture was already JSONL-shaped, never exercising the real CLI flag. Regression test added: `tests/test_dalfox_mcp.py::test_scan_url_and_scan_parameter_request_jsonl_not_pretty_json`.
+
 - [ ] **Step 1: Write the failing test**
 
 ```python
@@ -1400,6 +1414,10 @@ git commit -m "feat(p2-bench): real dalfox-mcp fixture proof for the XSS case"
 
 **Files:**
 - Test: `tests/test_p2_bench_fixture.py`
+
+**Fixture note:** idor-mcp is pure-stdlib `urllib` -- it never routes through `tool_resolver.run_tool()`/`sandbox_runner` (see idor-mcp/server.py's own module docstring), so this task uses the original host-thread `vulnerable_app`/`patched_app` fixtures directly, unlike Tasks 12-13.
+
+**Test-harness gap found and fixed while implementing this task (2026-09-22, not a production bug):** `_load_mcp_server()` loaded each server.py via `importlib.util.spec_from_file_location()`, which does not replicate CPython's own automatic "prepend the running script's directory to sys.path[0]" behavior. sqlmap-mcp/dalfox-mcp only import shared `mcp-servers/` siblings (already handled by their own explicit `sys.path.insert`), so this went unnoticed; idor-mcp/server.py imports `idor_sweep.py`, a SAME-DIRECTORY sibling, and failed with `ModuleNotFoundError` under the helper as originally written. Fixed by having `_load_mcp_server()` also insert the target server's own directory onto `sys.path` before exec'ing it -- restores parity with real `python3 server.py` execution; idor-mcp's own production code was never at fault.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1462,6 +1480,8 @@ git commit -m "feat(p2-bench): real idor-mcp fixture proof for the IDOR case"
 
 **Files:**
 - Test: `tests/test_p2_bench_fixture.py`
+
+**Fixture note:** ffuf-mcp sandboxes via `job_runtime`/`sandbox_runner` (like sqlmap/dalfox), so this uses `sandboxed_vulnerable_app`/`sandboxed_patched_app`. The plan's Step 3 concern (a `tmp_path` wordlist rejected by `_resolve_wordlist`'s approved-root check) was confirmed correct on the first real run -- `knowledge/wordlists/p2bench-backup-filenames.txt` was added as planned. Both tests passed cleanly on the first real run; no bug found in ffuf-mcp itself.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1526,30 +1546,75 @@ git commit -m "feat(p2-bench): real ffuf-mcp fixture proof for the exposed-backu
 **Files:**
 - Test: `tests/test_p2_bench_fixture.py`
 
+**PREREQUISITE — check before implementing this task for real (code review, 2026-09-18, deferred not fixed):**
+`bench_misconfig_template` (below) copies its fixture template into `data/nuclei-templates/_bench-fixtures/`, which is `templates_pin.TEMPLATES_DIR` — the SAME directory `.github/workflows/ci.yml`'s `unit-tests` job now caches across CI runs (`actions/cache@v4`, keyed on `templates_pin.py`'s content). The fixture's `try/finally` cleans this up on a normal test failure, but a `finally` block cannot run if the CI runner itself is killed mid-test (timeout, OOM-kill, cancellation) — no code-level fix closes that gap, since Python can't intercept SIGKILL. If that happens, the leftover `_bench-fixtures/` file would be cached and restored on a LATER, unrelated CI run, and could fail `tests/test_nuclei_mcp.py`'s `test_live_real_scan_does_not_modify_pinned_templates_host_state` (which asserts `git status --porcelain` on `TEMPLATES_DIR` is clean) with a confusing, misattributed diff. Before actually implementing Task 16, decide on a mitigation -- e.g. have `scripts/fetch-nuclei-templates.sh` hard-reset (`git clean -fdx` / `git reset --hard`) to the pinned SHA on every run rather than only on a SHA mismatch, or have the CI cache step explicitly exclude `_bench-fixtures/`, or verify a clean git state as a CI step before trusting a cache hit. Not fixed now because Task 16 itself isn't implemented yet (this file is still a plan, not shipped code) -- no benchmark or CI redesign should happen around a hypothetical SIGKILL case before the code it protects even exists.
+
+**Implementation note (2026-09-22):** used `sandboxed_vulnerable_app`/`sandboxed_patched_app`. Both tests passed on the first real run; verified empirically that `data/nuclei-templates/_bench-fixtures/` and `git status --porcelain` in that directory are clean after the fixture's teardown -- confirming the PREREQUISITE note above is a real-but-narrow SIGKILL-only gap, not an issue in normal test execution. No bug found in nuclei-mcp itself.
+
 - [ ] **Step 1: Write the failing test**
+
+**S5-follow-up note (2026-09-18):** `nuclei-mcp`'s `scan_with_templates()` now validates that its `templates` argument resolves *inside* the pinned, sandbox-mounted template root (`templates_pin.TEMPLATES_DIR`, see `mcp-servers/nuclei-mcp/server.py`'s `_resolve_templates_arg()`) — a path outside that root, such as this fixture's original location under `tests/fixtures/bench_target/templates/`, is correctly rejected with `ValueError`/an `"Error: ..."` string, not silently misused. This is intentional hardening (an adversarial-review fix, not a bug to route around), so the fixture template must be placed *inside* the approved root before the scan runs — exactly what a real custom-template user has to do under this contract. The `bench_misconfig_template` fixture below copies it there for the duration of the test and cleans up after.
 
 ```python
 requires_nuclei = pytest.mark.skipif(shutil.which("nuclei") is None, reason="nuclei not installed")
 
-_TEMPLATE_PATH = os.path.join(ROOT, "tests", "fixtures", "bench_target", "templates", "misconfig-banner.yaml")
+_SOURCE_TEMPLATE = os.path.join(ROOT, "tests", "fixtures", "bench_target", "templates", "misconfig-banner.yaml")
+
+
+@pytest.fixture
+def bench_misconfig_template():
+    """Copies the fixture template into templates_pin.TEMPLATES_DIR (the
+    pinned, sandbox-mounted nuclei-templates root) under a leading-
+    underscore subfolder reserved for bench-local content -- distinct from
+    the pinned upstream categories (http/, dns/, ...) so it can never
+    collide with a real one -- then yields the RELATIVE path to pass as
+    scan_with_templates()'s `templates=` argument. Skips if the pinned
+    snapshot hasn't been fetched (scripts/fetch-nuclei-templates.sh) --
+    same precondition scan_with_templates() itself enforces via
+    templates_pin.templates_available()."""
+    sys.path.insert(0, os.path.join(ROOT, "mcp-servers", "nuclei-mcp"))
+    import templates_pin
+    if not templates_pin.templates_available():
+        pytest.skip("nuclei-templates snapshot not fetched -- run scripts/fetch-nuclei-templates.sh")
+    dest_dir = os.path.join(templates_pin.TEMPLATES_DIR, "_bench-fixtures")
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_path = os.path.join(dest_dir, "misconfig-banner.yaml")
+    try:
+        # copyfile (not just the yield) is inside the try -- if it fails
+        # partway (disk full, permission error, source missing), dest_dir
+        # was already created by makedirs() above and must still be
+        # cleaned up in the finally below, same as a failure during the
+        # test itself. (code review, 2026-09-18: an earlier version of
+        # this fixture ran copyfile BEFORE the try, so a copy failure
+        # left dest_dir orphaned inside the pinned template root with no
+        # cleanup at all.)
+        shutil.copyfile(_SOURCE_TEMPLATE, dest_path)
+        yield "_bench-fixtures/misconfig-banner.yaml"
+    finally:
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        try:
+            os.rmdir(dest_dir)  # only succeeds if now empty; never raises if not
+        except OSError:
+            pass
 
 
 @requires_nuclei
-def test_real_nuclei_confirms_misconfig_in_vulnerable_mode(vulnerable_app, tmp_path, monkeypatch):
+def test_real_nuclei_confirms_misconfig_in_vulnerable_mode(vulnerable_app, bench_misconfig_template, tmp_path, monkeypatch):
     monkeypatch.setenv("HUNTMCP_BUDGET_PATH", str(tmp_path / "budget.json"))
     monkeypatch.setenv("HUNTMCP_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
     nuclei_mcp = _load_mcp_server("nuclei-mcp", "nuclei_mcp_p2bench")
-    started = nuclei_mcp.scan_with_templates(vulnerable_app.base_url, _TEMPLATE_PATH, timeout=60)
+    started = nuclei_mcp.scan_with_templates(vulnerable_app.base_url, bench_misconfig_template, timeout=60)
     result = _poll_mcp_tool(nuclei_mcp.check_scan, started, timeout_s=60)
     assert "bench-debug-panel-exposed" in result.lower(), result
 
 
 @requires_nuclei
-def test_real_nuclei_finds_nothing_in_patched_mode(patched_app, tmp_path, monkeypatch):
+def test_real_nuclei_finds_nothing_in_patched_mode(patched_app, bench_misconfig_template, tmp_path, monkeypatch):
     monkeypatch.setenv("HUNTMCP_BUDGET_PATH", str(tmp_path / "budget.json"))
     monkeypatch.setenv("HUNTMCP_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
     nuclei_mcp = _load_mcp_server("nuclei-mcp", "nuclei_mcp_p2bench_patched")
-    started = nuclei_mcp.scan_with_templates(patched_app.base_url, _TEMPLATE_PATH, timeout=60)
+    started = nuclei_mcp.scan_with_templates(patched_app.base_url, bench_misconfig_template, timeout=60)
     result = _poll_mcp_tool(nuclei_mcp.check_scan, started, timeout_s=60)
     assert "no vulnerabilities found" in result.lower(), result
 ```
@@ -1557,7 +1622,7 @@ def test_real_nuclei_finds_nothing_in_patched_mode(patched_app, tmp_path, monkey
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_p2_bench_fixture.py -k real_nuclei -v`
-Expected: SKIPPED if nuclei isn't installed; otherwise runs against Task 6's real header
+Expected: SKIPPED if nuclei isn't installed or the templates snapshot isn't fetched; otherwise runs against Task 6's real header
 
 - [ ] **Step 3: Verify the implementation**
 
