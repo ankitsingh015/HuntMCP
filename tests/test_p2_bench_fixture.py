@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 
@@ -32,11 +33,29 @@ def patched_app():
         app.stop()
 
 
-def _podman_available() -> bool:
-    return shutil.which("podman") is not None
+def _podman_and_image_available() -> bool:
+    """Mirrors tests/test_sandbox_runner.py's own _podman_and_image_available()
+    exactly -- found live (CI run 2026-09-24) that checking only the podman
+    BINARY isn't enough: CI has podman installed but never builds
+    localhost/huntmcp-sandbox locally, so a real sandboxed podman run there
+    tries to PULL that name as a registry image and fails outright (exit
+    125) instead of skipping, unlike every other real-tool test in this
+    suite that's gated by the stronger, established check."""
+    if not shutil.which("podman"):
+        return False
+    sys.path.insert(0, os.path.join(ROOT, "mcp-servers"))
+    import sandbox_runner
+    result = subprocess.run(
+        ["podman", "image", "exists", sandbox_runner.SANDBOX_IMAGE],
+        capture_output=True, timeout=10,
+    )
+    return result.returncode == 0
 
 
-requires_podman = pytest.mark.skipif(not _podman_available(), reason="podman not installed")
+requires_podman = pytest.mark.skipif(
+    not _podman_and_image_available(),
+    reason="podman not installed or huntmcp-sandbox image not built",
+)
 
 
 @pytest.fixture
