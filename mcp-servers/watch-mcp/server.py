@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import engagement_paths  # noqa: E402
 import job_runtime  # noqa: E402
 from scope_guard import NoEngagementFile, is_in_scope, is_safe_test_host, load_engagement  # noqa: E402
 from tool_resolver import run_tool  # noqa: E402
@@ -17,7 +18,42 @@ app = FastMCP("watch-mcp")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "..", "..", "data")
+# Legacy/no-active-target fallback only -- NOT the live source of truth.
+# _resolve_db_path() re-resolves fresh on every get_db() call instead of
+# callers reading this constant directly (same reasoning as
+# budget_guard.py's own DEFAULT_PATH comment: a value frozen at import time
+# never picks up a later `engagement_paths.py set <target>` switch within
+# the same long-running server process).
 DB_PATH = os.path.join(DATA_DIR, "watch.db")
+
+
+def _resolve_db_path() -> str:
+    """P2-SC: watch.db per-engagement, like budget.json/work-registry.json/
+    findings-seen.json/engagement.yaml/audit.jsonl already are -- two
+    parallel-hunted targets no longer share one watch history. Priority:
+    HUNTMCP_WATCH_DB_PATH override (tests, advanced manual use) > active
+    target's own data/engagements/<slug>/watch.db > legacy flat DB_PATH.
+
+    Known, accepted gap (code-review finding, documented not fixed --
+    deliberately out of this task's scope, same "honest caveat" standard as
+    every other S/P2 task in IMPLEMENTATION-TASK-TRACKER.md): start_watch()/
+    check_target() resolve the path once synchronously, but hand off the
+    real work to a background thread (job_runtime.start_thread_job()) that
+    calls get_db() again independently once it actually runs. If the active
+    engagement is switched (a second `engagement_paths.py set <target>` in
+    the SAME session/server process) while that background job is still
+    in flight, the sync and async halves of one logical call can resolve to
+    two DIFFERENT per-engagement watch.db files -- e.g. a watched_targets
+    row written under target A's db, but the snapshot/events it triggered
+    landing in target B's db once the thread catches up. Closing this
+    would mean capturing db_path once at job start and threading it through
+    every downstream call instead of each one re-resolving independently --
+    a real refactor, not a one-line fix -- so it's documented here rather
+    than silently assumed safe. Narrow in practice: requires switching
+    targets before a single check_target()/start_watch() call's own
+    background job (worst case ~360s) has finished."""
+    return engagement_paths.resolve("watch.db", override_env="HUNTMCP_WATCH_DB_PATH",
+                                     legacy_default=DB_PATH)
 
 # start_watch()'s initial snapshot and check_target()'s change check both
 # chain subfinder -> (conditionally) httpx -> katana sequentially, up to
@@ -73,8 +109,40 @@ def _release_target_job(job_id: str) -> None:
         _in_flight_job_for_target.pop(target, None)
 
 
+_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS watched_targets (
+        target TEXT PRIMARY KEY,
+        interval_hours INTEGER NOT NULL DEFAULT 6,
+        last_check_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        active INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target TEXT NOT NULL,
+        snapshot_type TEXT NOT NULL,
+        data TEXT NOT NULL,
+        captured_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (target) REFERENCES watched_targets(target)
+    );
+
+    CREATE TABLE IF NOT EXISTS watch_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        description TEXT NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'info',
+        details TEXT,
+        detected_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (target) REFERENCES watched_targets(target)
+    );
+"""
+
+
 def get_db() -> sqlite3.Connection:
-    os.makedirs(DATA_DIR, exist_ok=True)
+    db_path = _resolve_db_path()
+    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     # timeout= (sqlite3's busy-wait ceiling, default 5s) matters more now
     # than it used to: before backgrounding, check_target()/start_watch()
     # ran fully synchronously per MCP call, so genuinely concurrent writers
@@ -83,46 +151,50 @@ def get_db() -> sqlite3.Connection:
     # multi-target check loop) can have several threads committing to the
     # same WAL-mode db at once -- raise the ceiling so a writer that loses
     # a short race waits instead of raising "database is locked".
-    conn = sqlite3.connect(DB_PATH, timeout=15)
+    conn = sqlite3.connect(db_path, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # Schema creation moved here from a startup-only init_db() (code-review
+    # finding, fixed before landing): init_db() used to run exactly once, at
+    # __main__ startup, against whatever single path get_db() resolved to AT
+    # THAT MOMENT. Now that get_db() re-resolves fresh on every call (so an
+    # `engagement_paths.py set <target>` from another terminal takes effect
+    # without restarting this server), a target switched to AFTER startup
+    # would get a brand new per-engagement watch.db whose schema was never
+    # created -- the first real query against it would raise "no such
+    # table". Run it unconditionally, every call -- an earlier version
+    # memoized "already initialized" per resolved PATH STRING (a module-level
+    # set) to avoid re-running this idempotent script, but a second
+    # independent code review (2026-09-25) found that tracked the path, not
+    # the file: if the on-disk db at a memoized path was ever removed while
+    # this process kept running (engagement reset, directory cleanup), the
+    # next call would skip schema creation and sqlite3.connect()'s
+    # auto-create-if-missing would silently leave a schema-less empty file
+    # behind -- reintroducing the exact "no such table" bug this comment
+    # already claims was fixed, just via a different path. Reverted: this
+    # is a cheap catalog check (CREATE TABLE IF NOT EXISTS), not a cost
+    # worth a cache -- case_store.py's own _get_conn()/_init_schema() runs
+    # unconditionally on every connection too, is called far more often
+    # than this, and has no reported cost problem. Close the connection
+    # before re-raising on failure (code-review finding: previously-
+    # read-only callers like list_watched()/get_watch_history() now reach
+    # this DDL path too, and must not leak a connection if it ever raises).
+    try:
+        conn.executescript(_SCHEMA)
+        conn.commit()
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
 def init_db():
-    conn = get_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS watched_targets (
-            target TEXT PRIMARY KEY,
-            interval_hours INTEGER NOT NULL DEFAULT 6,
-            last_check_at TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            active INTEGER NOT NULL DEFAULT 1
-        );
-
-        CREATE TABLE IF NOT EXISTS snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            target TEXT NOT NULL,
-            snapshot_type TEXT NOT NULL,
-            data TEXT NOT NULL,
-            captured_at TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (target) REFERENCES watched_targets(target)
-        );
-
-        CREATE TABLE IF NOT EXISTS watch_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            target TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            description TEXT NOT NULL,
-            severity TEXT NOT NULL DEFAULT 'info',
-            details TEXT,
-            detected_at TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (target) REFERENCES watched_targets(target)
-        );
-    """)
-    conn.commit()
-    conn.close()
+    """Back-compat entry point (still called at __main__ startup, and by
+    tests' _isolated_db() fixture) -- schema creation itself now happens
+    inside every get_db() call (see its own comment), so this just forces
+    that to happen immediately for whatever path is active right now."""
+    get_db().close()
 
 
 def _scope_error(target: str) -> str | None:
@@ -542,5 +614,5 @@ def run_check(target: str) -> tuple[list, list, list]:
 if __name__ == "__main__":
     init_db()
     print("watch-mcp starting...", file=sys.stderr)
-    print(f"  DB: {DB_PATH}", file=sys.stderr)
+    print(f"  DB: {_resolve_db_path()}", file=sys.stderr)
     app.run(transport="stdio")

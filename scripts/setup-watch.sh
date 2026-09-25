@@ -33,27 +33,37 @@ cat > /tmp/huntmcp-watch-cron.sh << 'WRAPPER'
 
 set -euo pipefail
 PROJECT_DIR="{{PROJECT_DIR}}"
-DB="${PROJECT_DIR}/data/watch.db"
 PYTHON="{{PYTHON}}"
 LOG="${PROJECT_DIR}/logs/watch-cron.log"
 mkdir -p "$(dirname "$LOG")"
-
-if [ ! -f "$DB" ]; then
-    exit 0
-fi
 
 echo "[$(date)] Watch cron: checking targets..." >> "$LOG"
 
 cd "$PROJECT_DIR"
 "$PYTHON" -c "
+import os
 import sqlite3
 import sys
 import time
 sys.path.insert(0, 'mcp-servers/watch-mcp')
 import server
 
+# P2-SC: watch.db moved to a per-active-engagement path
+# (data/engagements/<slug>/watch.db), same as budget.json/work-registry.json
+# elsewhere in this repo -- server.DB_PATH is only the legacy/no-active-
+# target fallback now, not the live source of truth (see server.py's own
+# comment on it). This cron wrapper has no engagement of its own; it reads
+# whichever engagement is CURRENTLY ACTIVE, via the exact same
+# server._resolve_db_path() the real MCP tool calls use, instead of a
+# hardcoded flat path that would silently stop seeing any target watched
+# while an engagement is active (found in review: the previous bash-level
+# 'data/watch.db' existence check had the same bug one layer up).
+db_path = server._resolve_db_path()
+if not os.path.isfile(db_path):
+    sys.exit(0)
+
 server.init_db()
-conn = sqlite3.connect(server.DB_PATH)
+conn = sqlite3.connect(db_path)
 targets = [r[0] for r in conn.execute('SELECT target FROM watched_targets WHERE active = 1')]
 conn.close()
 

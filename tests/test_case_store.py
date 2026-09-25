@@ -49,6 +49,66 @@ def test_add_evidence_creates_content_addressed_file(tmp_path):
         assert fh.read() == "DNS callback received"
 
 
+def test_resolve_db_path_returns_explicit_path_unchanged(tmp_path):
+    db = _db(tmp_path)
+    assert case_store.resolve_db_path(db) == db
+
+
+def test_resolve_db_path_never_creates_the_file(tmp_path):
+    db = _db(tmp_path)
+    assert not os.path.exists(db)
+    case_store.resolve_db_path(db)
+    assert not os.path.exists(db)
+
+
+def test_list_experiments_returns_only_that_findings_rows(tmp_path):
+    db = _db(tmp_path)
+    f1 = case_store.create_finding("SQLi", "/api/x", db_path=db)
+    f2 = case_store.create_finding("XSS", "/api/y", db_path=db)
+    case_store.log_experiment("sqlmap", "id=1", "https://x", cost=3, finding_id=f1["id"], db_path=db)
+    case_store.log_experiment("dalfox", "q=<script>", "https://y", cost=1, finding_id=f2["id"], db_path=db)
+    rows = case_store.list_experiments(f1["id"], db_path=db)
+    assert len(rows) == 1
+    assert rows[0]["tool"] == "sqlmap"
+    assert rows[0]["cost"] == 3
+
+
+def test_list_experiments_empty_for_finding_with_none(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("IDOR", "/api/z", db_path=db)
+    assert case_store.list_experiments(f["id"], db_path=db) == []
+
+
+def test_count_cem_trials_none_when_cem_never_defined(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    assert case_store.count_cem_trials(f["id"], db_path=db) is None
+
+
+def test_count_cem_trials_zero_when_defined_but_no_trials_yet(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    case_store.cem_define(
+        f["id"], {"method": "GET", "url": "https://x"}, {"status": 200},
+        [{"name": "c1", "category": "header", "perturbation": {"x": "y"}}],
+        db_path=db,
+    )
+    assert case_store.count_cem_trials(f["id"], db_path=db) == 0
+
+
+def test_count_cem_trials_counts_real_trial_rows(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    case_store.cem_define(
+        f["id"], {"method": "GET", "url": "https://x"}, {"status": 200},
+        [{"name": "c1", "category": "header", "perturbation": {"x": "y"}}],
+        db_path=db,
+    )
+    case_store.cem_record_trial(f["id"], "baseline", 0, True, db_path=db)
+    case_store.cem_record_trial(f["id"], "perturbed", 0, True, db_path=db)
+    assert case_store.count_cem_trials(f["id"], db_path=db) == 2
+
+
 def test_add_evidence_same_content_twice_dedupes_to_one_file(tmp_path):
     db = _db(tmp_path)
     f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)

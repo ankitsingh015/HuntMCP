@@ -78,6 +78,23 @@ except ImportError:
 # re-resolves this fresh on every call instead of using this frozen value.
 DEFAULT_DB_PATH = engagement_paths.resolve("case.db", override_env="HUNTMCP_CASE_DB_PATH")
 
+
+def resolve_db_path(db_path: str | None = None) -> str:
+    """The same active-engagement-aware path _get_conn() would open, without
+    opening a connection (and therefore without _get_conn()'s own
+    os.makedirs()/_init_schema() side effects -- CREATE TABLE IF NOT EXISTS
+    on a brand-new path silently materializes an empty case.db from
+    nothing). Lets a caller resolve once and reuse the result across
+    several case_store calls in one logical operation -- e.g.
+    telemetry.py's finding_telemetry() (P2-TEL), which otherwise would
+    have each of get_finding()/list_experiments()/count_cem_trials()
+    independently re-resolve the active engagement, letting a mid-call
+    engagement switch blend data from two different case.db files for the
+    same numeric finding_id."""
+    if db_path is not None:
+        return db_path
+    return engagement_paths.resolve("case.db", override_env="HUNTMCP_CASE_DB_PATH")
+
 HYPOTHESIS_STATUSES = {"NEW", "TESTING", "SUPPORTED", "REFUTED", "INCONCLUSIVE", "CONFIRMED"}
 FINDING_STATUSES = {
     "DISCOVERED", "SUSPECTED", "VALIDATING", "CONFIRMED", "IMPACT_PROVEN",
@@ -356,6 +373,21 @@ def log_experiment(tool: str, input: str, target: str, result: str = "", cost: i
         )
         conn.commit()
         return {"id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+def list_experiments(finding_id: int, db_path: str | None = None) -> list[dict]:
+    """All experiment rows linked to one finding_id, insertion order -- the
+    read side of log_experiment()'s finding_id FK. Used by telemetry.py's
+    offline finding_telemetry() aggregator (P2-TEL) to sum real recorded
+    tool-call cost for a finding without needing its own separate store."""
+    conn = _get_conn(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM experiments WHERE finding_id = ? ORDER BY id", (finding_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -707,6 +739,33 @@ def cem_record_verdict(finding_id: int, verdict: str, k: int, controls: dict,
         )
         conn.commit()
         return {"id": cur.lastrowid}
+    finally:
+        conn.close()
+
+
+def count_cem_trials(finding_id: int, db_path: str | None = None) -> int | None:
+    """Real HTTP-request count for a finding's CEM run -- one cem_trials row
+    per real request (PHASE1-EXECUTION-PLAN.md M1: "trials_persisted ==
+    http_delta"). A lightweight `COUNT(*)` sibling of `cem_load_state()` for
+    callers (telemetry.py's finding_telemetry(), P2-TEL) that only need the
+    count, not the full decoded meta/conditions/trials/verdicts state --
+    avoids paying for four queries plus JSON-decoding every row just to
+    throw away everything except len(trials).
+
+    Returns `None` if `cem_define()` was never called for this finding
+    (CEM state doesn't exist -- distinct from "exists with zero trials so
+    far", which returns `0`) -- lets a caller like finding_telemetry()
+    distinguish "not measured" from "measured, zero requests"."""
+    conn = _get_conn(db_path)
+    try:
+        if not conn.execute(
+            "SELECT 1 FROM cem_meta WHERE finding_id = ?", (finding_id,)
+        ).fetchone():
+            return None
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM cem_trials WHERE finding_id = ?", (finding_id,)
+        ).fetchone()
+        return row["n"]
     finally:
         conn.close()
 

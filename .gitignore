@@ -141,4 +141,11 @@ Thumbs.db
 reports/
 
 # Accidental CLI stdout capture; may contain real engagement data.
-./-
+# (previously written as "./-", which gitignore does not match -- verified
+# via `git check-ignore`; fixed 2026-09-25 after it let a real stray capture
+# through untracked despite this rule's original intent)
+-
+
+# Re-downloadable disclosure-report lookup cache (disclosure_lookup.py),
+# same pattern as data/disclosed-reports-cache/ above.
+data/disclosure-lookup-cache/

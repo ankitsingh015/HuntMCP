@@ -89,7 +89,7 @@ def test_real_target_blocked_when_out_of_scope(monkeypatch, tmp_path):
 # httpx -> katana) in one logical operation instead of being one subprocess.
 
 def _isolated_db(monkeypatch, tmp_path):
-    monkeypatch.setattr(watch_server, "DB_PATH", str(tmp_path / "watch-test.db"))
+    monkeypatch.setenv("HUNTMCP_WATCH_DB_PATH", str(tmp_path / "watch-test.db"))
     watch_server.init_db()
 
 
@@ -308,3 +308,151 @@ def test_list_checks_reports_running_job_then_empty_after_done(monkeypatch, tmp_
 
     _poll_until_done(job_id)
     assert watch_server.list_checks() == "No watch-mcp checks currently running."
+
+
+# P2-SC (IMPLEMENTATION-TASK-TRACKER.md): watch.db was the one guard-adjacent
+# store still resolving a single flat data/watch.db path -- budget.json/
+# work-registry.json/findings-seen.json/engagement.yaml/audit.jsonl already
+# went through engagement_paths.resolve() so switching the active target
+# mid-session moves where THEIR state lives; watch.db silently didn't,
+# meaning two parallel-hunted targets would share one watch history. get_db()
+# now re-resolves fresh on every call (never a frozen import-time constant --
+# same reasoning as budget_guard.py's own DEFAULT_PATH comment) so a target
+# switch via `engagement_paths.py set <target>` takes effect without
+# restarting this server process.
+def test_get_db_path_honors_override_env(monkeypatch, tmp_path):
+    override = str(tmp_path / "override-watch.db")
+    monkeypatch.setenv("HUNTMCP_WATCH_DB_PATH", override)
+    assert watch_server._resolve_db_path() == override
+
+
+def test_get_db_path_resolves_inside_active_engagement_dir(monkeypatch, tmp_path):
+    monkeypatch.delenv("HUNTMCP_WATCH_DB_PATH", raising=False)
+    engagements_root = tmp_path / "engagements"
+    pointer_path = tmp_path / ".active-engagement"
+    monkeypatch.setattr(watch_server.engagement_paths, "ENGAGEMENTS_ROOT", str(engagements_root))
+    monkeypatch.setattr(watch_server.engagement_paths, "ACTIVE_POINTER", str(pointer_path))
+    watch_server.engagement_paths.set_active_target("example.com", pointer_path=str(pointer_path),
+                                                      engagements_root=str(engagements_root))
+
+    resolved = watch_server._resolve_db_path()
+
+    assert resolved == os.path.join(str(engagements_root), "example-com", "watch.db")
+
+
+def test_get_db_path_falls_back_to_legacy_default_with_no_active_engagement(monkeypatch, tmp_path):
+    monkeypatch.delenv("HUNTMCP_WATCH_DB_PATH", raising=False)
+    pointer_path = tmp_path / ".active-engagement"
+    monkeypatch.setattr(watch_server.engagement_paths, "ACTIVE_POINTER", str(pointer_path))
+
+    assert watch_server._resolve_db_path() == watch_server.DB_PATH
+
+
+def test_get_db_actually_writes_to_the_resolved_path(monkeypatch, tmp_path):
+    target_path = str(tmp_path / "actually-used.db")
+    monkeypatch.setenv("HUNTMCP_WATCH_DB_PATH", target_path)
+
+    conn = watch_server.get_db()
+    conn.close()
+
+    assert os.path.isfile(target_path)
+
+
+def test_get_db_schema_exists_without_a_separate_init_db_call(monkeypatch, tmp_path):
+    # Bug this guards against: init_db() used to run exactly once, at
+    # server __main__ startup, against whatever single path get_db()
+    # resolved to AT THAT MOMENT. Now that get_db() can resolve to a
+    # DIFFERENT path per active engagement (this task's own change), a
+    # target switched to AFTER startup (the normal HuntBrain Phase-0 flow --
+    # engagement_paths.py set <target> -- run from a separate process/
+    # terminal after this server is already running) would get a brand
+    # new watch.db file whose schema was never created, so the very first
+    # real query against it (watched_targets/snapshots/watch_events) would
+    # raise "no such table". get_db() itself must guarantee the schema
+    # exists for whatever path IT resolves to, not rely on a prior
+    # separate init_db() call against a possibly-different path.
+    target_path = str(tmp_path / "never-explicitly-initialized.db")
+    monkeypatch.setenv("HUNTMCP_WATCH_DB_PATH", target_path)
+
+    conn = watch_server.get_db()
+    try:
+        # Would raise sqlite3.OperationalError: no such table if get_db()
+        # itself doesn't ensure the schema exists.
+        conn.execute("SELECT COUNT(*) FROM watched_targets")
+        conn.execute("SELECT COUNT(*) FROM snapshots")
+        conn.execute("SELECT COUNT(*) FROM watch_events")
+    finally:
+        conn.close()
+
+
+def test_get_db_recreates_schema_if_the_underlying_file_is_removed_mid_process(monkeypatch, tmp_path):
+    # Correctness finding (independent code review, 2026-09-25, 4 of 8
+    # finder angles converged on this): get_db() previously memoized
+    # "already schema-initialized" per resolved PATH STRING via a
+    # module-level _initialized_db_paths set, to avoid re-running the
+    # (idempotent) schema script on every call. But the cache tracked the
+    # PATH, not the FILE -- if the on-disk db at a memoized path is later
+    # removed (a human resets one engagement's watch history, an
+    # engagement directory gets cleaned up, disk issue) while this
+    # process keeps running, the next get_db() call for that same path
+    # would see it already in the memo set, skip schema creation
+    # entirely, and sqlite3.connect()'s auto-create-if-missing behavior
+    # would silently open a brand-new EMPTY file -- every subsequent real
+    # query then raises "no such table", exactly the bug class this
+    # function's own comment already claims was fixed, just reintroduced
+    # via a different path. Reverted the memoization entirely: case_store.py's
+    # own _get_conn()/_init_schema() already establishes, in this same
+    # codebase, that running CREATE TABLE IF NOT EXISTS unconditionally on
+    # every connection is the correct, simpler pattern -- it's a cheap
+    # catalog check, not a cost worth a cache (and case_store.py's version
+    # is called far more often, with no memoization, and no reported cost
+    # problem). This test proves the fix: get_db() must always leave a
+    # queryable schema behind, even for a path it has already "seen"
+    # once, if that path's file is gone by the time it's asked again.
+    target_path = str(tmp_path / "recreate-test.db")
+    monkeypatch.setenv("HUNTMCP_WATCH_DB_PATH", target_path)
+
+    conn1 = watch_server.get_db()
+    conn1.close()
+    os.remove(target_path)
+    assert not os.path.isfile(target_path)
+
+    conn2 = watch_server.get_db()
+    try:
+        # Would raise sqlite3.OperationalError: no such table if get_db()
+        # skipped schema creation because it had seen this PATH before.
+        conn2.execute("SELECT COUNT(*) FROM watched_targets")
+    finally:
+        conn2.close()
+
+
+def test_get_db_closes_connection_and_reraises_if_schema_creation_fails(monkeypatch, tmp_path):
+    # Removed-behavior finding (code review): schema creation moved from a
+    # separate init_db() (which always closed its own connection) into
+    # get_db() itself, now reachable from every read-only tool too. If
+    # executescript()/commit() ever raises (locked db, disk full, corrupted
+    # file), the just-opened connection must still be closed, not leaked.
+    import sqlite3
+
+    target_path = str(tmp_path / "boom.db")
+    monkeypatch.setenv("HUNTMCP_WATCH_DB_PATH", target_path)
+    monkeypatch.setattr(watch_server, "_SCHEMA", "THIS IS NOT VALID SQL;")
+
+    real_connect = sqlite3.connect
+    closed = {"n": 0}
+
+    class _TrackingConnection(sqlite3.Connection):
+        def close(self):
+            closed["n"] += 1
+            super().close()
+
+    def _tracking_connect(*args, **kwargs):
+        kwargs["factory"] = _TrackingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(watch_server.sqlite3, "connect", _tracking_connect)
+
+    with pytest.raises(sqlite3.OperationalError):
+        watch_server.get_db()
+
+    assert closed["n"] == 1, "connection was not closed when schema creation failed"
