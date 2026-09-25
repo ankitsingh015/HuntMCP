@@ -13,12 +13,21 @@ ENV GO111MODULE=on
 # per-module, instead of us chasing version numbers here.
 ENV GOTOOLCHAIN=auto
 
-RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest && \
-    go install github.com/projectdiscovery/httpx/cmd/httpx@latest && \
-    go install github.com/projectdiscovery/katana/cmd/katana@latest && \
-    go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest && \
-    go install github.com/ffuf/ffuf/v2@latest && \
-    go install github.com/hahwul/dalfox/v2@latest && \
+# P2-SC (IMPLEMENTATION-TASK-TRACKER.md): pinned, not @latest -- reuses the
+# exact versions mcp-servers/sandbox/Dockerfile (S5) already verified work
+# against this repo's own MCP server wrappers (argv flags, output parsing),
+# rather than guessing a second, independently-unverified set here. Same
+# reference incident as that file's own comment: nuclei's `-json` flag was
+# silently removed between versions and broke every real scan on `@latest`.
+# Bump deliberately, one at a time, re-verified against both wrappers --
+# never as a blanket `@latest` refresh. Keep in sync with
+# mcp-servers/sandbox/Dockerfile's own pins.
+RUN go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@v2.14.0 && \
+    go install github.com/projectdiscovery/httpx/cmd/httpx@v1.9.0 && \
+    go install github.com/projectdiscovery/katana/cmd/katana@v1.6.1 && \
+    go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@v3.11.0 && \
+    go install github.com/ffuf/ffuf/v2@v2.1.0 && \
+    go install github.com/hahwul/dalfox/v2@v2.13.0 && \
     # Cleanup Go cache to reduce image size
     rm -rf /root/.cache/go-build /root/go/pkg
 
@@ -64,7 +73,7 @@ RUN pip install --no-cache-dir -U pip && \
         numpy>=1.24.0 \
         pyyaml>=6.0 \
         boto3>=1.34.0 \
-        sqlmap
+        sqlmap==1.8.4
 
 # Create project structure
 WORKDIR /opt/huntmcp

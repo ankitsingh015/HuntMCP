@@ -25,6 +25,16 @@ on:
       - '.github/workflows/ci.yml'
       - '.claude/skills/**'
 
+# P2-SC (IMPLEMENTATION-TASK-TRACKER.md): least-privilege default for the
+# GITHUB_TOKEN every job in this workflow implicitly gets. Read-only is
+# correct here -- no job in this file writes PR comments, releases, or
+# packages; actions/checkout is the only thing that needs `contents`, and
+# only for reading. A job that later needs to write something should
+# declare its own narrower `permissions:` override rather than this
+# workflow-wide default being widened.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -190,6 +200,79 @@ jobs:
         # that legitimately documents prompt-injection payloads for
         # testing a target's AI features) is expected, not a defect.
         run: python3 mcp-servers/content_scanner.py "mcp-servers/**/*.py" ".claude/skills/*/SKILL.md" || true
+
+  supply-chain:
+    # P2-SC (IMPLEMENTATION-TASK-TRACKER.md): SAST + dependency-vulnerability
+    # scan for mcp-servers/, plus an SBOM of the combined Python dependency
+    # set as a build artifact. Advisory (`|| true`), same reasoning as
+    # Python Lint's ruff check and Scan Skill/MCP Content above -- these
+    # tools are new to this CI run and their first pass hasn't been
+    # human-triaged for false positives yet; surfacing findings in the log
+    # is the goal here, not a hard gate sprung on every future PR before
+    # anyone has seen a baseline.
+    name: Supply Chain (SAST + Dep Audit + SBOM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install scanners
+        run: pip install --no-cache-dir bandit pip-audit cyclonedx-bom
+
+      - name: Bandit SAST (mcp-servers/)
+        run: bandit -r mcp-servers/ -ll || true
+
+      - name: Collect combined Python dependency set
+        # mirrors the repo-root Dockerfile's own "combined requirements"
+        # step -- every per-server requirements.txt, deduped, so pip-audit/
+        # cyclonedx-bom see the real installable set rather than one
+        # server's slice of it.
+        run: |
+          find mcp-servers -name requirements.txt -exec cat {} + \
+            | sort -u > /tmp/combined-requirements.txt
+          cat /tmp/combined-requirements.txt
+
+      - name: pip-audit (known-vulnerability dependency scan)
+        # timeout-minutes is a backstop, same reasoning as the nuclei-
+        # templates fetch step in unit-tests above: pip-audit resolves each
+        # unpinned requirement against PyPI/OSV, which took 2+ minutes
+        # locally for this repo's own combined set -- a stall shouldn't be
+        # able to eat this whole advisory job's time budget.
+        #
+        # PIP_ONLY_BINARY=:all: (security-review finding, fixed before
+        # landing): auditing an UNPINNED requirements set (every
+        # mcp-servers/*/requirements.txt uses a version range, not an exact
+        # pin) means pip-audit's own dependency resolution can fall back to
+        # building an sdist for any entry with no prebuilt wheel for this
+        # runner -- which executes that package's own setup.py/build-backend
+        # code. A future PR adding one sdist-only (e.g. typosquatted)
+        # requirements.txt entry would get it built and its code executed on
+        # this ephemeral runner the very next CI run, with nobody having
+        # reviewed that as "installing and running a new dependency" the way
+        # a Dockerfile change would be. Forcing wheels-only makes that
+        # resolution fail loudly (caught by this step's own `|| true`,
+        # surfaced in the log) instead of silently executing untrusted build
+        # code -- every real dependency here (mcp/chromadb/sentence-
+        # transformers/numpy/boto3/pyyaml/playwright) already ships wheels,
+        # so this doesn't lose real coverage today.
+        timeout-minutes: 5
+        env:
+          PIP_ONLY_BINARY: ":all:"
+        run: pip-audit -r /tmp/combined-requirements.txt || true
+
+      - name: Generate CycloneDX SBOM
+        run: cyclonedx-py requirements /tmp/combined-requirements.txt -o sbom.cyclonedx.json || true
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: huntmcp-sbom
+          path: sbom.cyclonedx.json
+          if-no-files-found: warn
 
   lint-shell:
     name: Shell Lint
@@ -432,7 +515,7 @@ jobs:
 
   summary:
     name: Build Summary
-    needs: [lint-python, unit-tests, scope-gate-dispatch, scan-agent-content, lint-shell, validate-config, validate-agent-files, docker-build]
+    needs: [lint-python, unit-tests, scope-gate-dispatch, scan-agent-content, supply-chain, lint-shell, validate-config, validate-agent-files, docker-build]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -445,6 +528,7 @@ jobs:
           echo "| lint-python | ${{ needs.lint-python.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| unit-tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| scope-gate-dispatch | ${{ needs.scope-gate-dispatch.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| supply-chain | ${{ needs.supply-chain.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| lint-shell | ${{ needs.lint-shell.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| validate-config | ${{ needs.validate-config.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| validate-agent-files | ${{ needs.validate-agent-files.result }} |" >> $GITHUB_STEP_SUMMARY
