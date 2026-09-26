@@ -227,6 +227,32 @@ def test_confirmed_transition_succeeds_with_evidence(tmp_path):
     assert result["status"] == "CONFIRMED"
 
 
+def test_impact_proven_transition_blocked_without_prior_confirmed(tmp_path):
+    """Regression test (engagement-retrospective finding): CONFIRMED and
+    IMPACT_PROVEN were both evidence-gated independently, so a finding
+    could jump straight from DISCOVERED to IMPACT_PROVEN with one generic
+    evidence row, skipping CONFIRMED entirely -- conflating "reproduction"
+    (CONFIRMED) with "exploitability/impact demonstrated" (IMPACT_PROVEN),
+    the exact distinction this two-state split exists to preserve (see
+    case_store.py's own module docstring on cem_meta/cem_conditions).
+    IMPACT_PROVEN must only be reachable from a finding already CONFIRMED."""
+    db = _db(tmp_path)
+    f = case_store.create_finding("IDOR", "/api/user/2", db_path=db)
+    case_store.add_evidence("response", "200 OK, other user's data returned", finding_id=f["id"], db_path=db)
+    result = case_store.update_finding_status(f["id"], "IMPACT_PROVEN", db_path=db)
+    assert "error" in result
+    assert "CONFIRMED" in result["error"]
+
+
+def test_impact_proven_transition_succeeds_after_confirmed(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("IDOR", "/api/user/2", db_path=db)
+    case_store.add_evidence("response", "200 OK, other user's data returned", finding_id=f["id"], db_path=db)
+    case_store.update_finding_status(f["id"], "CONFIRMED", db_path=db)
+    result = case_store.update_finding_status(f["id"], "IMPACT_PROVEN", db_path=db)
+    assert result["status"] == "IMPACT_PROVEN"
+
+
 def test_non_gated_transition_does_not_need_evidence(tmp_path):
     db = _db(tmp_path)
     f = case_store.create_finding("IDOR", "/api/user/2", db_path=db)
@@ -294,6 +320,40 @@ def test_check_experiment_exists_distinguishes_input(tmp_path):
     db = _db(tmp_path)
     case_store.log_experiment("sqlmap-mcp", "id=1' OR '1'='1", "target.com", db_path=db)
     assert case_store.check_experiment_exists("sqlmap-mcp", "id=2' OR '1'='1", "target.com", db_path=db) is False
+
+
+def test_find_similar_experiments_recognizes_same_test_with_different_oob_host(tmp_path):
+    """Regression test reported live in an engagement retrospective: a
+    second SSRF confirmation used a different OOB callback host than the
+    first, so check_experiment_exists() (still exact-string, unchanged --
+    see test above) correctly says False, but find_similar_experiments()
+    should recognize it as the same underlying test."""
+    db = _db(tmp_path)
+    case_store.log_experiment(
+        "curl", "https://target.com/fetch?url=http://abc123def456ghi789.oast.fun/", "target.com", db_path=db,
+    )
+    assert case_store.check_experiment_exists(
+        "curl", "https://target.com/fetch?url=http://xyz987wvu654tsr321.oast.fun/", "target.com", db_path=db,
+    ) is False
+    similar = case_store.find_similar_experiments(
+        "curl", "https://target.com/fetch?url=http://xyz987wvu654tsr321.oast.fun/", "target.com", db_path=db,
+    )
+    assert len(similar) == 1
+
+
+def test_find_similar_experiments_does_not_collapse_distinct_payload_values(tmp_path):
+    """The normalization must stay narrow -- two genuinely different SQLi
+    payload values are NOT "similar", same distinction
+    test_check_experiment_exists_distinguishes_input already protects."""
+    db = _db(tmp_path)
+    case_store.log_experiment("sqlmap-mcp", "id=1' OR '1'='1", "target.com", db_path=db)
+    similar = case_store.find_similar_experiments("sqlmap-mcp", "id=2' OR '1'='1", "target.com", db_path=db)
+    assert similar == []
+
+
+def test_find_similar_experiments_empty_when_none_logged(tmp_path):
+    db = _db(tmp_path)
+    assert case_store.find_similar_experiments("curl", "https://target.com/x", "target.com", db_path=db) == []
 
 
 # ---- Root cause -------------------------------------------------------------

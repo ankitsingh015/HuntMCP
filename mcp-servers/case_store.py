@@ -65,6 +65,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
 
@@ -404,6 +405,61 @@ def check_experiment_exists(tool: str, input: str, target: str, db_path: str | N
         conn.close()
 
 
+# interactsh-style OOB callback hosts: a long random subdomain minted fresh
+# by oob-mcp's generate_payload_url() on every call, under one of the
+# public interactsh server pool's fixed domains. Deliberately a known-
+# domain allowlist, not a blanket "any long token" pattern -- see
+# _normalize_experiment_input()'s own docstring for why.
+_OOB_DOMAIN_SUFFIXES = (
+    "oast.fun", "oast.pro", "oast.live", "oast.site", "oast.online", "oast.me",
+    "burpcollaborator.net", "interact.sh",
+)
+_OOB_HOST_RE = re.compile(
+    r"\b[a-z0-9]{15,34}\.(?:" + "|".join(re.escape(s) for s in _OOB_DOMAIN_SUFFIXES) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_experiment_input(text: str) -> str:
+    """Best-effort normalization for find_similar_experiments() ONLY --
+    never used by check_experiment_exists()'s exact-match dedup above,
+    which stays untouched (see test_check_experiment_exists_distinguishes_
+    input: two SQLi payloads differing only in an injected VALUE, e.g.
+    id=1' vs id=2', are genuinely distinct tests and must NOT collapse).
+    Replaces a randomly-generated OOB callback hostname with a fixed
+    placeholder, so two runs of the SAME underlying test that only differ
+    because generate_payload_url() minted a fresh random callback host are
+    recognized as similar (reported live in an engagement retrospective: a
+    second SSRF confirmation using a different OOB host was logged as "not
+    run" by the exact-string check, so an already-run test was silently
+    repeated). Deliberately narrow (a known OOB-domain allowlist, not a
+    blanket long-token match), so a genuinely different payload value is
+    never accidentally collapsed."""
+    return _OOB_HOST_RE.sub("<oob-host>", text)
+
+
+def find_similar_experiments(tool: str, input: str, target: str, db_path: str | None = None) -> list[dict]:
+    """Additive companion to check_experiment_exists() above -- NOT a
+    replacement, and never called by it, so default dedup behavior is
+    unchanged for every existing caller. Returns prior experiment rows for
+    the same tool+target whose NORMALIZED input matches this call's
+    normalized input, even though the raw input strings differ (e.g. only
+    in an embedded OOB callback host). A caller that wants to check "have I
+    essentially already run this" opts into this separately."""
+    normalized_query = _normalize_experiment_input(input)
+    conn = _get_conn(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM experiments WHERE tool = ? AND target = ? ORDER BY id", (tool, target)
+        ).fetchall()
+        return [
+            dict(r) for r in rows
+            if _normalize_experiment_input(r["input"]) == normalized_query
+        ]
+    finally:
+        conn.close()
+
+
 # ---- Findings ---------------------------------------------------------------
 
 def create_finding(vuln_class: str, endpoint: str, parameter: str = "",
@@ -439,7 +495,7 @@ def update_finding_status(finding_id: int, status: str, db_path: str | None = No
         return {"error": f"invalid status {status!r}, expected one of {sorted(FINDING_STATUSES)}"}
     conn = _get_conn(db_path)
     try:
-        row = conn.execute("SELECT id FROM findings WHERE id = ?", (finding_id,)).fetchone()
+        row = conn.execute("SELECT id, status FROM findings WHERE id = ?", (finding_id,)).fetchone()
         if not row:
             return {"error": f"no finding with id {finding_id}"}
         if status in EVIDENCE_GATED_STATUSES:
@@ -450,6 +506,23 @@ def update_finding_status(finding_id: int, status: str, db_path: str | None = No
                 return {
                     "error": f"cannot move finding {finding_id} to {status} with zero linked evidence -- "
                              "call add_evidence(type, content, finding_id=...) first"
+                }
+        if status == "IMPACT_PROVEN":
+            # CONFIRMED means "reproduced"; IMPACT_PROVEN means "exploitability/
+            # impact actually demonstrated" -- both were independently
+            # evidence-gated above, but nothing enforced the ORDER, so one
+            # generic evidence row let a finding skip straight from
+            # DISCOVERED to IMPACT_PROVEN, conflating the two (reported live
+            # in an engagement retrospective: 8 findings reached CONFIRMED-
+            # level confidence on reproduction alone, later found not
+            # exploitable). Require the finding to already BE CONFIRMED
+            # (not merely have evidence) before this transition.
+            current_status = row["status"]
+            if current_status != "CONFIRMED":
+                return {
+                    "error": f"cannot move finding {finding_id} to IMPACT_PROVEN from "
+                             f"{current_status!r} -- it must be CONFIRMED first "
+                             "(reproduction and exploitability are tracked separately)"
                 }
         conn.execute(
             "UPDATE findings SET status = ?, updated_at = datetime('now') WHERE id = ?",
