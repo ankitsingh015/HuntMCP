@@ -1,5 +1,12 @@
 import pytest
-from scope_guard import Engagement, NoEngagementFile, is_in_scope, is_safe_test_host, load_engagement
+from scope_guard import (
+    Engagement,
+    NoEngagementFile,
+    detect_scope_conflicts,
+    is_in_scope,
+    is_safe_test_host,
+    load_engagement,
+)
 
 
 def _engagement(**kw):
@@ -67,6 +74,49 @@ def test_exact_out_of_scope_literal_still_wins_over_exact_in_scope_literal():
 def test_load_engagement_missing_file_raises(tmp_path):
     with pytest.raises(NoEngagementFile):
         load_engagement(str(tmp_path / "nope.yaml"))
+
+
+def test_detect_scope_conflicts_flags_wildcard_shadowing_exact_in_scope():
+    """Load-time diagnostic for the same file shape
+    test_exact_in_scope_literal_overrides_broader_out_of_scope_wildcard
+    already proves is_in_scope() resolves correctly at runtime -- this
+    surfaces a warning so the operator isn't left guessing why an
+    engagement.yaml that reads as self-contradictory actually worked."""
+    e = Engagement(
+        target="example.com",
+        in_scope=["app.example.com", "api.example.com"],
+        out_of_scope=["*.example.com"],
+    )
+    warnings = detect_scope_conflicts(e)
+    assert len(warnings) == 2
+    assert any("app.example.com" in w and "IS authorized" in w for w in warnings)
+    assert any("api.example.com" in w and "IS authorized" in w for w in warnings)
+
+
+def test_detect_scope_conflicts_flags_exact_literal_in_both_lists():
+    e = Engagement(
+        target="example.com",
+        in_scope=["internal.example.com"],
+        out_of_scope=["internal.example.com"],
+    )
+    warnings = detect_scope_conflicts(e)
+    assert len(warnings) == 1
+    assert "internal.example.com" in warnings[0]
+    assert "NOT authorized" in warnings[0]
+
+
+def test_detect_scope_conflicts_empty_for_a_clean_engagement_file():
+    e = _engagement()  # in_scope=["*.example.com", "example.com"], out_of_scope=[]
+    assert detect_scope_conflicts(e) == []
+
+
+def test_detect_scope_conflicts_no_warning_when_out_of_scope_is_unrelated():
+    e = Engagement(
+        target="example.com",
+        in_scope=["app.example.com"],
+        out_of_scope=["staging.otherdomain.com"],
+    )
+    assert detect_scope_conflicts(e) == []
 
 
 @pytest.mark.parametrize(

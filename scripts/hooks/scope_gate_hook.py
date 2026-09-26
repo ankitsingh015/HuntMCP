@@ -185,6 +185,29 @@ EMAIL_RE = re.compile(
     r"[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}"
 )
 
+# Matches a quoted -H/--header flag's whole argument value, so it can be
+# blanked out of a command BEFORE any URL/hostname extraction runs, same
+# whole-span-removal pattern as EMAIL_RE above and for the same underlying
+# reason: a header VALUE is data being SENT in a request, not a destination
+# the request is being sent TO. _ATTACKER_PLACEHOLDER_HOSTS below already
+# covered this for three hardcoded PoC placeholder names (evil.com/
+# attacker.com/malicious.com in an `Origin:`/`Referer:` header), but a
+# genuine, real-looking domain in a header value -- e.g. a Host-header-
+# injection test's `-H "X-Forwarded-Host: internal.example.org"`, or any
+# other header whose value happens to be domain- or URL-shaped -- was still
+# flagged as a second host requiring its own in_scope entry, reported live
+# across engagement retrospectives. Applied BEFORE URL_RE runs (not after,
+# unlike EMAIL_RE) because a header value can itself be a full URL (e.g.
+# `-H "Referer: https://otherdomain.com/page"`), which URL_RE would
+# otherwise match directly as if it were the request's real target.
+# Deliberately only the QUOTED form (`-H "..."` / `-H '...'` /
+# `--header "..."`); curl/wget header values containing a `:` essentially
+# always need quoting to survive shell word-splitting, so this covers the
+# realistic case. ACKNOWLEDGED, NOT FIXED: an unquoted header value with no
+# spaces (`-H X-Custom:val`) is not matched -- same "cheap regex scan, not
+# a full shell parser" honesty as this file's other documented limits.
+HEADER_VALUE_RE = re.compile(r"(?:-H|--header)\s+(['\"])(.*?)\1", re.DOTALL)
+
 # SAFE_TEST_HOSTS/DEV_INFRA_HOSTS/NON_TLD_FILE_EXTENSIONS and the
 # is_safe_test_host() check itself moved to scope_guard.py 2026-08-29 -- it's
 # the shared authority scripts/check-scope.sh's CLI also needs (that script
@@ -896,13 +919,19 @@ def _extract_hosts_from_bash(command: str) -> list[str]:
     if not (_bash_basenames(command) & TIER2_BASH_TOOLS):
         return []
 
+    # Blank out -H/--header flag values before any URL/hostname extraction
+    # runs, so a header VALUE (data being sent) is never mistaken for the
+    # request's actual destination (data being sent TO) -- see
+    # HEADER_VALUE_RE's own comment for the full rationale.
+    working = HEADER_VALUE_RE.sub(" ", command)
+
     # Prefer real URL parsing over blanket regex where a scheme is present --
     # this is what actually distinguishes "the host curl is contacting" from
     # a same-looking substring in the URL's own path (curl .../main/file.txt
     # regex-matches "file.txt" as if it were a second hostname otherwise).
     hosts: list[str] = []
     seen_spans: list[tuple[int, int]] = []
-    for m in URL_RE.finditer(command):
+    for m in URL_RE.finditer(working):
         seen_spans.append(m.span())
         host = urlsplit(m.group(0)).hostname
         if host:
@@ -910,7 +939,7 @@ def _extract_hosts_from_bash(command: str) -> list[str]:
 
     # Remove matched URL spans before the fallback bare-hostname scan, so a
     # URL's own path/query never gets double-scanned by HOSTNAME_RE.
-    remainder = command
+    remainder = working
     for start, end in sorted(seen_spans, reverse=True):
         remainder = remainder[:start] + " " + remainder[end:]
 

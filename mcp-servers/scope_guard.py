@@ -205,6 +205,43 @@ def is_in_scope(target: str, engagement: Engagement) -> bool:
     return any(_matches(host, pattern) for pattern in engagement.in_scope)
 
 
+def detect_scope_conflicts(engagement: Engagement) -> list[str]:
+    """Load-time-only diagnostic: surface engagement.yaml entries that LOOK
+    self-contradictory, even though is_in_scope()'s runtime precedence
+    already resolves them correctly (see is_in_scope()'s own comment on the
+    exact-in_scope-literal-beats-wildcard-out_of_scope fix). Returns
+    human-readable warning strings, or an empty list if nothing looks
+    contradictory. Purely informational -- never raises, never changes
+    enforcement -- so an operator understands *why* a host was allowed or
+    blocked instead of being surprised by an engagement file that reads as
+    self-contradictory (reported live, independently, across engagement
+    retrospectives: debugging time spent re-deriving precedence from
+    source before realizing the file itself, not the guard, was the
+    problem)."""
+    warnings: list[str] = []
+    for in_host in engagement.in_scope:
+        if "*" in in_host:
+            continue  # only an EXACT in_scope literal can be shadowed/won
+        for out_pattern in engagement.out_of_scope:
+            if not _matches(in_host, out_pattern):
+                continue
+            if "*" in out_pattern:
+                warnings.append(
+                    f"in_scope host {in_host!r} matches out_of_scope wildcard "
+                    f"{out_pattern!r} -- the exact in_scope literal wins (see "
+                    f"is_in_scope()), so {in_host!r} IS authorized. If that's "
+                    f"not what you intended, narrow or remove the wildcard."
+                )
+            elif out_pattern == in_host:
+                warnings.append(
+                    f"{in_host!r} appears in BOTH in_scope and out_of_scope "
+                    f"as an exact literal -- the exact out_of_scope entry "
+                    f"wins (see is_in_scope()), so {in_host!r} is NOT "
+                    f"authorized despite also being listed in in_scope."
+                )
+    return warnings
+
+
 def _cli() -> None:
     if len(sys.argv) != 2:
         print("usage: python3 mcp-servers/scope_guard.py <host-or-url>", file=sys.stderr)
@@ -227,6 +264,15 @@ def _cli() -> None:
     except (NoEngagementFile, RuntimeError) as e:
         print(f"BLOCKED: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # Surfaced here (the explicit "run this before touching a target"
+    # checkpoint), not inside load_engagement() itself -- the hook's own
+    # PreToolUse enforcement path calls load_engagement() fresh on every
+    # single Tier-2 call, and printing this on every call would spam
+    # stderr instead of informing anyone. This CLI is the natural one-time
+    # "engagement load" checkpoint an operator/agent actually sees.
+    for warning in detect_scope_conflicts(engagement):
+        print(f"WARNING: {warning}", file=sys.stderr)
 
     if is_in_scope(target, engagement):
         print(f"IN SCOPE: {target} (engagement: {engagement.target})")

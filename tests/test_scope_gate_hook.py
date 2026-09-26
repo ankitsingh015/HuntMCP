@@ -145,6 +145,43 @@ def test_extract_hosts_from_bash_curl_exempts_attacker_origin_placeholder():
     assert hosts == ["realtarget-corp.com"]
 
 
+def test_extract_hosts_from_bash_does_not_flag_real_domain_in_header_value():
+    """Regression test reported live across engagement retrospectives: a
+    genuine (non-placeholder) domain in a header VALUE -- e.g. a Host-
+    header-injection test's -H "X-Forwarded-Host: internal.example.org" --
+    was still flagged as a second host requiring its own in_scope entry,
+    even though it's data being sent, not the request's actual
+    destination. Only realtarget-corp.com (the actual curl target) should
+    be extracted."""
+    hosts = hook._extract_hosts_from_bash(
+        'curl https://realtarget-corp.com/api -H "X-Forwarded-Host: internal.example.org"'
+    )
+    assert hosts == ["realtarget-corp.com"]
+    assert "internal.example.org" not in hosts
+
+
+def test_extract_hosts_from_bash_does_not_flag_full_url_inside_header_value():
+    """Same false-positive class as above, but the header value is a full
+    URL (e.g. a Referer header for an open-redirect/CSRF PoC) rather than a
+    bare hostname -- URL_RE itself would otherwise match it directly as if
+    it were the request's real target."""
+    hosts = hook._extract_hosts_from_bash(
+        'curl https://realtarget-corp.com/api -H "Referer: https://otherdomain.com/page"'
+    )
+    assert hosts == ["realtarget-corp.com"]
+    assert "otherdomain.com" not in hosts
+
+
+def test_extract_hosts_from_bash_still_flags_out_of_scope_url_target():
+    """The header-value fix must not swallow a genuine out-of-scope
+    request target -- only the flag's OWN argument value is blanked, not
+    the rest of the command."""
+    hosts = hook._extract_hosts_from_bash(
+        'curl https://out-of-scope-corp.com/api -H "X-Custom: some-value"'
+    )
+    assert hosts == ["out-of-scope-corp.com"]
+
+
 def test_mcp_server_name_parses_correctly():
     assert hook._mcp_server_name("mcp__httpx-mcp__screenshot_hosts") == "httpx-mcp"
     assert hook._mcp_server_name("Bash") == ""
