@@ -101,14 +101,34 @@ def save_hunt(
         if chains:
             conn.execute("DELETE FROM chains WHERE target = ?", (target,))
             for c in chains:
+                if isinstance(c, dict):
+                    # Same str/dict duality already accepted for findings
+                    # above -- a caller sending {description: ...} objects
+                    # previously crashed with sqlite3.ProgrammingError
+                    # (dict is not a supported bind parameter type).
+                    description = c.get("description", "") or str(c)
+                else:
+                    description = str(c)
                 conn.execute(
                     "INSERT INTO chains (target, description) VALUES (?, ?)",
-                    (target, c),
+                    (target, description),
                 )
         conn.commit()
         return f"Saved hunt for {target}"
     finally:
         conn.close()
+
+
+def _stringify_tech_item(item) -> str:
+    """tech_stack/subdomains are stored as a JSON list regardless of item
+    shape (json.dumps handles dicts fine), but every reader below used to
+    assume each item was already a plain string and called ', '.join(...)
+    directly -- a dict-shaped entry (e.g. {"name": "nginx", "version":
+    "1.18"}, the same object shape findings/chains accept) crashed with
+    TypeError: sequence item 0: expected str instance, dict found."""
+    if isinstance(item, dict):
+        return str(item.get("name") or item.get("host") or item)
+    return str(item)
 
 
 def recall(target: str) -> str:
@@ -134,9 +154,9 @@ def recall(target: str) -> str:
         lines = [f"Hunt Memory: {target}"]
         lines.append(f"  Last hunted: {hunt['updated_at']}")
         if tech:
-            lines.append(f"  Tech stack: {', '.join(tech)}")
+            lines.append(f"  Tech stack: {', '.join(_stringify_tech_item(t) for t in tech)}")
         if subs:
-            lines.append(f"  Subdomains found: {', '.join(subs)}")
+            lines.append(f"  Subdomains found: {', '.join(_stringify_tech_item(s) for s in subs)}")
         if hunt["bounty_estimate"]:
             lines.append(f"  Bounty estimate: {hunt['bounty_estimate']}")
         if hunt["summary"]:
@@ -161,14 +181,15 @@ def search_by_tech(techs: list[str]) -> str:
         matches = []
         for h in all_hunts:
             stored = json.loads(h["tech_stack"]) if h["tech_stack"] else []
-            if any(t.lower() in [s.lower() for s in stored] for t in techs):
+            stored_names = [_stringify_tech_item(s).lower() for s in stored]
+            if any(t.lower() in stored_names for t in techs):
                 matches.append(h)
         if not matches:
             return f"No past hunts matching tech: {', '.join(techs)}"
         lines = [f"Past hunts matching {', '.join(techs)} ({len(matches)}):"]
         for h in matches:
             tech = json.loads(h["tech_stack"]) if h["tech_stack"] else []
-            lines.append(f"  - {h['target']} ({', '.join(tech)}) — {h['updated_at'][:10]}")
+            lines.append(f"  - {h['target']} ({', '.join(_stringify_tech_item(t) for t in tech)}) — {h['updated_at'][:10]}")
         return "\n".join(lines)
     finally:
         conn.close()
