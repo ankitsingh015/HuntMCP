@@ -128,6 +128,21 @@ policy — check `AGENT-BRIEF.md` before treating a solved challenge as
 license to keep going. Either way, if nothing works, report the host as
 WAF-protected to HuntBrain rather than looping on it.
 
+### Sustained throttling AFTER a successful bypass — escalate to browser-driven scanning
+
+A bypass can succeed once (the initial block clears) while the underlying
+CDN/bot-management platform still throttles the FULL automated scan-template
+run to incompleteness — reported live in an engagement retrospective: a
+single manual request succeeded where the same automated scanner, using the
+same bypass, still could not complete. After each `check_scan()` result on a
+host you've already bypassed, record the outcome:
+`python3 mcp-servers/scan_escalation.py record <host> completed` on a clean
+finish, or `... record <host> throttled_after_bypass` when the run still came
+back incomplete/blocked. Once the CLI's `should_escalate_to_browser` field
+turns `true` (three consecutive throttled runs on the same host by default),
+switch that host's remaining scan coverage to `mcp__playwright-mcp`/
+`mcp__browser-mcp` instead of retrying the same raw-HTTP scanner again.
+
 ## Return to HuntBrain
 
 For each candidate finding: vulnerability class, affected endpoint (full
