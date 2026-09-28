@@ -30,6 +30,7 @@ import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from budget_guard import enforce as _enforce_budget  # noqa: E402
+from injection_boundary import quarantine as _quarantine  # noqa: E402
 from tool_resolver import minimal_subprocess_env, resolve_tool  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
@@ -233,7 +234,25 @@ def get_interaction_records(url: str) -> str:
     hits, error = _load_hits(url)
     if error:
         return json.dumps({"error": error})
-    return json.dumps(hits)
+    return json.dumps([_quarantine_raw_fields(h) for h in hits])
+
+
+_RAW_FIELDS_TO_QUARANTINE = ("raw-request", "raw-response")
+
+
+def _quarantine_raw_fields(hit: dict) -> dict:
+    """P2-INJ (UU-7): an interactsh HTTP-protocol hit's raw-request/
+    raw-response fields carry whatever the TARGET actually sent when it
+    made the callback -- fully target-controlled free text reaching the
+    agent (browser-mcp's render_dom()/extract_page_content() are this
+    repo's larger such surface, quarantined the same way).
+    protocol/remote-address/timestamp stay untouched (narrow, structured,
+    low injection-surface fields)."""
+    out = dict(hit)
+    for field in _RAW_FIELDS_TO_QUARANTINE:
+        if field in out:
+            out[field] = _quarantine(out[field], source_label=f"interactsh {field}")
+    return out
 
 
 @app.tool()
