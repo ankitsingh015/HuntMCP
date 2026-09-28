@@ -44,7 +44,8 @@ def update_hypothesis(hypothesis_id: int, status: str, note: str = "") -> str:
 
 
 @app.tool()
-def add_evidence(type: str, content: str, hypothesis_id: int = 0, finding_id: int = 0) -> str:
+def add_evidence(type: str, content: str, hypothesis_id: int = 0, finding_id: int = 0,
+                  provenance: str = "") -> str:
     """Attach immutable evidence (raw request, response body, OOB callback
     log, screenshot description, DNS record, source snippet, or other
     metadata) to a hypothesis and/or a finding. type must be one of:
@@ -53,11 +54,29 @@ def add_evidence(type: str, content: str, hypothesis_id: int = 0, finding_id: in
     identical content twice is a safe no-op. Pass hypothesis_id and/or
     finding_id (0 means "not linked" for that one) -- update_finding_status()
     refuses to mark a finding CONFIRMED or IMPACT_PROVEN until it has at
-    least one linked evidence row, so call this BEFORE that call, not after."""
+    least one linked evidence row, so call this BEFORE that call, not after.
+
+    provenance (C1a, OPTIONAL): a JSON object describing HOW this evidence
+    was actually captured, not just the agent's prose -- hashing content
+    proves integrity, not provenance. Two classes: {"class": "wire",
+    "method": ..., "url": ..., ...} for a source with a real structured
+    request/response (e.g. a hit from oob-mcp's get_interaction_records(),
+    or the real method/url/status of a curl call you just made); {"class":
+    "invocation", "tool": ...} for scanner-narrated output (nuclei/sqlmap/
+    subfinder parse stdout -- the real HTTP exchange happens inside the
+    external binary's own process, invisible here, so only "which tool ran"
+    is honestly claimable). Omit for the default (no provenance claim,
+    exactly today's behavior) -- do NOT fabricate a "wire" claim for
+    something you didn't actually observe at that level."""
+    try:
+        prov = json.loads(provenance) if provenance.strip() else None
+    except json.JSONDecodeError as e:
+        return json.dumps({"error": f"provenance must be JSON: {e}"})
     return json.dumps(case_store.add_evidence(
         type, content,
         hypothesis_id=hypothesis_id or None,
         finding_id=finding_id or None,
+        provenance=prov,
     ))
 
 

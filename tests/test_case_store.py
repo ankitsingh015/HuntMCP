@@ -1,3 +1,4 @@
+import json
 import os
 
 import case_store
@@ -130,6 +131,141 @@ def test_add_evidence_requires_a_link(tmp_path):
     db = _db(tmp_path)
     result = case_store.add_evidence("metadata", "orphan evidence", db_path=db)
     assert "error" in result
+
+
+# ---- C1a: evidence provenance binding ---------------------------------------
+
+def test_add_evidence_with_no_provenance_stores_none(tmp_path):
+    """Backward-compatible default -- pre-C1a callers (and every one of
+    this file's own tests above) never pass provenance, and the row must
+    honestly record "no provenance," not a fabricated default."""
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    ev = case_store.add_evidence("callback", "raw hit", finding_id=f["id"], db_path=db)
+    row = case_store.get_evidence(ev["id"], db_path=db)
+    assert row["provenance"] is None
+
+
+def test_add_evidence_stores_wire_level_provenance(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    prov = {"class": "wire", "captured_by": "oob-mcp", "method": "DNS",
+            "url": "abc123.oast.fun", "remote_address": "203.0.113.5"}
+    ev = case_store.add_evidence("callback", "raw hit", finding_id=f["id"],
+                                  provenance=prov, db_path=db)
+    row = case_store.get_evidence(ev["id"], db_path=db)
+    assert row["provenance"]["class"] == "wire"
+    assert row["provenance"]["method"] == "DNS"
+    assert row["provenance"]["remote_address"] == "203.0.113.5"
+
+
+def test_add_evidence_stores_invocation_level_provenance(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("XSS", "/api/x", db_path=db)
+    prov = {"class": "invocation", "captured_by": "tool_resolver", "tool": "dalfox"}
+    ev = case_store.add_evidence("response", "reflected payload", finding_id=f["id"],
+                                  provenance=prov, db_path=db)
+    row = case_store.get_evidence(ev["id"], db_path=db)
+    assert row["provenance"]["class"] == "invocation"
+    assert row["provenance"]["tool"] == "dalfox"
+
+
+def test_add_evidence_rejects_provenance_with_unknown_class(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    result = case_store.add_evidence("callback", "x", finding_id=f["id"],
+                                      provenance={"class": "vibes"}, db_path=db)
+    assert "error" in result
+
+
+def test_add_evidence_rejects_wire_provenance_missing_method_or_url(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    result = case_store.add_evidence("callback", "x", finding_id=f["id"],
+                                      provenance={"class": "wire", "url": "https://x"}, db_path=db)
+    assert "error" in result
+
+
+def test_add_evidence_rejects_invocation_provenance_missing_tool(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    result = case_store.add_evidence("callback", "x", finding_id=f["id"],
+                                      provenance={"class": "invocation"}, db_path=db)
+    assert "error" in result
+
+
+def test_add_evidence_rejects_provenance_that_is_not_a_dict(tmp_path):
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    result = case_store.add_evidence("callback", "x", finding_id=f["id"],
+                                      provenance="not a dict", db_path=db)
+    assert "error" in result
+
+
+def test_add_evidence_redacts_secret_shaped_provenance_values(tmp_path):
+    """Defense-in-depth, same as evidence content's own SHA-256-addressed
+    storage isn't a redaction mechanism -- provenance is bookkeeping
+    metadata (method/url/tool), not the evidence substance itself, so it's
+    safe and correct to redact it the way audit_log.log_call() already
+    redacts its own args."""
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+    ev = case_store.add_evidence("request", "x", finding_id=f["id"],
+                                  provenance={"class": "wire", "method": "GET", "url": jwt},
+                                  db_path=db)
+    row = case_store.get_evidence(ev["id"], db_path=db)
+    assert jwt not in row["provenance"]["url"]
+
+
+def test_add_evidence_redacts_secret_shaped_values_nested_under_a_header_dict(tmp_path):
+    """Code-review finding (2 independent agents converged on this):
+    _redact_provenance()'s original one-level-deep implementation
+    (`{k: redact_text(v) if isinstance(v, str) else v ...}`) never
+    recursed into a nested dict, so a real secret sitting under
+    provenance["headers"]["Authorization"] (the realistic shape a wire-
+    level capture would actually produce) passed through completely
+    unredacted -- even though this exact codebase already fixed the
+    identical bug class for CEM's own evidence bundling
+    (cem_engine._redact_recursive(), whose own docstring documents two
+    prior retrospective-audit fixes for precisely this). Must reuse that
+    hardened recursive redactor, not a second, weaker one-level copy."""
+    db = _db(tmp_path)
+    f = case_store.create_finding("SSRF", "/api/fetch", db_path=db)
+    ev = case_store.add_evidence(
+        "request", "x", finding_id=f["id"],
+        provenance={"class": "wire", "method": "GET", "url": "https://x",
+                    "headers": {"Authorization": "Bearer opaque-real-secret-token-value"}},
+        db_path=db,
+    )
+    row = case_store.get_evidence(ev["id"], db_path=db)
+    assert "opaque-real-secret-token-value" not in json.dumps(row["provenance"])
+
+
+def test_add_evidence_old_rows_from_before_this_column_existed_still_readable(tmp_path):
+    """Real migration correctness, not just a fresh-db assumption: a
+    case.db created before C1a (no provenance_json column) must not break
+    when _init_schema() adds the column via ALTER TABLE, and pre-existing
+    rows must read back with provenance=None, not crash."""
+    db = _db(tmp_path)
+    # Simulate a pre-C1a db: create the OLD schema by hand, no provenance_json.
+    conn = case_store.sqlite3.connect(db)
+    conn.execute("""
+        CREATE TABLE evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            hypothesis_id INTEGER, finding_id INTEGER, type TEXT NOT NULL,
+            content_hash TEXT NOT NULL, content_ref TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute(
+        "INSERT INTO evidence (finding_id, type, content_hash, content_ref) VALUES (1, 'metadata', 'h', 'r')"
+    )
+    conn.commit()
+    conn.close()
+
+    row = case_store.get_evidence(1, db_path=db)
+    assert row["provenance"] is None
 
 
 # ---- Cross-engagement FK mismatch: clear error, not a raw sqlite crash -------

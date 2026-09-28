@@ -171,19 +171,20 @@ def generate_payload_url(label: str = "") -> str:
     )
 
 
-@app.tool()
-def check_interactions(url: str) -> str:
-    """Check for any inbound DNS/HTTP/SMTP interactions on a callback URL
-    previously returned by generate_payload_url(). Safe to call repeatedly
-    -- the background listener keeps polling on its own poll-interval."""
+def _load_hits(url: str) -> tuple[list[dict] | None, str | None]:
+    """Shared by check_interactions() (formats to text) and
+    get_interaction_records() (C1a: returns the same real, structured hits
+    as JSON, so an agent can attach one as case_store wire-level
+    provenance instead of re-typing the formatted text). Returns
+    (hits, error) -- exactly one is None."""
     registry = _load_registry()
     entry = registry.get(url)
     if not entry:
-        return f"No active listener for {url!r}. Call generate_payload_url() first."
+        return None, f"No active listener for {url!r}. Call generate_payload_url() first."
 
     interactions_file = entry["interactions_file"]
     if not os.path.isfile(interactions_file):
-        return f"No interactions yet for {url!r}."
+        return [], None
 
     hits = []
     with open(interactions_file) as f:
@@ -195,7 +196,17 @@ def check_interactions(url: str) -> str:
                 hits.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
+    return hits, None
 
+
+@app.tool()
+def check_interactions(url: str) -> str:
+    """Check for any inbound DNS/HTTP/SMTP interactions on a callback URL
+    previously returned by generate_payload_url(). Safe to call repeatedly
+    -- the background listener keeps polling on its own poll-interval."""
+    hits, error = _load_hits(url)
+    if error:
+        return error
     if not hits:
         return f"No interactions yet for {url!r}."
 
@@ -206,6 +217,23 @@ def check_interactions(url: str) -> str:
         ts = h.get("timestamp", "?")
         lines.append(f"  [{proto}] from {remote} at {ts}")
     return "\n".join(lines)
+
+
+@app.tool()
+def get_interaction_records(url: str) -> str:
+    """C1a: the same interactions check_interactions() reports, as real
+    structured JSON instead of formatted text -- so an agent can attach one
+    record's real protocol/remote-address/timestamp as case_store
+    wire-level provenance (add_evidence(..., provenance={"class": "wire",
+    "captured_by": "oob-mcp", "method": <protocol>, "url": <the callback
+    url>, "remote_address": <remote-address>, ...})) instead of re-typing
+    prose that case_store can't verify. Returns a JSON array of hit
+    objects (empty if none yet), or {"error": ...} if no listener is
+    registered for this url."""
+    hits, error = _load_hits(url)
+    if error:
+        return json.dumps({"error": error})
+    return json.dumps(hits)
 
 
 @app.tool()

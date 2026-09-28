@@ -104,6 +104,71 @@ FINDING_STATUSES = {
 EVIDENCE_GATED_STATUSES = {"CONFIRMED", "IMPACT_PROVEN"}
 EVIDENCE_TYPES = {"request", "response", "callback", "screenshot", "dns", "source", "metadata"}
 
+# C1a (MASTER-ROADMAP-FINAL-v3.md §8): "two paths of unequal trust
+# (case_store.py:322 vs cem_trials); most reports flow through the weak
+# one." Evidence today is agent-narrated text with a SHA-256 hash --
+# hashing proves integrity, not provenance. `provenance` is optional
+# structured metadata about HOW a piece of evidence was actually captured,
+# with two tiers per §8's own scoping: "wire" for sources with a real
+# structured request/response (a real method+url a code path -- not just
+# the agent's prose -- actually observed), "invocation" for scanner-
+# narrated output (nuclei/sqlmap/subfinder parse stdout; the real HTTP
+# exchange happens inside the external binary's own process, invisible to
+# Python code here, so only "which tool/command ran" is honestly
+# claimable).
+PROVENANCE_CLASSES = {"wire", "invocation"}
+
+
+def _validate_provenance(provenance) -> str | None:
+    """Returns an error string, or None if valid. Not schema-perfect
+    (doesn't type-check every field) -- just enough structure that a
+    caller can't silently claim "wire" provenance with no actual request
+    data behind it, which is the one thing this file must not let slide
+    (see the module docstring's own "no evidence = no confirmed finding"
+    example of enforcement over documentation)."""
+    if not isinstance(provenance, dict):
+        return f"provenance must be a JSON object, got {type(provenance).__name__}"
+    cls = provenance.get("class")
+    if cls not in PROVENANCE_CLASSES:
+        return f"provenance['class'] must be one of {sorted(PROVENANCE_CLASSES)}, got {cls!r}"
+    if cls == "wire" and not (provenance.get("method") and provenance.get("url")):
+        return "wire-class provenance requires 'method' and 'url'"
+    if cls == "invocation" and not provenance.get("tool"):
+        return "invocation-class provenance requires 'tool'"
+    return None
+
+
+def _redact_provenance(provenance: dict) -> dict:
+    """Redact recursively via cem_engine._redact_recursive() -- code-review
+    finding: an earlier version of this function redacted only one level
+    deep, which never recursed into a nested dict (e.g. a realistic
+    `{"headers": {"Authorization": "Bearer <opaque>"}}` shape for a
+    wire-level capture), reimplementing a WEAKER copy of a redactor already
+    hardened twice, in this exact codebase, against exactly that failure
+    mode (see _redact_recursive()'s own docstring: an opaque, non-JWT-
+    shaped bearer token in a header value needs the KEY-NAME-based check
+    that function adds, since redact_text()'s own shape-only rules miss it
+    once the key name is stripped away by a naive per-value walk).
+    Provenance is bookkeeping metadata (method/url/tool), not the evidence
+    substance itself (that's `content`, stored as-is), so redacting it
+    costs nothing real.
+
+    Import is deliberately LOCAL, not module-level (regression found by the
+    full suite, not code review): case_store.py is imported far more
+    broadly than cem_engine.py -- tests/test_cem_performance.py's own M1
+    measurement depends on constructing a real process where cem_engine has
+    genuinely never been imported, specifically to measure the cost CEM
+    adds once it IS imported. A module-level `from cem_engine import ...`
+    here put cem_engine into sys.modules the instant ANYTHING imports
+    case_store (which that test's own setup does, for its unrelated
+    lifecycle helpers), permanently poisoning that measurement's "CEM not
+    yet installed" baseline for every future test run, not just this one.
+    Deferring the import to here means cem_engine is only ever pulled in
+    when a caller actually exercises provenance -- an active choice, not a
+    load-time side effect of importing case_store at all."""
+    from cem_engine import _redact_recursive
+    return _redact_recursive(provenance)
+
 # Phase-1 CEM (PHASE1-EXECUTION-PLAN.md sec 4/D2). CEM_TRIAL_ARMS/CEM_VERDICTS mirror
 # this file's existing HYPOTHESIS_STATUSES/FINDING_STATUSES-style enum validation.
 CEM_TRIAL_ARMS = {"baseline", "perturbed"}
@@ -222,6 +287,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             content_hash TEXT NOT NULL,
             content_ref TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            provenance_json TEXT,
             FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE SET NULL,
             FOREIGN KEY (finding_id) REFERENCES findings(id) ON DELETE SET NULL
         );
@@ -285,6 +351,21 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (finding_id) REFERENCES findings(id) ON DELETE CASCADE
         );
     """)
+    # C1a: provenance_json didn't exist before this task -- CREATE TABLE IF
+    # NOT EXISTS above only helps a BRAND-NEW case.db; an existing
+    # engagement's case.db (paused/resumed hunt, predating this change)
+    # still has the old evidence table with no such column, and would
+    # crash with "no such column" on the very next add_evidence() call
+    # once this task's code tries to insert into it. Idempotent, cheap
+    # (single ALTER TABLE, only actually runs its ALTER once per db file --
+    # every later call hits the already-exists branch and is a no-op), and
+    # narrowly catches ONLY the one well-understood "already added" error
+    # rather than swallowing every OperationalError.
+    try:
+        conn.execute("ALTER TABLE evidence ADD COLUMN provenance_json TEXT")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e):
+            raise
 
 
 # ---- Hypotheses ----------------------------------------------------------
@@ -324,11 +405,16 @@ def update_hypothesis(hypothesis_id: int, status: str, note: str = "",
 # ---- Evidence -------------------------------------------------------------
 
 def add_evidence(type: str, content: str, hypothesis_id: int | None = None,
-                  finding_id: int | None = None, db_path: str | None = None) -> dict:
+                  finding_id: int | None = None, provenance: dict | None = None,
+                  db_path: str | None = None) -> dict:
     if type not in EVIDENCE_TYPES:
         return {"error": f"invalid type {type!r}, expected one of {sorted(EVIDENCE_TYPES)}"}
     if hypothesis_id is None and finding_id is None:
         return {"error": "add_evidence needs at least one of hypothesis_id/finding_id"}
+    if provenance is not None:
+        prov_error = _validate_provenance(provenance)
+        if prov_error:
+            return {"error": prov_error}
 
     conn = _get_conn(db_path)
     try:
@@ -345,13 +431,31 @@ def add_evidence(type: str, content: str, hypothesis_id: int | None = None,
             with open(content_ref, "wb") as f:
                 f.write(content_bytes)
 
+        provenance_json = json.dumps(_redact_provenance(provenance)) if provenance is not None else None
         cur = conn.execute(
-            "INSERT INTO evidence (hypothesis_id, finding_id, type, content_hash, content_ref) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (hypothesis_id, finding_id, type, content_hash, content_ref),
+            "INSERT INTO evidence (hypothesis_id, finding_id, type, content_hash, content_ref, provenance_json) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (hypothesis_id, finding_id, type, content_hash, content_ref, provenance_json),
         )
         conn.commit()
         return {"id": cur.lastrowid, "hash": content_hash}
+    finally:
+        conn.close()
+
+
+def get_evidence(evidence_id: int, db_path: str | None = None) -> dict | None:
+    """One evidence row, with provenance_json decoded back into a dict (or
+    None if this row predates C1a / was stored without provenance) --
+    mirrors get_finding()'s own None-if-absent convention."""
+    conn = _get_conn(db_path)
+    try:
+        row = conn.execute("SELECT * FROM evidence WHERE id = ?", (evidence_id,)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        raw = result.pop("provenance_json", None)
+        result["provenance"] = json.loads(raw) if raw else None
+        return result
     finally:
         conn.close()
 
