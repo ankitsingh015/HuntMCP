@@ -26,6 +26,19 @@ class _EchoHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"not found here")
             return
+        if self.path == "/cors-echo":
+            # Reflects the request's Origin header into ACAO + sets ACAC:
+            # true -- a deliberately-misconfigured CORS response, for
+            # test_http_probe's own response-header-capture tests and
+            # test_cors_probe's exploitability-classification tests.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            origin = self.headers.get("Origin", "")
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.end_headers()
+            self.wfile.write(b"secret account data")
+            return
         payload = {
             "method": self.command,
             "path": self.path,
@@ -128,3 +141,24 @@ def test_fetch_connection_refused_sets_error_not_exception():
 def test_fetch_result_is_reusable_dataclass():
     r = http_probe.FetchResult(status=200, body="x")
     assert r.error is None
+    assert r.headers == {}
+
+
+def test_fetch_captures_response_headers(echo_server):
+    """Regression: FetchResult used to carry only status/body/error -- a
+    caller needing to inspect response HEADERS (e.g. a CORS exploitability
+    check reading Access-Control-Allow-Origin/-Credentials) had no way to
+    get them without a separate, duplicated fetch implementation."""
+    result = http_probe.fetch(f"{echo_server}/cors-echo", "GET", {"Origin": "https://evil.example"}, None, 5)
+    assert result.status == 200
+    assert result.headers.get("Access-Control-Allow-Origin") == "https://evil.example"
+    assert result.headers.get("Access-Control-Allow-Credentials") == "true"
+
+
+def test_fetch_captures_response_headers_on_http_error(echo_server):
+    """Headers must also be captured on the HTTPError path (401/403/404),
+    not just the success path -- the two are separate code branches in
+    fetch()."""
+    result = http_probe.fetch(f"{echo_server}/not-found", "GET", {}, None, 5)
+    assert result.status == 404
+    assert result.headers.get("Content-Type") == "text/plain"

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 DEFAULT_TIMEOUT_S = 15
 
@@ -22,6 +22,14 @@ class FetchResult:
     status: int | None
     body: str
     error: str | None = None
+    # Response headers, case-preserved as sent by the server (urllib's
+    # HTTPMessage is technically case-insensitive on lookup, but a plain
+    # dict here is deliberately not -- callers that need case-insensitive
+    # matching, e.g. a CORS check comparing header names, do their own
+    # .get() with the exact casing the server sent). Additive field (default
+    # empty dict) -- every existing caller (idor_sweep.py, cem_engine.py)
+    # that never reads .headers is unaffected.
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 def build_headers(cookie_header: str | None, bearer_token: str | None) -> dict[str, str]:
@@ -55,11 +63,17 @@ def fetch(url: str, method: str, headers: dict[str, str], body: str | None,
     _open = urllib.request.urlopen if allow_redirects else _NO_REDIRECT_OPENER.open
     try:
         with _open(req, timeout=timeout_s) as resp:
-            return FetchResult(status=resp.status, body=resp.read().decode(errors="replace"))
+            return FetchResult(
+                status=resp.status, body=resp.read().decode(errors="replace"),
+                headers=dict(resp.headers.items()),
+            )
     except urllib.error.HTTPError as e:
         # A 401/403/404 (the exact protected-vs-leaked signal callers care
         # about) raises HTTPError in urllib rather than returning
         # normally -- still a real, meaningful response, not a failure.
-        return FetchResult(status=e.code, body=e.read().decode(errors="replace"))
+        return FetchResult(
+            status=e.code, body=e.read().decode(errors="replace"),
+            headers=dict(e.headers.items()) if e.headers else {},
+        )
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         return FetchResult(status=None, body="", error=str(e))
