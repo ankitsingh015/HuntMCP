@@ -96,6 +96,11 @@ data/reports/
 # engagement data, never for git.
 data/tool-gaps.jsonl
 
+# Candidate scope-expansion registry (mcp-servers/scope_expansion.py) —
+# same "deliberately global" reasoning as tool-gaps.jsonl above; real
+# engagement host/evidence data, never for git.
+data/scope-expansion.jsonl
+
 # Multi-target engagement state (mcp-servers/engagement_paths.py) — one
 # directory per target (engagement.yaml/budget.json/work-registry.json/
 # findings-seen.json/audit.jsonl), plus the pointer file tracking which
