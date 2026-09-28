@@ -1,6 +1,0 @@
-report_id	class	quality	bounty	program	file	status
-526325	XSS-Stored	full	0	GitLab	h1-xss-526325-gitlab-wiki-hierarchical-link.md	ingested
-1010466	XSS-Stored	full	1000	CS Money	h1-xss-1010466-cs-money-blind-xss-image-upload.md	ingested
-1212067	XSS-Stored	full	16000	GitLab	h1-xss-1212067-gitlab-design-reference-filter.md	ingested
-1731349	XSS-Stored	full	13950	GitLab	h1-xss-1731349-gitlab-kroki-diagram.md	ingested
-662287	XSS-Stored	full	3500	GitLab	h1-xss-662287-gitlab-rdoc-wiki-unsanitized-anchor.md	ingested
