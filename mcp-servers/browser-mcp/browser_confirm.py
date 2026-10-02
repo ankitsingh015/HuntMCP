@@ -250,16 +250,24 @@ async def render_dom(url: str, wait_selector: str | None = None,
     start = time.monotonic()
     from playwright.async_api import async_playwright
 
-    result = {"url": url, "html": None, "title": None, "error": None}
+    result = {"url": url, "html": None, "title": None, "error": None,
+              "status": None, "final_url": None}
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
             context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file)
-            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            response = await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             if wait_selector:
                 await page.wait_for_selector(wait_selector, timeout=timeout_ms)
             result["html"] = await page.content()
             result["title"] = await page.title()
+            # C1a: the real HTTP status + final (post-redirect) URL this
+            # navigation actually got -- response is None only if goto()
+            # itself raised before a response arrived, which the except
+            # branch below already handles by leaving these at None.
+            if response is not None:
+                result["status"] = response.status
+                result["final_url"] = response.url
         except Exception as e:
             result["error"] = str(e)
         finally:
