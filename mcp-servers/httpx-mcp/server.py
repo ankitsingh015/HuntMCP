@@ -19,6 +19,7 @@ from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 import job_runtime
+from injection_boundary import quarantine as _quarantine
 
 app = FastMCP("httpx-mcp")
 
@@ -60,14 +61,30 @@ def _format_probe(stdout: str, returncode: int, stderr: str) -> str:
 
         url = data.get("url", "")
         status = data.get("status_code", "?")
-        title = data.get("title", "?")
+        title = data.get("title")
         tech = ", ".join(data.get("tech", [])) if data.get("tech") else "?"
-        server = data.get("webserver", "?")
+        server = data.get("webserver")
         length = data.get("content_length", "?")
 
         parts = [f"  {url}"]
-        parts.append(f"    Status: {status} | Title: {title} | Server: {server}")
-        parts.append(f"    Tech: {tech} | Length: {length}")
+        parts.append(f"    Status: {status} | Tech: {tech} | Length: {length}")
+        # P2-INJ (UU-7): a page's <title> AND its raw Server: response
+        # header are both fully target-controlled free text -- the
+        # backend's own chosen string, not httpx-detected like `tech` or
+        # numeric like status/length -- quarantine both, same as oob-mcp's
+        # raw-request/raw-response fields. Branch on KEY PRESENCE (None),
+        # not value equality against a "?" placeholder -- code-review
+        # finding (CONFIRMED): a value check wrongly treated a real target
+        # page whose literal <title> is the single character "?" as if no
+        # title were present, skipping its quarantine. An empty string
+        # ("") IS still real (if empty) target content, so it's
+        # quarantined too, same as any other present value.
+        title_field = "    Title: ?" if title is None \
+            else f"    Title: {_quarantine(title, source_label='page title')}"
+        server_field = "    Server: ?" if server is None \
+            else f"    Server: {_quarantine(server, source_label='Server header')}"
+        parts.append(title_field)
+        parts.append(server_field)
         lines.append("\n".join(parts))
 
     if not lines:

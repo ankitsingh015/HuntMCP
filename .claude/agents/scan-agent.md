@@ -18,6 +18,30 @@ Run `scripts/check-scope.sh <host>` via Bash first. If it exits non-zero,
 stop and skip that host — report the block to HuntBrain, do not test it
 anyway.
 
+## Before your first bulk scanner call — check the engagement's scan policy
+
+Some programs prohibit or cap automated/bulk scanning (raw scanner output
+excluded from scope, or a request-volume limit) — reported live in an
+engagement retrospective: without a machine-readable signal, this required
+the orchestrator to notice the conflict and manually rewrite your task into
+a bounded/hand-picked check, with real risk of the policy being missed on a
+future engagement. Before the FIRST `nuclei-mcp`/`sqlmap-mcp`/`dalfox-mcp`/
+`ffuf-mcp` start call, run `python3 -c "import sys;
+sys.path.insert(0,'mcp-servers'); import scan_policy, json;
+print(json.dumps(scan_policy.load_scan_policy()))"` via Bash. If
+`scan_policy` comes back `"manual"`, do not run any bulk/template scanner at
+all — fall back to a bounded, hand-picked check against the specific
+paths/params HuntBrain/recon already named, same as you would for a
+scanner-hostile program today, and say so in your return to HuntBrain. If
+it's `"bounded"`, keep your own running bulk-scanner call count under
+`scanner_volume_cap` and switch to the same hand-picked fallback once you'd
+exceed it. If the result instead has an `"error"` key (PyYAML unavailable in
+this Bash environment — genuinely can't determine the policy, not the same as
+"no restriction"), treat it the same as `"manual"`: fall back to the
+hand-picked check and tell HuntBrain why, rather than assuming unrestricted.
+`"full"` (or the field simply absent — the default) means no
+restriction, current behavior.
+
 ## Every scan tool below runs in the background — start, then poll
 
 `mcp__nuclei-mcp`, `mcp__sqlmap-mcp`, `mcp__dalfox-mcp`, and `mcp__ffuf-mcp`
@@ -127,6 +151,21 @@ that WAF/anti-bot presence is often explicitly out-of-scope per program
 policy — check `AGENT-BRIEF.md` before treating a solved challenge as
 license to keep going. Either way, if nothing works, report the host as
 WAF-protected to HuntBrain rather than looping on it.
+
+### Sustained throttling AFTER a successful bypass — escalate to browser-driven scanning
+
+A bypass can succeed once (the initial block clears) while the underlying
+CDN/bot-management platform still throttles the FULL automated scan-template
+run to incompleteness — reported live in an engagement retrospective: a
+single manual request succeeded where the same automated scanner, using the
+same bypass, still could not complete. After each `check_scan()` result on a
+host you've already bypassed, record the outcome:
+`python3 mcp-servers/scan_escalation.py record <host> completed` on a clean
+finish, or `... record <host> throttled_after_bypass` when the run still came
+back incomplete/blocked. Once the CLI's `should_escalate_to_browser` field
+turns `true` (three consecutive throttled runs on the same host by default),
+switch that host's remaining scan coverage to `mcp__playwright-mcp`/
+`mcp__browser-mcp` instead of retrying the same raw-HTTP scanner again.
 
 ## Return to HuntBrain
 

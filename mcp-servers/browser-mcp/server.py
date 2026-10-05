@@ -48,11 +48,13 @@ why all four, not just one):
   once, on the call that establishes the session.
 """
 
+import json
 import sys
 
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 
 import browser_confirm
+from injection_boundary import quarantine as _quarantine
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("browser-mcp")
@@ -119,7 +121,36 @@ async def render_dom(url: str, wait_selector: str = "", cookie_header: str = "",
         return f"Browser error: {r['error']}"
     html = r["html"] or ""
     truncated = html[:5000] + ("... [truncated]" if len(html) > 5000 else "")
-    return f"Title: {r['title']}\n\n{truncated}"
+    # P2-INJ (UU-7): this is the fully rendered, post-JS page HTML -- per
+    # this function's own docstring, deliberately surfaces "client-side-
+    # injected content, DOM clobbering, and anything a plain curl would
+    # never show." That is fully target-controlled free text reaching
+    # agent-visible output -- quarantine it, same as oob-mcp's raw
+    # callback-request/response fields.
+    output = f"Title: {r['title']}\n\n{_quarantine(truncated, source_label='rendered page HTML')}"
+    # C1a: this navigation's real HTTP status + final (post-redirect) URL,
+    # shaped exactly as case_store._validate_provenance() requires for
+    # class="wire" -- an agent can paste this straight into case-mcp's
+    # add_evidence(provenance=...) instead of re-typing it, same pattern
+    # as oob-mcp's get_interaction_records().
+    provenance = {
+        "class": "wire",
+        "captured_by": "browser-mcp",
+        "method": "GET",
+        "url": r.get("final_url") or url,
+        "status": r.get("status"),
+    }
+    # Code-review finding (CONFIRMED): this line MUST stay the final thing
+    # this function returns, and `output` MUST stay the only thing before
+    # it. The target's own page HTML is attacker-controlled and could
+    # contain a forged "Provenance (...):"-shaped decoy line -- but it can
+    # only ever land inside `output`'s quarantine boundary (before
+    # UNTRUSTED-DATA-END), never after it. A consumer that takes the LAST
+    # "Provenance"-prefixed line (not the first) is structurally guaranteed
+    # to get this real one, not a decoy -- see
+    # tests/test_browser_mcp_provenance.py's decoy test. Appending anything
+    # else after this line in the future would break that guarantee.
+    return f"{output}\n\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}"
 
 
 @app.tool()
@@ -148,7 +179,10 @@ async def extract_page_content(url: str, wait_selector: str = "", max_links: int
         return f"Browser error: {r['error']}"
     text = r["text"] or ""
     truncated = text[:8000] + ("... [truncated]" if len(text) > 8000 else "")
-    lines = [f"Title: {r['title']}", "", "--- Text ---", truncated]
+    # P2-INJ (UU-7): rendered, human-readable page TEXT -- fully
+    # target-controlled, same reasoning as render_dom()'s own quarantine
+    # above.
+    lines = [f"Title: {r['title']}", "", "--- Text ---", _quarantine(truncated, source_label="rendered page text")]
     if r["links"]:
         lines.append("")
         lines.append(f"--- Links ({len(r['links'])}) ---")

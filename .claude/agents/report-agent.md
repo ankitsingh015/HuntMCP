@@ -158,3 +158,26 @@ of how certain it already is.
    `README.md` index, all under `data/reports/<target-slug>/<date>/`.
 2. Return the folder path and a one-line summary per finding (with each
    finding's own filename) to HuntBrain.
+
+### Self-run VDP with a character-limited web form (no API, no bounty platform)
+
+The full per-finding markdown above assumes a structured platform submission
+(HackerOne/Bugcrowd). A self-run VDP's own disclosure form is often a plain
+web form with a hard description character limit and no API — reported live
+in an engagement retrospective: several candidate descriptions were over a
+1000-character limit and had to be manually trimmed multiple times, and with
+several separate per-finding submissions, one finding's text got mis-paired
+with another finding's form field during manual handling. When the target is
+a self-run VDP (no `hackerone-mcp`/`bounty_scope.py` match, a vendor's own
+`/security`-style disclosure page instead), also build a per-finding VDP
+packet: `mcp-servers/vdp_packet.py`'s `build_vdp_packet(finding_id,
+vuln_class, title, description, impact, char_limit=<the form's own limit>)`
+returns a `short_summary` guaranteed to fit the limit (word-boundary
+truncated, never mid-word) and a `filename_stub` that's unambiguous by
+construction (`finding-<id>-<vuln_class>`) — every summary is also
+self-labeled with `[#<id> <vuln_class>]` at the front, so a mix-up is
+detectable even if pasted bare into the form with no filename attached.
+Converting the full per-finding markdown to PDF/printable form for an
+upload field that rejects `.md`/`.zip` is still a manual step (or a
+separate task with an explicit tool choice) — this only solves the
+character-limit and mix-up problems.

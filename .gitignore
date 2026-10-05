@@ -43,6 +43,19 @@ data/.cron-seen-urls.txt
 # (which use ingest-writeup.sh's YYYY-MM-DD-slug.md convention).
 data/writeups/cve-*.md
 
+# Bulk-fetched HackerOne disclosed-report writeups (mcp-servers/writeup-mcp/
+# h1_fetch.py) -- same reasoning as the CVE dumps above: this pulls broadly
+# from the 11k+-entry disclosed-reports catalog (filterable only by a crude
+# vulnerabilityClass substring), not hand-curated, so it stays local rather
+# than diluting the git-tracked writeup set. Human decision (2026-09-26):
+# keep local for now; revisit once there's a proper DB/cloud store for this
+# corpus instead of committing bulk fetches to the repo. h1_fetch.py's own
+# resumability/log state, never for git either.
+data/writeups/h1-*.md
+data/writeups/.h1-done.txt
+data/writeups/.h1-ingest*.log
+data/writeups/.h1-manifest.tsv
+
 # Lessons Registry — real engagement data (target names, findings, client
 # info) NEVER belongs in this repo, even privately. Only the sanitized
 # template in knowledge/ is git-tracked. See knowledge/lessons-learned-template.md.
@@ -95,6 +108,11 @@ data/reports/
 # per-target) so recurring gaps across engagements are visible; still real
 # engagement data, never for git.
 data/tool-gaps.jsonl
+
+# Candidate scope-expansion registry (mcp-servers/scope_expansion.py) —
+# same "deliberately global" reasoning as tool-gaps.jsonl above; real
+# engagement host/evidence data, never for git.
+data/scope-expansion.jsonl
 
 # Multi-target engagement state (mcp-servers/engagement_paths.py) — one
 # directory per target (engagement.yaml/budget.json/work-registry.json/

@@ -44,7 +44,8 @@ def update_hypothesis(hypothesis_id: int, status: str, note: str = "") -> str:
 
 
 @app.tool()
-def add_evidence(type: str, content: str, hypothesis_id: int = 0, finding_id: int = 0) -> str:
+def add_evidence(type: str, content: str, hypothesis_id: int = 0, finding_id: int = 0,
+                  provenance: str = "") -> str:
     """Attach immutable evidence (raw request, response body, OOB callback
     log, screenshot description, DNS record, source snippet, or other
     metadata) to a hypothesis and/or a finding. type must be one of:
@@ -53,11 +54,29 @@ def add_evidence(type: str, content: str, hypothesis_id: int = 0, finding_id: in
     identical content twice is a safe no-op. Pass hypothesis_id and/or
     finding_id (0 means "not linked" for that one) -- update_finding_status()
     refuses to mark a finding CONFIRMED or IMPACT_PROVEN until it has at
-    least one linked evidence row, so call this BEFORE that call, not after."""
+    least one linked evidence row, so call this BEFORE that call, not after.
+
+    provenance (C1a, OPTIONAL): a JSON object describing HOW this evidence
+    was actually captured, not just the agent's prose -- hashing content
+    proves integrity, not provenance. Two classes: {"class": "wire",
+    "method": ..., "url": ..., ...} for a source with a real structured
+    request/response (e.g. a hit from oob-mcp's get_interaction_records(),
+    or the real method/url/status of a curl call you just made); {"class":
+    "invocation", "tool": ...} for scanner-narrated output (nuclei/sqlmap/
+    subfinder parse stdout -- the real HTTP exchange happens inside the
+    external binary's own process, invisible here, so only "which tool ran"
+    is honestly claimable). Omit for the default (no provenance claim,
+    exactly today's behavior) -- do NOT fabricate a "wire" claim for
+    something you didn't actually observe at that level."""
+    try:
+        prov = json.loads(provenance) if provenance.strip() else None
+    except json.JSONDecodeError as e:
+        return json.dumps({"error": f"provenance must be JSON: {e}"})
     return json.dumps(case_store.add_evidence(
         type, content,
         hypothesis_id=hypothesis_id or None,
         finding_id=finding_id or None,
+        provenance=prov,
     ))
 
 
@@ -365,6 +384,59 @@ def _cem_fetch(url, method, headers, body, timeout_s):
     if supports:
         return fn(url, method, headers, body, timeout_s, allow_redirects=False)
     return fn(url, method, headers, body, timeout_s)
+
+
+def _record_trial_wire_evidence(finding_id: int, trial) -> tuple[str | None, str | None]:
+    """C1a: `_cem_fetch` above already performs a REAL HTTP request for every
+    CEM trial -- `trial.request`/`trial.response` are wire-level evidence by
+    construction, the same way oob-mcp's/browser-mcp's own real requests are.
+    Stores both through `case_store.add_evidence()` (the same content-
+    addressed store an agent would use for any other wire evidence),
+    provenance-tagged as `{"class": "wire", "captured_by": "cem_engine",
+    "method": ..., "url": ...}`, so `cem_trials.request_evidence_hash` /
+    `response_evidence_hash` (schema columns that existed since this table
+    was first defined but were never populated) point at real, inspectable
+    evidence instead of staying NULL forever.
+
+    Returns (request_hash, response_hash); either is None if add_evidence()
+    itself returned an error (e.g. a defensively-malformed request missing a
+    url) OR if anything here raised (a disk-write failure, a non-
+    JSON-serializable value, ...) -- this never propagates, because a
+    failure to attach provenance must never cost an already-completed,
+    already-audited trial its own real http_status/oracle_hit outcome (code
+    review, CONFIRMED: an earlier version of this function had no try/
+    except at all, so a genuine exception here -- not just add_evidence()'s
+    own {"error": ...} path -- would have aborted the ENTIRE trial-recording
+    loop in determinism_gate()/run_counterfactual(), losing every remaining
+    already-budget-charged trial's result, not just its evidence hashes).
+
+    trial.request/trial.response can carry real session secrets (a Cookie/
+    Authorization header the operator configured for an authenticated CEM
+    run; a Set-Cookie the target sent back) -- redacted via
+    cem_engine._redact_recursive() (code review, CONFIRMED: the same
+    function case_store._redact_provenance() already reuses for the
+    provenance dict) before being written to disk, matching
+    cem_engine.Controls.record()'s own established discipline in this exact
+    subsystem of never persisting a secret header's VALUE, only its name."""
+    try:
+        method = trial.request.get("method", "GET")
+        url = trial.request.get("url")
+        provenance = {"class": "wire", "captured_by": "cem_engine", "method": method, "url": url}
+        req_result = case_store.add_evidence(
+            type="request", content=json.dumps(cem_engine._redact_recursive(trial.request), sort_keys=True),
+            finding_id=finding_id, provenance=provenance,
+        )
+        resp_result = case_store.add_evidence(
+            type="response",
+            content=json.dumps(cem_engine._redact_recursive({
+                "status": trial.response.status, "headers": trial.response.headers,
+                "body": trial.response.body, "error": trial.response.error,
+            }), sort_keys=True),
+            finding_id=finding_id, provenance=provenance,
+        )
+        return req_result.get("hash"), resp_result.get("hash")
+    except Exception:  # noqa: BLE001 - any failure here degrades to no-evidence, never aborts the trial
+        return None, None
 
 
 def _resolve_engagement():
@@ -679,9 +751,11 @@ def determinism_gate(finding_id: int, url: str, k: int = 0) -> str:
 
     controls_blob = cem_engine.Controls().record()
     for t in trials:
+        req_hash, resp_hash = _record_trial_wire_evidence(finding_id, t)
         case_store.cem_record_trial(
             finding_id, t.arm, t.k_index, t.oracle_hit,
             http_status=t.http_status, controls=controls_blob,
+            request_evidence_hash=req_hash, response_evidence_hash=resp_hash,
         )
     hits = [t.oracle_hit for t in trials]
     throttled = cem_engine.throttled_in(trials)
@@ -805,10 +879,12 @@ def run_counterfactual(finding_id: int, url: str, condition_id: int, k: int = 0)
 
     controls_blob = controls.record()
     for t in (*base_trials, *pert_trials):
+        req_hash, resp_hash = _record_trial_wire_evidence(finding_id, t)
         case_store.cem_record_trial(
             finding_id, t.arm, t.k_index, t.oracle_hit,
             condition_id=None if t.arm == cem_engine.ARM_BASELINE else condition_id,
             http_status=t.http_status, controls=controls_blob,
+            request_evidence_hash=req_hash, response_evidence_hash=resp_hash,
         )
 
     all_trials = [*base_trials, *pert_trials]

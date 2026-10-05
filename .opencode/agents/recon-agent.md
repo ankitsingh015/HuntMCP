@@ -77,6 +77,39 @@ references (route params like ":id"/"{id}" already pulled out), catching
 routes that never showed up in katana's own crawl because nothing on the
 rendered pages links to them directly.
 
+Check every downloaded JS bundle for an exposed source map too -- a
+strictly richer artifact than the minified bundle alone (full unminified
+source, comments, authorization-design intent, secrets never recoverable
+from the minified text at all). For each downloaded JS file, call
+secrets-mcp `find_source_map_reference(js_file_path)` -- it reports a
+sourceMappingURL to fetch next, the conventional ".map"-appended guess if
+no comment was present, or a note that the map is embedded inline (no
+second fetch needed). If it names a URL, curl it into the same downloads
+directory (still Tier-2/scope-gated) and call secrets-mcp
+`recover_source_map(map_file_path, output_dir)` -- writes every recovered
+source file to output_dir, then run `scan_directory(output_dir)`/
+`extract_endpoints(output_dir)` on that directory too, now over full
+unminified source. A 404 on the guessed ".map" path just means no map is
+exposed -- move on, this is a bonus signal, not a required step.
+
+Detect AI/LLM-backed features and route to prompt-injection testing. A
+platform exposing an LLM-backed feature (document analysis, a chat/
+assistant endpoint, an upload-to-summarize flow) is a first-class indirect-
+prompt-injection surface (OWASP GenAI LLM01) that's easy to under-test if
+nothing flags it -- reported live in an engagement retrospective: such a
+feature was probed for parser attacks (XXE) only, because nothing routed to
+the actual relevant technique. Run crawled page text, downloaded JS
+content, and the endpoint lists above through
+`ai_feature_detection.detect_ai_features(text, source=...)` (mcp-servers/
+ai_feature_detection.py, `python3 -c "import sys;
+sys.path.insert(0,'mcp-servers'); import ai_feature_detection"` via bash)
+-- matches chat/assistant/completions-shaped endpoint paths, AI-powered-
+feature phrasing, known LLM-vendor SDK references, and upload-to-LLM flow
+phrasing. If `ai_feature_detection.summarize_signals` reports
+`has_ai_feature: true`, load Skill `emerging-surfaces` and note the
+detected endpoint/feature in your findings to HuntBrain so the prompt-
+injection pass (bounded, own test data only) actually gets run on it.
+
 Before touching any host, run `scripts/check-scope.sh <host>` via bash. If it
 exits non-zero, stop on that host and report the block to HuntBrain — never
 work around it. This is a cheap local check (no LLM call), safe to run per
