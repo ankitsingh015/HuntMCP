@@ -194,6 +194,7 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
         "dialog_fired": False, "dialog_text": None,
         "title_contains_marker": False, "raw_html_contains_marker": False,
         "console_errors": [], "error": None,
+        "status": None, "final_url": None,
     }
 
     async with async_playwright() as p:
@@ -213,6 +214,9 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
 
             try:
                 response = await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+                if response is not None:
+                    result["status"] = response.status
+                    result["final_url"] = response.url
                 await page.wait_for_timeout(wait_ms)
                 result["raw_html_contains_marker"] = marker in (await response.text() if response else "")
             except Exception:
@@ -325,12 +329,16 @@ async def extract_page_content(url: str, wait_selector: str | None = None,
     start = time.monotonic()
     from playwright.async_api import async_playwright
 
-    result = {"url": url, "title": None, "text": None, "links": [], "error": None}
+    result = {"url": url, "title": None, "text": None, "links": [], "error": None,
+              "status": None, "final_url": None}
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
             context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file)
-            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            response = await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            if response is not None:
+                result["status"] = response.status
+                result["final_url"] = response.url
             if wait_selector:
                 await page.wait_for_selector(wait_selector, timeout=timeout_ms)
             result["title"] = await page.title()
@@ -369,7 +377,8 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
     from playwright.async_api import async_playwright
 
     result = {"url": url, "submitted": False, "dialog_fired": False,
-              "dialog_text": None, "title_after_submit": None, "error": None}
+              "dialog_text": None, "title_after_submit": None, "error": None,
+              "status": None, "final_url": None}
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
@@ -383,7 +392,19 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
                 await dialog.dismiss()
 
             page.on("dialog", _on_dialog)
-            await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            # Captures the INITIAL (GET) navigation's response only -- the
+            # click()-triggered submit below may itself navigate (a real
+            # POST), but Playwright's click() doesn't return a Response the
+            # way goto() does; getting that second response would need
+            # page.expect_navigation() wrapping the click, deliberately not
+            # added here (this tool's own evidence is "the form was
+            # submitted and what happened after", not a second wire-level
+            # request/response pair -- see IMPLEMENTATION-TASK-TRACKER.md's
+            # C1a row).
+            response = await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            if response is not None:
+                result["status"] = response.status
+                result["final_url"] = response.url
 
             for selector, value in field_values.items():
                 await page.fill(selector, value, timeout=timeout_ms)

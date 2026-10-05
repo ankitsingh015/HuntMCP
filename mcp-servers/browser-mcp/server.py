@@ -95,6 +95,13 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
         lines.append("✗ Marker not found in raw HTML, dialog, or title")
     if r["console_errors"]:
         lines.append(f"Console errors ({len(r['console_errors'])}): " + "; ".join(r["console_errors"][:5]))
+    # C1a: same wire-provenance line as render_dom() -- see its own
+    # comment for why this must stay the final line returned.
+    provenance = {
+        "class": "wire", "captured_by": "browser-mcp", "method": "GET",
+        "url": r.get("final_url") or url, "status": r.get("status"),
+    }
+    lines.append(f"\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}")
     return "\n".join(lines)
 
 
@@ -189,6 +196,24 @@ async def extract_page_content(url: str, wait_selector: str = "", max_links: int
         for link in r["links"]:
             label = link["text"] or "(no text)"
             lines.append(f"- {label}: {link['href']}")
+    # C1a: same wire-provenance line as render_dom() -- must stay the
+    # final line. Code-review finding (CONFIRMED): unlike render_dom(),
+    # this function has TWO attacker-controlled regions, not one -- the
+    # quarantined text above, AND the links section just above this
+    # comment (link `text`/`href` are target-controlled and, unlike the
+    # page text, NOT quarantined). A decoy "Provenance (...):"-shaped
+    # line planted in a link's text would land OUTSIDE the quarantine
+    # boundary, unlike render_dom's own decoy. The guarantee that still
+    # holds here is narrower: only that THIS line is always the
+    # structurally LAST one (nothing is ever appended after it), so a
+    # consumer taking the last match is still safe -- see
+    # test_extract_page_content_decoy_in_an_unquarantined_link_is_not_authoritative,
+    # which exercises exactly this (previously untested) vector.
+    provenance = {
+        "class": "wire", "captured_by": "browser-mcp", "method": "GET",
+        "url": r.get("final_url") or url, "status": r.get("status"),
+    }
+    lines.append(f"\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}")
     return "\n".join(lines)
 
 
@@ -223,6 +248,14 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
             lines.append(f"✅ JS DIALOG FIRED containing marker: {r['dialog_text']!r} -- confirmed execution")
         else:
             lines.append("✗ No dialog containing marker fired after submit")
+    # C1a: wire-provenance for the INITIAL (GET) navigation only -- see
+    # browser_confirm.fill_and_submit()'s own comment on why the submit's
+    # own (possibly POST) response isn't captured here too.
+    provenance = {
+        "class": "wire", "captured_by": "browser-mcp", "method": "GET",
+        "url": r.get("final_url") or url, "status": r.get("status"),
+    }
+    lines.append(f"\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}")
     return "\n".join(lines)
 
 
