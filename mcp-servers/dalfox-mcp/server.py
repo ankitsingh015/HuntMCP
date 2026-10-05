@@ -4,6 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import job_runtime  # noqa: E402
+from injection_boundary import quarantine as _quarantine
 
 from mcp.server.fastmcp import FastMCP
 
@@ -53,7 +54,12 @@ def _format_findings(label: str, stdout: str, returncode: int, stderr: str, verb
             lines.append(f"    Parameter: {f['param']}")
             lines.append(f"    Payload:   {f['payload'][:120]}")
             if f["evidence"]:
-                lines.append(f"    Evidence:  {f['evidence'][:120]}")
+                # P2-INJ (UU-7): evidence is the response SNIPPET dalfox
+                # extracted to prove the payload reflected -- fully
+                # target-controlled free text, unlike payload (dalfox's
+                # own generated probe string). Quarantine it, same as
+                # oob-mcp's raw-request/raw-response fields.
+                lines.append(f"    Evidence:  {_quarantine(f['evidence'][:120], source_label='dalfox evidence')}")
             lines.append("")
         return "\n".join(lines)
 
