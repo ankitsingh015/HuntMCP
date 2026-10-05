@@ -64,6 +64,7 @@ sys.path.insert(0, __file__.rsplit("/", 2)[0])
 import bounty_scope
 import db
 import disclosure_lookup
+from injection_boundary import quarantine as _quarantine
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("target-discovery-mcp")
@@ -144,11 +145,18 @@ def check_security_txt(domain: str) -> str:
             problems.append(f"Expires {expires} is in the past -- do not trust this file")
 
     status = "VALID" if not problems else "INVALID/STALE"
+    # P2-INJ (UU-7): _parse() is a bare "key: value" line reader with no
+    # value-shape validation -- despite RFC 9116 expecting Contact/Policy
+    # to be a mailto:/https: URI and Expires an ISO date, nothing enforces
+    # that, so a hostile domain's security.txt can put arbitrary free text
+    # after any field name. Quarantine the DISPLAYED copy of each (the raw
+    # `expires` string itself, used above by _is_expired(), is untouched).
+    contact_display = ', '.join(contacts)
     lines = [
         f"security.txt found at {source} -- {status}",
-        f"  Contact: {', '.join(contacts) or '(none)'}",
-        f"  Policy: {policy or '(none)'}",
-        f"  Expires: {expires or '(none)'}",
+        f"  Contact: {_quarantine(contact_display, source_label='security.txt Contact field') if contact_display else '(none)'}",
+        f"  Policy: {_quarantine(policy, source_label='security.txt Policy field') if policy else '(none)'}",
+        f"  Expires: {_quarantine(expires, source_label='security.txt Expires field') if expires else '(none)'}",
     ]
     if problems:
         lines.append("  Problems: " + "; ".join(problems))
@@ -203,9 +211,17 @@ def list_candidates(validated_only: bool = True) -> str:
     lines = [f"{len(rows)} candidate target(s):"]
     for r in rows:
         mark = "✓" if r["validated"] else "✗"
+        # P2-INJ (UU-7): contact/policy_url are stored by add_candidate()
+        # straight from the SAME attacker-controlled security.txt
+        # check_security_txt() already quarantines on direct display --
+        # this is that same data reached through a different tool pair
+        # (store now, display later), so it needs the same quarantine.
+        # domain/notes are caller-supplied, not target-controlled.
+        contact = _quarantine(r['contact'], source_label='security.txt Contact field') if r['contact'] else '(none)'
+        policy = _quarantine(r['policy_url'], source_label='security.txt Policy field') if r['policy_url'] else '(none)'
         lines.append(
-            f"  [{mark}] {r['domain']} -- contact: {r['contact'] or '(none)'} "
-            f"-- policy: {r['policy_url'] or '(none)'} -- notes: {r['notes'] or '(none)'}"
+            f"  [{mark}] {r['domain']} -- contact: {contact} "
+            f"-- policy: {policy} -- notes: {r['notes'] or '(none)'}"
         )
     return "\n".join(lines)
 
