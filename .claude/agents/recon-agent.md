@@ -115,6 +115,44 @@ flags anything abandoned for 30+ minutes).
    links to them directly — a webhook receiver, an internal/admin path,
    a route only ever called from inside the JS itself.
 
+6. **Check every downloaded JS bundle for an exposed source map** — a
+   strictly richer artifact than the minified bundle alone (full unminified
+   source, comments, authorization-design intent, secrets that were never
+   recoverable from the minified text at all). For each downloaded JS file,
+   call `mcp__secrets-mcp` `find_source_map_reference(js_file_path)` — it
+   reports either a `sourceMappingURL` to fetch next, the conventional
+   `.map`-appended guess if no comment was present, or a note that the map
+   is embedded inline (no second fetch needed). If it names a URL, `curl`
+   it into the same downloads directory (still Tier-2/scope-gated, same as
+   any curl) and call `mcp__secrets-mcp` `recover_source_map(map_file_path,
+   output_dir)` — writes every recovered source file to `output_dir`, then
+   run `scan_directory(output_dir)`/`extract_endpoints(output_dir)` on that
+   directory too, same as step 5, now over full unminified source instead
+   of the minified bundle. A 404 on the guessed `.map` path just means no
+   map is exposed — move on, this is a bonus signal, not a required step.
+
+7. **Detect AI/LLM-backed features and route to prompt-injection testing.**
+   A platform exposing an LLM-backed feature (document analysis, a
+   chat/assistant endpoint, an upload-to-summarize flow) is a first-class
+   indirect-prompt-injection surface (OWASP GenAI LLM01) that's easy to
+   under-test if nothing flags it — reported live in an engagement
+   retrospective: such a feature was probed for parser attacks (XXE) only,
+   because nothing routed to the actual relevant technique. Run crawled page
+   text, downloaded JS content, and the endpoint lists from steps 5/6
+   through `python3 -c "import sys; sys.path.insert(0,'mcp-servers'); import
+   ai_feature_detection, json, sys as s; text=open(s.argv[1]).read();
+   print(json.dumps(ai_feature_detection.detect_ai_features(text,
+   source=s.argv[1])))" <file>` (or call it directly from a short Python
+   snippet if inspecting multiple files) — matches chat/assistant/
+   completions-shaped endpoint paths, AI-powered-feature phrasing, known
+   LLM-vendor SDK references (OpenAI/Anthropic/Bedrock/etc.), and
+   upload-to-LLM flow phrasing. If `ai_feature_detection.summarize_signals`
+   reports `has_ai_feature: true`, load `Skill` `emerging-surfaces` and note
+   the detected endpoint/feature in your findings to HuntBrain so the
+   prompt-injection pass (bounded, using only your own test data — never
+   real user data) actually gets run on it, not skipped in favor of only
+   parser-level checks.
+
    katana's crawl gives you URLs/params, not what's actually on a page --
    for a specific page worth reading in full (a listing/directory page, an
    API-docs page, anything JS-rendered where a static fetch would come back

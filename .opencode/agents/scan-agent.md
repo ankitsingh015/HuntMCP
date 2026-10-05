@@ -38,6 +38,26 @@ Before touching any host, run `scripts/check-scope.sh <host>` via bash. If it
 exits non-zero, stop and skip that host — report the block to HuntBrain,
 never test it anyway.
 
+## Before your first bulk scanner call — check the engagement's scan policy
+
+Some programs prohibit or cap automated/bulk scanning -- reported live in an
+engagement retrospective: without a machine-readable signal, this required
+the orchestrator to notice the conflict and manually rewrite your task into
+a bounded/hand-picked check. Before the FIRST nuclei-mcp/sqlmap-mcp/
+dalfox-mcp/ffuf-mcp start call, run `python3 -c "import sys;
+sys.path.insert(0,'mcp-servers'); import scan_policy, json;
+print(json.dumps(scan_policy.load_scan_policy()))"` via bash. If
+`scan_policy` comes back "manual", do not run any bulk/template scanner at
+all -- fall back to a bounded, hand-picked check against the specific
+paths/params already named, and say so in your return to HuntBrain. If it's
+"bounded", keep your own running bulk-scanner call count under
+`scanner_volume_cap` and switch to the hand-picked fallback once you'd
+exceed it. If the result instead has an "error" key (PyYAML unavailable in
+this bash environment -- genuinely can't determine the policy, not the same
+as "no restriction"), treat it the same as "manual": fall back to the
+hand-picked check and tell HuntBrain why. "full" (or the field simply absent -- the default) means no
+restriction, current behavior.
+
 ## Every scan tool below runs in the background — start, then poll
 
 nuclei-mcp/sqlmap-mcp/dalfox-mcp/ffuf-mcp no longer return findings directly

@@ -22,6 +22,20 @@ harness for it. Both read/write the same `mcp-servers/`, `knowledge/`,
 **This is the whole safety model. Do not skip it, and do not repeat it
 unnecessarily — it happens ONCE per engagement, not before every tool call.**
 
+0. MCP connectivity smoke check, once per session before anything else:
+   `python3 -c "import sys; sys.path.insert(0,'mcp-servers'); import
+   mcp_connectivity, subprocess; r=subprocess.run(['opencode','mcp','list'],
+   capture_output=True, text=True, timeout=30);
+   print(mcp_connectivity.summarize_for_agent_context
+   (mcp_connectivity.parse_mcp_list_output(r.stdout)) if r.returncode==0
+   else 'could not run opencode mcp list')"` via Bash. Reported live in an
+   engagement retrospective: one MCP integration was configured but failed
+   to connect for an entire session, "only visible via host-level
+   connection diagnostics, not communicated to the agent" — any specialist
+   relying on it silently lost that capability the whole run, discovered
+   only after the fact. If this reports any server NOT connected, tell the
+   user immediately (before Phase 1) rather than discovering the gap
+   mid-engagement when a specialist's tool call unexpectedly fails.
 1. Parse optional flags from the user's request first: `--quick` (recon +
    nuclei only, skip chaining) or `--deep` (full depth — recon-agent and
    scan-agent both read this flag directly, e.g. wider port ranges and
@@ -114,7 +128,15 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    without needing `rm` at all. If instead the user is resuming a hunt on
    this target that was paused earlier, do NOT reset these — switching the
    pointer back to it (step above) already restores its state exactly as
-   it was left.
+   it was left. Either way, check for a close-out record from a PRIOR
+   completed engagement on this same target: `python3 -c "import sys;
+   sys.path.insert(0,'mcp-servers'); import close_out, json;
+   r=close_out.load_close_out(); print(json.dumps(r) if r else 'none')"`
+   via Bash. If one exists, skim its `refuted_hypotheses` before
+   delegating to recon/scan — call `close_out.was_already_refuted(text,
+   loaded)` on a candidate lead before spending budget re-testing it;
+   preserves the WHY behind a prior negative result instead of
+   re-deriving it from scratch (see Phase 6 step 18).
 4. From this point on, every Tier-2 agent you spawn (recon-agent,
    scan-agent, exploit-agent) enforces scope itself via
    `scripts/check-scope.sh <host>` before touching a target — a cheap local
@@ -258,6 +280,34 @@ never being the only place data lives:
     exactly the moment it matters most, since your own tool scope
     deliberately excludes those MCPs. Pass the credential to exploit-agent
     in its spawn prompt instead and let it drive the authenticated testing.
+    If a `session_file` (browser-mcp's saved storage-state path) already
+    captures the login, prefer passing THAT path over the raw cookie/
+    bearer value where the target tool accepts it — a reference the
+    subagent can load, not the literal secret duplicated a second time in
+    your own spawn-prompt text.
+
+    **When you first receive the credential**, classify what you actually
+    got before assuming it's usable: `python3 -c "import sys;
+    sys.path.insert(0,'mcp-servers'); import credential_lifecycle, json;
+    print(json.dumps(credential_lifecycle.classify_artifact(sys.argv[1])))"
+    "<pasted artifact>"` — reported live in an engagement retrospective:
+    three separate round-trips (cookies, then a CORS preflight response,
+    then finally the right bearer token) happened because nothing
+    classified the artifact type early. If it comes back
+    `preflight_insufficient` or `unknown`, ask the user for the right
+    artifact immediately instead of trying it against a header-auth API
+    first. Record the intake (`credential_lifecycle.record_intake
+    (artifact_type, "<how it was obtained, e.g. 'pasted from browser
+    devtools'>")`) — metadata only, never the raw value (see the module's
+    own docstring). Once exploit-agent starts using it, watch its request
+    outcomes for `credential_lifecycle.check_expiry_signal(recent_
+    statuses)` — three-in-a-row 401/403 after earlier requests succeeded
+    means the credential likely expired or was revoked mid-engagement, not
+    that the surface suddenly became unreachable; tell the user rather
+    than retrying. When the credential is no longer needed, surface
+    `credential_lifecycle.revocation_reminder(artifact_type)` to the user
+    — the revocation-advice habit prior engagements found worked well,
+    made consistent instead of ad-hoc phrasing each time.
 
 ## Phase 5 — Report
 
@@ -277,10 +327,25 @@ never being the only place data lives:
     findings directly, so this is only needed if something in the case
     store — root-cause groupings, a hypothesis's rejection reasoning — is
     relevant to the writeup and wasn't already passed along).
-18. `mcp__lessons-mcp` `check_size()` — if over the ~400-line cap, do the
+18. Build and save a close-out record: `python3 -c "import sys;
+    sys.path.insert(0,'mcp-servers'); import close_out;
+    r=close_out.build_close_out(); close_out.save_close_out(r) if 'error'
+    not in r else None"` via Bash. Preserves the actual WHY behind this
+    engagement's negative results (every REFUTED hypothesis's own
+    observation/reasoning) plus a coverage summary, structurally instead of
+    only in this chat's own free-form summary — reported live in an
+    engagement retrospective: without this, "no finding" loses its WHY, and
+    a later engagement re-derives the same negative result from scratch. A
+    future chat on this same target can load it
+    (`close_out.load_close_out()`) and check `close_out.was_already_refuted
+    (text, loaded)` before re-testing a path this engagement already ruled
+    out. Skip silently if `build_close_out()` returns an error (no case.db —
+    nothing to close out, e.g. an engagement that never created a
+    hypothesis/finding).
+19. `mcp__lessons-mcp` `check_size()` — if over the ~400-line cap, do the
     archive-rotation pass (move oldest/duplicate entries to
     `chat-logs/lessons-archive-<YYYY>.md`) before ending the engagement.
-19. If a technique had no matching MCP tool during this engagement, run
+20. If a technique had no matching MCP tool during this engagement, run
     `scripts/tool-gaps.sh record "<technique>" "<what you were trying to
     do, on this target>" ["<suggested tool/skill name>"]` — this is what
     "note it" actually means now, not just a mental note that gets lost.
@@ -297,7 +362,7 @@ never being the only place data lives:
     with `mcp-servers/content_scanner.py` before being trusted, same as
     any other new content (see "Self-expanding toolkit" in ARCHITECTURE.md
     for the full design rationale).
-20. Run `scripts/switch-engagement.sh complete <target>` — marks this
+21. Run `scripts/switch-engagement.sh complete <target>` — marks this
     target's engagement complete so a future chat starting a different
     target won't get an unnecessary "still mid-hunt" warning from `check`
     (see "Multi-target hunting" above). Always pass `<target>` explicitly
@@ -306,7 +371,7 @@ never being the only place data lives:
     switched the shared pointer. Only run this once the engagement is
     genuinely done, not after a partial/interrupted run you intend to
     resume later.
-21. Summarize results to the user: what was found, severity, attack
+22. Summarize results to the user: what was found, severity, attack
     chains, and report location.
 
 ## Commands

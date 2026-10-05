@@ -14,17 +14,20 @@ downloaded-JS directory, one for what the app talks to, one for what
 secrets it's leaking while doing it.
 """
 
+import base64
 import json
 import os
 import re
 import shutil
 import sys
 import tempfile
+import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from tool_resolver import run_tool  # noqa: E402
 
 import js_endpoints
+import source_map
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("secrets-mcp")
@@ -155,6 +158,90 @@ def extract_endpoints(path: str, max_results: int = 500) -> str:
         source_note = sources[0] if len(sources) == 1 else f"{sources[0]} +{len(sources) - 1} more"
         lines.append(f"  {endpoint}{param_note} -- {source_note}")
     return "\n".join(lines)
+
+
+@app.tool()
+def find_source_map_reference(js_file_path: str) -> str:
+    """Check an already-downloaded JS bundle (e.g. recon-agent's own
+    curl'd file under data/engagements/<slug>/downloads/) for a
+    sourceMappingURL comment. Returns the fetchable URL/filename to curl
+    next, the conventional ".map"-appended guess if no comment was found
+    at all, or a note that the map is embedded inline (data: URI, no
+    second fetch needed -- pass the JS file itself to recover_source_map()
+    instead). Not a live-target action -- reads the already-downloaded
+    file, same contract as scan_directory()/extract_endpoints() above;
+    fetching the map file itself is an ordinary curl call, already
+    Tier-2 scope-gated."""
+    if not os.path.isfile(js_file_path):
+        return f"Error: {js_file_path!r} is not a file."
+    with open(js_file_path, errors="replace") as f:
+        text = f.read()
+
+    inline = source_map.find_inline_data_uri_map(text)
+    if inline is not None:
+        return (
+            "Source map is embedded INLINE (data: URI) in this file itself -- "
+            f"no second fetch needed. Pass {js_file_path!r} directly to "
+            "recover_source_map()."
+        )
+
+    found = source_map.find_source_mapping_url(text)
+    if found is not None:
+        return f"sourceMappingURL found: {found}"
+
+    return (
+        "No sourceMappingURL comment found. Conventional guess (verify by "
+        f"fetching, may 404): {js_file_path}.map"
+    )
+
+
+@app.tool()
+def recover_source_map(map_file_path: str, output_dir: str) -> str:
+    """Parse an already-downloaded .map file (or a JS file carrying an
+    inline data: URI map, per find_source_map_reference()'s own note) and
+    write every recovered source file under output_dir -- then run
+    scan_directory()/extract_endpoints() on THAT directory to get the
+    same secret/endpoint scanning this file already provides, over the
+    full unminified source instead of the minified bundle alone. Not a
+    live-target action -- operates on an already-downloaded file, same
+    contract as every other tool in this file. Every recovered path is
+    confirmed to resolve inside output_dir before writing (source_map.py's
+    own path-confinement check) -- a source map's own "sources" array is
+    attacker-influenced content the target served, never trusted as a
+    literal filesystem path."""
+    if not os.path.isfile(map_file_path):
+        return f"Error: {map_file_path!r} is not a file."
+    with open(map_file_path, errors="replace") as f:
+        raw = f.read()
+
+    # Accept either a real .map file's raw JSON, or a JS file whose
+    # sourceMappingURL comment held an inline data: URI -- decode that
+    # case down to the same raw JSON parse_source_map() expects.
+    inline = source_map.find_inline_data_uri_map(raw)
+    if inline is not None:
+        header, _, encoded = inline.partition(",")
+        try:
+            # Code-review finding #8: a data: URI's non-base64 form (no
+            # `;base64` token in the header, per RFC 2397) is
+            # PERCENT-encoded, not raw JSON -- using `encoded` directly
+            # silently lost every inline map that wasn't base64.
+            raw = (base64.b64decode(encoded).decode(errors="replace")
+                   if ";base64" in header else urllib.parse.unquote(encoded))
+        except (ValueError, TypeError) as e:
+            return f"Error: could not decode inline data: URI map: {e}"
+
+    parsed = source_map.parse_source_map(raw)
+    if "error" in parsed:
+        return f"Error: {parsed['error']}"
+    if not parsed["recovered"]:
+        return "Source map parsed, but sourcesContent had nothing recoverable."
+
+    written = source_map.write_recovered_sources(parsed, output_dir)
+    return (
+        f"Recovered {len(written)} source file(s) to {output_dir!r}. "
+        f"Run scan_directory({output_dir!r}) and extract_endpoints({output_dir!r}) "
+        "next for secrets/endpoints over the full unminified source."
+    )
 
 
 if __name__ == "__main__":

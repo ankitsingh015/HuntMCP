@@ -1,0 +1,8 @@
+# websockets: a genuine NEW project dependency -- explicitly authorized by
+# the user in-session (not a silent addition) after confirming Python's
+# stdlib has no WebSocket client and this repo had no existing one to
+# reuse. Per mcp-servers/CLAUDE.md's "any new dependency requires explicit
+# task authorization." See ws_rpc.py's own module docstring for the full
+# rationale.
+mcp>=1.0.0,<2.0.0
+websockets==13.1

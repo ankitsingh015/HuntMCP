@@ -12,3 +12,14 @@ out_of_scope:
 program_url: https://hackerone.com/example-program
 authorized_on: "2026-08-22"
 notes: "1 req/s per host default; no DoS; no social engineering"
+# Optional. Machine-readable scan policy, consumed by scan-agent before
+# bulk/template-based scanner calls (mcp-servers/scan_policy.py) -- a
+# program that prohibits or caps automated scanning should set this
+# instead of (or in addition to) a free-text note above, so scan-agent
+# itself respects it rather than relying on the orchestrator to notice
+# and manually re-scope the scan task.
+#   full    (default if omitted) -- no restriction, current behavior.
+#   bounded -- bulk scanning allowed up to scanner_volume_cap calls.
+#   manual  -- no bulk automated scanning; hand-picked checks only.
+# scan_policy: full
+# scanner_volume_cap: 50   # only meaningful when scan_policy is "bounded"

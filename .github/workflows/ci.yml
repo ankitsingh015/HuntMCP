@@ -85,8 +85,13 @@ jobs:
         # boto3/botocore (unlike Playwright/chromadb elsewhere in this repo)
         # are pure-Python, no browser download or system deps -- cheap enough
         # to include here so aws-postexploit-mcp gets real botocore.stub.Stubber
-        # coverage instead of falling back to live-verified-only.
-        run: pip install --no-cache-dir pytest pyyaml "mcp>=1.0.0,<2.0.0" boto3
+        # coverage instead of falling back to live-verified-only. websockets
+        # (pinned to the exact version in mcp-servers/ws-rpc-mcp/
+        # requirements.txt) is the same category -- pure-Python, no system
+        # deps -- needed for test_ws_rpc.py/test_ws_rpc_mcp_server.py's real
+        # loopback-server tests, same "install here, not just documented in
+        # the per-server requirements.txt" pattern as boto3.
+        run: pip install --no-cache-dir pytest pyyaml "mcp>=1.0.0,<2.0.0" boto3 websockets==13.1
 
       # S5-follow-up (code review, 2026-09-18): without this, every test
       # gated on templates_pin.templates_available() -- notably

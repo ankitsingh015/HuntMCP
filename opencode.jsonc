@@ -62,7 +62,8 @@
     "aws-postexploit-mcp*": false,
     "gcp-postexploit-mcp*": false,
     "local-privesc-mcp*": false,
-    "ad-recon-mcp*": false
+    "ad-recon-mcp*": false,
+    "ws-rpc-mcp*": false
   },
   "mcp": {
     "writeup-mcp": {
@@ -194,6 +195,11 @@
       "type": "local",
       "enabled": true,
       "command": ["./scripts/venv-python.sh", "mcp-servers/idor-mcp/server.py"]
+    },
+    "ws-rpc-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": ["./scripts/venv-python.sh", "mcp-servers/ws-rpc-mcp/server.py"]
     },
     "azure-postexploit-mcp": {
       "type": "local",
