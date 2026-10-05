@@ -137,7 +137,13 @@ def check_scan(job_id: str) -> str:
     if result["status"] == "timeout":
         return result["error"]
     formatted = _format_findings(label, result["stdout"], result["returncode"], result["stderr"], verbose)
-    return job_runtime.block_prefix(result) + formatted
+    # C1a: invocation-level provenance -- "which tool ran, against what"
+    # is honestly claimable even though the real HTTP exchange happened
+    # inside dalfox's own process. `label` is the same value already
+    # shown in this tool's own findings header (the full url for
+    # scan_url, just the parameter name for scan_parameter).
+    provenance = {"class": "invocation", "tool": "dalfox", "target": label}
+    return f"{job_runtime.block_prefix(result)}{formatted}\n\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}"
 
 
 @app.tool()
