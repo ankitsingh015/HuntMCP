@@ -442,6 +442,48 @@ def test_main_blocks_out_of_scope_target(monkeypatch, tmp_path):
     assert _run_main(monkeypatch, payload) == 2
 
 
+# C1a: fetch_with_provenance is case-mcp's third TIER2_MCP_TOOLS entry
+# (alongside determinism_gate/run_counterfactual) -- unlike those two, its
+# own `url` arg IS the exact URL it fetches (no base_request indirection),
+# so this hook's early-filter check on it is a real pre-check, not just a
+# label. These three tests prove the mixed-server dispatch (TIER2_MCP_TOOLS)
+# actually gates it, and that it did NOT accidentally widen the gate to
+# every tool on case-mcp.
+
+def test_main_blocks_fetch_with_provenance_out_of_scope_url(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "mcp__case-mcp__fetch_with_provenance",
+               "tool_input": {"finding_id": 1, "url": "https://someothersite.com/x"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_allows_fetch_with_provenance_in_scope_url(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "mcp__case-mcp__fetch_with_provenance",
+               "tool_input": {"finding_id": 1, "url": "https://realtarget-corp.com/x"}}
+    assert _run_main(monkeypatch, payload) == 0
+
+
+def test_main_does_not_gate_other_case_mcp_tools(monkeypatch, tmp_path):
+    """add_evidence() is a purely local write (no real request) -- the
+    mixed-server mechanism must leave it ungated even though it happens to
+    take string args, same as log_experiment()/check_experiment_exists()
+    already relied on before fetch_with_provenance existed."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "mcp__case-mcp__add_evidence",
+               "tool_input": {"type": "request", "content": "x", "finding_id": 1}}
+    assert _run_main(monkeypatch, payload) == 0
+
+
 # S-GATE adversarial-regression finding (CONFIRMED, 4 independent
 # verification passes, 9/10 confidence each -- see IMPLEMENTATION-TASK-
 # TRACKER.md's S-GATE row): _extract_hosts_from_bash() used to gate Tier-2

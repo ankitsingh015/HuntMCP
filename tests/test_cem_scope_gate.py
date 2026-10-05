@@ -87,8 +87,11 @@ def test_case_mcp_is_not_whole_server_tier2():
 
 
 def test_case_mcp_network_tools_are_declared_at_tool_level():
+    # C1a: fetch_with_provenance (curl/tool_resolver wire-provenance
+    # source) joined determinism_gate/run_counterfactual as a third real
+    # case-mcp network tool.
     assert hook.TIER2_MCP_TOOLS["case-mcp"] == frozenset(
-        {"determinism_gate", "run_counterfactual"})
+        {"determinism_gate", "run_counterfactual", "fetch_with_provenance"})
 
 
 def test_mcp_tool_name_parsing():

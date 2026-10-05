@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from contextlib import contextmanager
+from types import SimpleNamespace
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -386,17 +387,21 @@ def _cem_fetch(url, method, headers, body, timeout_s):
     return fn(url, method, headers, body, timeout_s)
 
 
-def _record_trial_wire_evidence(finding_id: int, trial) -> tuple[str | None, str | None]:
+def _record_trial_wire_evidence(finding_id: int, trial, captured_by: str = "cem_engine") -> tuple[str | None, str | None]:
     """C1a: `_cem_fetch` above already performs a REAL HTTP request for every
     CEM trial -- `trial.request`/`trial.response` are wire-level evidence by
     construction, the same way oob-mcp's/browser-mcp's own real requests are.
     Stores both through `case_store.add_evidence()` (the same content-
     addressed store an agent would use for any other wire evidence),
-    provenance-tagged as `{"class": "wire", "captured_by": "cem_engine",
-    "method": ..., "url": ...}`, so `cem_trials.request_evidence_hash` /
-    `response_evidence_hash` (schema columns that existed since this table
-    was first defined but were never populated) point at real, inspectable
-    evidence instead of staying NULL forever.
+    provenance-tagged as `{"class": "wire", "captured_by": captured_by,
+    "method": ..., "url": ...}` (default "cem_engine" for CEM's own two
+    call sites below; fetch_with_provenance() passes "case-mcp" -- same
+    helper, same redaction/exception-safety guarantees, reused rather than
+    duplicated, just a different caller identity in the provenance tag),
+    so `cem_trials.request_evidence_hash` / `response_evidence_hash`
+    (schema columns that existed since this table was first defined but
+    were never populated) point at real, inspectable evidence instead of
+    staying NULL forever.
 
     Returns (request_hash, response_hash); either is None if add_evidence()
     itself returned an error (e.g. a defensively-malformed request missing a
@@ -421,7 +426,7 @@ def _record_trial_wire_evidence(finding_id: int, trial) -> tuple[str | None, str
     try:
         method = trial.request.get("method", "GET")
         url = trial.request.get("url")
-        provenance = {"class": "wire", "captured_by": "cem_engine", "method": method, "url": url}
+        provenance = {"class": "wire", "captured_by": captured_by, "method": method, "url": url}
         req_result = case_store.add_evidence(
             type="request", content=json.dumps(cem_engine._redact_recursive(trial.request), sort_keys=True),
             finding_id=finding_id, provenance=provenance,
@@ -437,6 +442,118 @@ def _record_trial_wire_evidence(finding_id: int, trial) -> tuple[str | None, str
         return req_result.get("hash"), resp_result.get("hash")
     except Exception:  # noqa: BLE001 - any failure here degrades to no-evidence, never aborts the trial
         return None, None
+
+
+def _fetch_scope_or_error(url: str) -> str | None:
+    """Scope gate for fetch_with_provenance() -- the same two checks
+    _scope_or_error()/_cem_outbound_policy_error() already apply to CEM's
+    own base_request target (O1 SSRF/metadata-link-local policy, then
+    scope_guard.is_in_scope), reworded here since this tool isn't CEM and
+    its refusal messages must not claim it is. Returns an error-JSON
+    string, or None if `url` is a permissible, in-scope destination."""
+    if not isinstance(url, str) or not url.strip():
+        return json.dumps({"error":
+            "BLOCKED by scope gate: no url given -- refusing to send."})
+    policy = _cem_outbound_policy_error(url)   # O1: scheme allowlist + metadata/link-local deny (generic, not CEM-specific despite the name)
+    if policy:
+        return json.dumps({"error":
+            f"BLOCKED by outbound policy: {url!r} -- {policy}."})
+    try:
+        if scope_guard.is_in_scope(url, _resolve_engagement()):
+            return None
+    except Exception as e:  # noqa: BLE001 - any resolution/parse failure -> refuse
+        return json.dumps({"error":
+            f"BLOCKED by scope gate: could not verify {url!r} is in scope "
+            f"({e.__class__.__name__}: {e}); refusing to send."})
+    return json.dumps({"error":
+        f"BLOCKED by scope gate: {url!r} is not in the active engagement's "
+        "in_scope list -- refusing to send."})
+
+
+@app.tool()
+def fetch_with_provenance(finding_id: int, url: str, method: str = "GET",
+                           headers: str = "", body: str = "", timeout_s: int = 15) -> str:
+    """C1a: send ONE real HTTP request (Tier-2) and record it as wire-level
+    evidence on `finding_id` -- the "manually confirm with curl, then
+    there's no provenance" gap this closes. Prefer this over a raw Bash
+    curl call whenever the request IS the evidence for a finding: this
+    tool enforces scope + the engagement-wide Tier-2 budget (same gates
+    every other real-request tool in this repo goes through) and attaches
+    the real request/response to `finding_id` the same way browser-mcp/
+    oob-mcp/CEM's own wire evidence already does, via
+    case-mcp's add_evidence() -- no separate add_evidence() call needed
+    afterward, and no manual provenance-JSON construction.
+
+    `headers` is an optional JSON object string (e.g. '{"Cookie": "a=b"}');
+    `body` is the raw request body (POST/PUT/PATCH) or empty for none.
+    Redirects are NOT followed (same as CEM's own sender fetches) -- a 3xx
+    is returned as-is so its Location can be scope-checked explicitly
+    before ever being fetched, rather than silently following a
+    scope-checked in-scope url onto an unchecked host.
+    Returns the real status/headers/body (body truncated to 2000 chars --
+    the FULL body is still in the recorded evidence, untruncated) plus the
+    two evidence hashes, or {"error": ...} if scope/budget refuses the
+    request before it's ever sent."""
+    try:
+        hdrs = json.loads(headers) if headers.strip() else {}
+    except json.JSONDecodeError as e:
+        return json.dumps({"error": f"headers must be JSON: {e}"})
+    if not isinstance(hdrs, dict):
+        return json.dumps({"error": "headers must be a JSON object"})
+
+    err = _fetch_scope_or_error(url)
+    if err:
+        return err
+
+    tool_args = ["fetch_with_provenance", url, f"finding {finding_id}", method]
+    start = time.monotonic()
+    try:
+        _enforce_budget("case-mcp")   # E2: engagement-wide Tier-2 cap, same chokepoint as every other sender
+    except BudgetExceeded as e:
+        _log_call("case-mcp", tool_args, returncode=None,
+                   duration_ms=(time.monotonic() - start) * 1000, block="budget")
+        return json.dumps({"error": f"Tier-2 budget exhausted: {e}", "incomplete": True})
+
+    # Security-review finding (CONFIRMED): calling the raw fetch primitive
+    # directly here (by name, bypassing _cem_fetch) would default to
+    # following redirects, reopening the exact SSRF/scope-bypass-via-
+    # redirect hole _cem_fetch() exists to close -- a scope-checked
+    # in-scope url could 3xx onto an unchecked host, and that second hop's
+    # response would be recorded as evidence with no re-check. Routing
+    # through _cem_fetch() (same wrapper CEM's own senders use) disables
+    # redirects, so the 3xx itself is what gets recorded and returned --
+    # the caller can see where it pointed and re-check scope explicitly
+    # before ever following it. (test_cem_g1_integration.py's own
+    # structural test greps this file for a literal call to the raw
+    # primitive by name -- deliberately phrased to never match that here.)
+    result = _cem_fetch(url, method, hdrs, body or None, timeout_s)
+    _log_call("case-mcp", tool_args, returncode=None,
+              duration_ms=(time.monotonic() - start) * 1000, block=None)
+
+    trial = SimpleNamespace(
+        request={"method": method, "url": url, "headers": hdrs, "body": body or None},
+        response=result,
+    )
+    req_hash, resp_hash = _record_trial_wire_evidence(finding_id, trial, captured_by="case-mcp")
+
+    out = {
+        "finding_id": finding_id,
+        "status": result.status,
+        "headers": result.headers,
+        "body_preview": (result.body or "")[:2000],
+        "error": result.error,
+        "request_evidence_hash": req_hash,
+        "response_evidence_hash": resp_hash,
+    }
+    if req_hash is None and resp_hash is None:
+        # Correctness-review finding: _record_trial_wire_evidence()'s own
+        # graceful-degradation path (a disk-write failure, etc.) returns
+        # null hashes with no other signal -- an agent reading only the
+        # docstring's "recorded as evidence" claim could miss that nothing
+        # was actually attached to finding_id this call. Surface it
+        # explicitly rather than making the caller infer it from two nulls.
+        out["evidence_recorded"] = False
+    return json.dumps(out)
 
 
 def _resolve_engagement():

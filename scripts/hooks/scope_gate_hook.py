@@ -155,15 +155,24 @@ TIER2_MCP_SERVERS = {
 # destination and blocked. A future mixed server adds one entry here; the
 # whole-server TIER2_MCP_SERVERS path is unchanged for every server on it.
 #
-# IMPORTANT -- for case-mcp's two senders this hook's host extraction from
-# their `url` arg is only a cheap EARLY FILTER, not the security boundary.
-# The URL cem_engine.run_intervention actually fetches is
+# IMPORTANT -- for case-mcp's two CEM senders this hook's host extraction
+# from their `url` arg is only a cheap EARLY FILTER, not the security
+# boundary. The URL cem_engine.run_intervention actually fetches is
 # meta["base_request"]["url"], which is stored engagement state this hook
 # cannot see without coupling to the CEM schema. The DEFINITIVE, decoupling-
 # proof scope check for those sends lives in mcp-servers/case-mcp/server.py
 # (_scope_or_error, reusing scope_guard) and runs before run_intervention.
+#
+# fetch_with_provenance (C1a: curl/tool_resolver wire-provenance source --
+# real request + case_store evidence in one call, replacing an agent's
+# raw Bash curl for anything that needs to be a finding's evidence) has
+# NO such indirection: its own `url` arg IS the exact URL it fetches, so
+# this hook's check on it is a real pre-check, not just an early-filter
+# label -- same belt-and-suspenders relationship to its own in-code
+# _fetch_scope_or_error() (reusing scope_guard, same as the two senders
+# above) as every whole-server TIER2_MCP_SERVERS entry already has.
 TIER2_MCP_TOOLS: dict[str, frozenset[str]] = {
-    "case-mcp": frozenset({"determinism_gate", "run_counterfactual"}),
+    "case-mcp": frozenset({"determinism_gate", "run_counterfactual", "fetch_with_provenance"}),
 }
 
 HOST_ARG_KEYS = ("domains", "domain", "target", "targets", "url", "host", "hosts")
