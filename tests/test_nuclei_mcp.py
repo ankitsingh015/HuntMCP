@@ -94,7 +94,12 @@ def test_scan_with_templates_no_findings_wording_differs_from_scan_target(monkey
         },
     )
     out = nuclei_server.check_scan("job-tmpl")
-    assert out == "No vulnerabilities found with the specified templates."
+    # C1a: check_scan() now appends an invocation-provenance line after
+    # the wording this test actually cares about -- startswith(), not
+    # exact-equality, so this test stays about the wording, not the
+    # unrelated provenance line (covered by its own dedicated tests in
+    # tests/test_nuclei_mcp_invocation_provenance.py).
+    assert out.startswith("No vulnerabilities found with the specified templates.")
 
 
 def test_check_scan_surfaces_waf_block(monkeypatch):
