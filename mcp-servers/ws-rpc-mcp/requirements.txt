@@ -4,5 +4,17 @@
 # reuse. Per mcp-servers/CLAUDE.md's "any new dependency requires explicit
 # task authorization." See ws_rpc.py's own module docstring for the full
 # rationale.
+#
+# Pin corrected from 13.1 to 16.0 (found during a P2-INJ audit pass,
+# unrelated task): ws_rpc.py's connect() call uses `additional_headers=`,
+# the kwarg name websockets.connect() has used since it moved to the
+# asyncio-native implementation (v14+) -- 13.1 only understands the old
+# `extra_headers=` name and would raise TypeError on every real
+# connection. The actually-installed runtime in this environment was
+# already 16.0 (a declared-vs-installed drift the broken kwarg name had
+# been silently masking -- every real connection failed gracefully into
+# this function's own "connection failed" error path instead of
+# surfacing as a crash), so this pin now matches the version this code
+# is written for and was actually tested against.
 mcp>=1.0.0,<2.0.0
-websockets==13.1
+websockets==16.0
