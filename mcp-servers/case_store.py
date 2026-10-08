@@ -350,6 +350,12 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (finding_id) REFERENCES findings(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS research_manifests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target TEXT NOT NULL,
+            manifest_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
     """)
     # C1a: provenance_json didn't exist before this task -- CREATE TABLE IF
     # NOT EXISTS above only helps a BRAND-NEW case.db; an existing
@@ -806,6 +812,44 @@ def case_export(db_path: str | None = None) -> str:
         }, indent=2)
     finally:
         conn.close()
+
+
+# ---- Research-run manifests (C1b) --------------------------------------------
+# Pure storage: capture logic lives in research_manifest.py (this module stays
+# a thin, dependency-light persistence layer, same separation already used for
+# every other case_store table).
+
+def save_research_manifest(target: str, manifest: dict, db_path: str | None = None) -> dict:
+    conn = _get_conn(db_path)
+    try:
+        cur = conn.execute(
+            "INSERT INTO research_manifests (target, manifest_json) VALUES (?, ?)",
+            (target, json.dumps(manifest)),
+        )
+        conn.commit()
+        return {"id": cur.lastrowid, "target": target}
+    finally:
+        conn.close()
+
+
+def get_latest_research_manifest(target: str, db_path: str | None = None) -> dict | None:
+    conn = _get_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id, target, manifest_json, created_at FROM research_manifests "
+            "WHERE target = ? ORDER BY id DESC LIMIT 1",
+            (target,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "target": row["target"],
+        "manifest": json.loads(row["manifest_json"]),
+        "created_at": row["created_at"],
+    }
 
 
 # ---- CEM (Phase 1) -----------------------------------------------------------
