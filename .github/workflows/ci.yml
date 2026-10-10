@@ -91,7 +91,7 @@ jobs:
         # deps -- needed for test_ws_rpc.py/test_ws_rpc_mcp_server.py's real
         # loopback-server tests, same "install here, not just documented in
         # the per-server requirements.txt" pattern as boto3.
-        run: pip install --no-cache-dir pytest pyyaml "mcp>=1.0.0,<2.0.0" boto3 websockets==13.1
+        run: pip install --no-cache-dir pytest pyyaml "mcp>=1.0.0,<2.0.0" boto3 websockets==16.0
 
       # S5-follow-up (code review, 2026-09-18): without this, every test
       # gated on templates_pin.templates_available() -- notably

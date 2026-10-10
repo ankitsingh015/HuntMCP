@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -55,7 +56,7 @@ def _parse_vulns(output: str, include_type: bool) -> list[str]:
 
 
 def _start(args: list[str], timeout: int, tmpdir: str,
-           no_result_message: str, found_header: str, include_type: bool) -> str:
+           no_result_message: str, found_header: str, include_type: bool, target: str) -> str:
     try:
         # S5 (rootless sandboxing): sqlmap now runs inside an ephemeral
         # container that sees nothing from the host by default -- tmpdir
@@ -76,6 +77,7 @@ def _start(args: list[str], timeout: int, tmpdir: str,
         "no_result_message": no_result_message,
         "found_header": found_header,
         "include_type": include_type,
+        "target": target,
     }
     return (f"Started sqlmap scan (job_id=\"{job_id}\"). "
             f"Poll check_scan(\"{job_id}\") until it reports status=done "
@@ -124,7 +126,7 @@ def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1
         args.extend(["--data", data])
     return _start(args, timeout, tmpdir,
                   f"No injection found at {url} (level={level}, risk={risk}).",
-                  f"sqlmap results for {url}:", include_type=True)
+                  f"sqlmap results for {url}:", include_type=True, target=url)
 
 
 @app.tool()
@@ -147,7 +149,7 @@ def test_with_data(url: str, data: str, method: str = "POST", level: int = 2, ti
     ]
     return _start(args, timeout, tmpdir,
                   "No injection found with the provided data.",
-                  "sqlmap results:", include_type=False)
+                  "sqlmap results:", include_type=False, target=url)
 
 
 @app.tool()
@@ -180,10 +182,17 @@ def check_scan(job_id: str) -> str:
     output = result["stdout"] + result["stderr"]
     vulns = _parse_vulns(output, meta["include_type"])
     if not vulns:
-        return job_runtime.block_prefix(result) + meta["no_result_message"]
-    lines = [meta["found_header"], ""]
-    lines.extend(vulns)
-    return job_runtime.block_prefix(result) + "\n".join(lines)
+        formatted = meta["no_result_message"]
+    else:
+        lines = [meta["found_header"], ""]
+        lines.extend(vulns)
+        formatted = "\n".join(lines)
+    # C1a: invocation-level provenance -- same pattern as nuclei-mcp/
+    # dalfox-mcp's own check_scan(). meta["target"] is the same url
+    # test_injection()/test_with_data() already received as an argument.
+    provenance = {"class": "invocation", "tool": "sqlmap", "target": meta["target"]}
+    return (f"{job_runtime.block_prefix(result)}{formatted}"
+            f"\n\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}")
 
 
 @app.tool()

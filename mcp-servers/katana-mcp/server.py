@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -103,7 +104,16 @@ def check_scan(job_id: str) -> str:
     url = _targets.pop(job_id, None)
     if result["status"] == "timeout":
         return result["error"]
-    return _format_findings(url, result["stdout"], result["returncode"], result["stderr"])
+    formatted = _format_findings(url, result["stdout"], result["returncode"], result["stderr"])
+    # C1a: invocation-level provenance -- crawl_with_filter() passes
+    # url=None to _start() (its own header never names a single url
+    # either, see this file's own comment above), so "target" is
+    # omitted rather than fabricated, same as ffuf-mcp's fuzz_with_data().
+    provenance = {"class": "invocation", "tool": "katana"}
+    if url:
+        provenance["target"] = url
+    return (f"{formatted}"
+            f"\n\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}")
 
 
 @app.tool()

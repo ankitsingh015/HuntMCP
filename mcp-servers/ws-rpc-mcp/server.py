@@ -38,6 +38,7 @@ import ws_rpc
 from audit_log import log_call as _log_call
 from budget_guard import BudgetExceeded
 from budget_guard import enforce as _enforce_budget
+from injection_boundary import quarantine as _quarantine
 from mcp.server.fastmcp import FastMCP
 
 app = FastMCP("ws-rpc-mcp")
@@ -88,14 +89,28 @@ def call_ddp_method(url: str, method: str, params: str = "[]", cookie_header: st
     _log_call("ws-rpc-mcp", [url, method], returncode=None, duration_ms=duration_ms, block=None)
 
     if not result["connected"]:
-        return f"Connect failed: {result['error']}"
+        # P2-INJ (UU-7): result["error"] can be ws_rpc.connect()'s own
+        # f"DDP connect refused: {msg}", which directly embeds the raw
+        # DDP "failed" message the TARGET sent (e.g. an arbitrary
+        # "reason" string) -- fully target-controlled free text reaching
+        # agent-visible output, same class of surface as oob-mcp's raw-
+        # request/raw-response fields. Quarantine it.
+        return f"Connect failed: {_quarantine(result['error'], source_label='DDP connect error')}"
     lines = [f"Connected (session={result['session']!r})", f"Method: {method}({parsed_params})"]
     if result["timed_out"]:
         lines.append("⚠️ TIMED OUT waiting for a result message.")
     elif result["error"]:
-        lines.append(f"DDP error: {json.dumps(result['error'])}")
+        # P2-INJ (UU-7): a DDP-level method error is the target's own
+        # {"error": ..., "reason": ...} payload -- fully target-
+        # controlled, same reasoning as the result branch below.
+        lines.append(f"DDP error: {_quarantine(json.dumps(result['error']), source_label='DDP method error')}")
     else:
-        lines.append(f"Result: {json.dumps(result['result'])}")
+        # P2-INJ (UU-7): a DDP method's result is whatever the target's
+        # own backend decided to return -- fully target-controlled free
+        # text/JSON reaching agent-visible output, found during the
+        # final full-repo P2-INJ sweep. Quarantine it, same as oob-mcp's
+        # raw-request/raw-response fields and browser-mcp's rendered HTML.
+        lines.append(f"Result: {_quarantine(json.dumps(result['result']), source_label='DDP method result')}")
     return "\n".join(lines)
 
 

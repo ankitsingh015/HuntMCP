@@ -233,7 +233,15 @@ def check_scan(job_id: str) -> str:
         return "ffuf finished, but this job's result-formatting metadata was already collected."
     formatted = _format_results(meta["url"], result["stdout"], result["returncode"], result["stderr"],
                                  meta["no_results_message"], meta["field_key"])
-    return job_runtime.block_prefix(result) + formatted
+    # C1a: invocation-level provenance -- fuzz_with_data() passes
+    # url=None to _start() (no single "target" concept for a body-fuzzing
+    # run), so "target" is omitted entirely rather than fabricated; still
+    # valid provenance since class="invocation" only requires "tool".
+    provenance = {"class": "invocation", "tool": "ffuf"}
+    if meta["url"]:
+        provenance["target"] = meta["url"]
+    return (f"{job_runtime.block_prefix(result)}{formatted}"
+            f"\n\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}")
 
 
 @app.tool()

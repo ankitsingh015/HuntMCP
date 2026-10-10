@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -80,7 +81,11 @@ def check_scan(job_id: str) -> str:
     if result["status"] == "timeout":
         return result["error"]
     formatted = _format_findings(domain, result["stdout"], result["returncode"], result["stderr"])
-    return job_runtime.block_prefix(result) + formatted
+    # C1a: invocation-level provenance -- same pattern as the other
+    # scanner servers' check_scan().
+    provenance = {"class": "invocation", "tool": "subfinder", "target": domain}
+    return (f"{job_runtime.block_prefix(result)}{formatted}"
+            f"\n\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}")
 
 
 @app.tool()

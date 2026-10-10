@@ -66,11 +66,29 @@ async def connect(url: str, headers: dict[str, str] | None = None, cookie_header
     host, handshake timeout, a DDP "failed" response), returns
     (None-or-the-open-connection, ConnectResult(connected=False, ...))
     rather than raising -- callers loop over candidate hosts/methods."""
-    extra_headers = dict(headers or {})
+    # Bug found while auditing this file for P2-INJ (unrelated task):
+    # every real connection attempt was failing with "unexpected keyword
+    # argument 'extra_headers'" -- websockets v14 moved `connect()` to a
+    # new asyncio-native implementation and renamed this kwarg to
+    # `additional_headers` there (confirmed, not guessed: `extra_headers`
+    # genuinely raises TypeError against the exact pinned version,
+    # websockets==13.1, which only understands the old name -- this repo's
+    # own mcp-servers/ws-rpc-mcp/requirements.txt and .github/workflows/
+    # ci.yml's websockets pin were bumped to 16.0 in the same change, not
+    # just this call site, specifically so the declared/CI-installed
+    # version and this kwarg name stay in agreement). This made 100% of
+    # real DDP connections fail silently into the graceful-error branch
+    # below, which is exactly why it surfaced as a clean "Connect failed:
+    # ..." message instead of a crash -- the 7 real-websocket tests in
+    # tests/test_ws_rpc.py (and 2 more in test_ws_rpc_mcp_server.py) were
+    # failing for this same reason throughout this session, previously
+    # (incorrectly) assumed to be an unrelated, in-progress issue.
+    additional_headers = dict(headers or {})
     if cookie_header:
-        extra_headers["Cookie"] = cookie_header
+        additional_headers["Cookie"] = cookie_header
     try:
-        ws = await asyncio.wait_for(websockets.connect(url, extra_headers=extra_headers), timeout=timeout_s)
+        ws = await asyncio.wait_for(
+            websockets.connect(url, additional_headers=additional_headers), timeout=timeout_s)
     except Exception as e:  # noqa: BLE001 -- any transport/handshake failure is a graceful result, not a crash
         return None, ConnectResult(connected=False, session=None, raw_message=None, error=str(e))
 

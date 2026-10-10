@@ -124,6 +124,26 @@ reference.
 OWASP page, CWE number, related writeups from `mcp__writeup-mcp` if
 relevant.
 
+## Research-run manifest (C1b)
+
+Once per report run (not once per finding), call `mcp__case-mcp`
+`capture_research_manifest(target)` — records which scanner-tool
+versions, which model/provider, which safety-policy
+(`scope_gate_hook.py`) version, and a hash of this engagement's
+case-export state were in effect for this run. Add the returned
+`manifest_id` as a line in `README.md` (e.g. `Research-run manifest:
+<manifest_id>`), so a later run against the same target can be compared
+against this one. This captures reproducibility metadata only — it does
+not change report content or severity, and is not itself a
+finding-quality signal.
+
+(This is the deliberately-buildable half of C1b. The task's actual
+acceptance gate — whether attaching this manifest measurably improves a
+human triager's acceptance behavior — needs accumulated real triager
+outcomes across many report runs and a human promotion decision; it is
+*not* resolved by capturing the manifest, see `IMPLEMENTATION-TASK-
+TRACKER.md`'s C1b row.)
+
 ## Triager-honesty rule (before writing anything)
 
 Score like a strict HackerOne/Bugcrowd/Intigriti triager, not a

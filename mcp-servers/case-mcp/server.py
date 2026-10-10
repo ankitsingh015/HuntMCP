@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import case_store
 import cem_engine
 import http_probe
+import research_manifest
 import scope_guard
 from audit_log import log_call as _log_call
 from budget_guard import BudgetExceeded
@@ -184,6 +185,37 @@ def case_export() -> str:
     is no matching case_import(); this engagement's case.db on disk is
     already the durable copy."""
     return case_store.case_export()
+
+
+@app.tool()
+def capture_research_manifest(target: str, agent_role: str = "") -> str:
+    """C1b: captures and persists a research-run manifest for `target` --
+    resolved scanner tool versions, the model/provider currently selected
+    for `agent_role` (if given), a hash of scope_gate_hook.py (which
+    safety policy was active), and a hash of this engagement's current
+    case-export state. Call once near the start of a research run (e.g.
+    from huntbrain/report-agent) so later runs against the same target
+    can be compared for reproducibility. Not wired into assemble_bundle
+    itself (CEM Phase 1 is frozen) -- report-agent attaches this tool's
+    output to its own Triager-Proof Bundle output as a separate step; see
+    this module's research_manifest import for the full C1b rationale,
+    including why the eventual triager-acceptance A/B is NOT something
+    this tool can resolve on its own."""
+    manifest = research_manifest.capture_manifest(target, agent_role=agent_role or None)
+    saved = case_store.save_research_manifest(target, manifest)
+    return json.dumps({**manifest, "manifest_id": saved["id"]})
+
+
+@app.tool()
+def get_research_manifest(target: str) -> str:
+    """Retrieves the most recently captured research-run manifest for
+    `target` (see capture_research_manifest), or an explicit "not found"
+    message -- never a bare empty/null, so a caller can't mistake "no
+    manifest was ever captured" for a real (if minimal) one."""
+    fetched = case_store.get_latest_research_manifest(target)
+    if fetched is None:
+        return f"No research manifest has been captured yet for {target!r}."
+    return json.dumps(fetched)
 
 
 # ---------------------------------------------------------------------------

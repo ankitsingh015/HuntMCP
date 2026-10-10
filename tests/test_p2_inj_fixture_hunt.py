@@ -74,8 +74,43 @@ def _load_module(name: str, path: str):
 
 # --- browser-mcp: real Playwright navigation against the real fixture ------
 
-@pytest.mark.skipif(not shutil.which("google-chrome") and not shutil.which("chromium"),
-                     reason="no system Chrome/Chromium available for real Playwright navigation")
+def _playwright_available() -> bool:
+    """A system Chrome/Chromium binary alone is not enough -- CI found via
+    a real failure: GitHub's hosted ubuntu-latest runner ships Chromium
+    by default, so the original skipif (binary-only) passed, but the
+    `playwright` pip package is never installed by this repo's CI
+    workflow (it's a browser-mcp-only dependency, not in the unit-test
+    job's requirements), so the test ran anyway and crashed with
+    ModuleNotFoundError instead of skipping."""
+    if not (shutil.which("google-chrome") or shutil.which("chromium")):
+        return False
+    return importlib.util.find_spec("playwright") is not None
+
+
+def test_playwright_available_is_false_when_chrome_present_but_package_missing(monkeypatch):
+    """Reproduces the exact CI failure mode this skipif rewrite fixes:
+    a system Chrome/Chromium binary present, but the playwright pip
+    package not installed -- must be False (skip), not True (crash on
+    import)."""
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/chromium" if name == "chromium" else None)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    assert _playwright_available() is False
+
+
+def test_playwright_available_is_false_when_neither_browser_nor_package_present(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert _playwright_available() is False
+
+
+def test_playwright_available_is_true_when_both_present(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/chromium" if name == "chromium" else None)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    assert _playwright_available() is True
+
+
+@pytest.mark.skipif(not _playwright_available(),
+                     reason="real Playwright navigation needs BOTH a system Chrome/Chromium "
+                            "binary AND the playwright pip package installed")
 def test_real_browser_render_dom_quarantines_the_live_hostile_page(injection_app):
     browser_server = _load_module(
         "browser_mcp_server_fixture_hunt",

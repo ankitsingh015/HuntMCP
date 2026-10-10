@@ -189,7 +189,15 @@ def check_scan(job_id: str) -> str:
     if result["status"] == "timeout":
         return result["error"]
     formatted = _format_findings(target, no_findings_message, result["stdout"], result["returncode"], result["stderr"])
-    return job_runtime.block_prefix(result) + formatted
+    # C1a: invocation-level provenance -- "which tool ran, against what"
+    # is honestly claimable here even though the real HTTP exchange
+    # happened inside nuclei's own process, invisible to this server.
+    # Unlike wire-level provenance (method+url of a real request this
+    # process itself made), class="invocation" only requires "tool" per
+    # case_store._validate_provenance() -- "target" is additional, still
+    # honest context already tracked in _targets, not a fabricated claim.
+    provenance = {"class": "invocation", "tool": "nuclei", "target": target}
+    return f"{job_runtime.block_prefix(result)}{formatted}\n\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}"
 
 
 @app.tool()
