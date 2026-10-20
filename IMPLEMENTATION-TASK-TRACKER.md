@@ -96,8 +96,8 @@ begins.** Tier-2 is NOT optional.*
 
 | ID | St | Task · Why | Deps | v3 § |
 |---|---|---|---|---|
-| **P3-DEP** | [!] | **Human decision:** approve `schemathesis` (and a spec parser only if hand-rolled proves insufficient) per dependency-budget. *Why:* new dependency = stop-condition. | — | §5(P3), §14.6 |
-| **P3-SCHEMA** | [ ] GATED | schemathesis→CEM stateful/API property falsifiers. *Complementary to VAL-AUTHZ (property-fuzz vs authz-differential).* | P3-DEP, S-GATE, P2-BENCH | §4, §5(P3) |
+| **P3-DEP** | [x] | **Human decision:** approve `schemathesis` (and a spec parser only if hand-rolled proves insufficient) per dependency-budget. *Why:* new dependency = stop-condition. **APPROVED 2026-10-10 (human, via chat, plain approval — not the hand-roll-first variant; add `schemathesis` to the relevant mcp-server's `requirements.txt` when P3-SCHEMA is built; a dedicated spec-parser dependency remains separately gated — only add if DISC-SPEC's hand-rolled parse proves insufficient).** | — | §5(P3), §14.6 |
+| **P3-SCHEMA** | [~] GATED | schemathesis→CEM stateful/API property falsifiers. *Complementary to VAL-AUTHZ (property-fuzz vs authz-differential).* **Fixture-validation only (2026-10-10):** confirms `schemathesis` (CLI, `--phases examples`, pinned 4.30.1) reliably detects a real planted schema/property-robustness violation (deterministic via a declared OpenAPI `example`, not a probabilistic fuzzing-budget claim) on an isolated local JSON API fixture (`tests/fixtures/schema_target/`), and correctly stays clean on the patched variant and an unrelated endpoint. See `docs/superpowers/specs/2026-10-10-p3-schema-fixture-design.md`. The `schemathesis-mcp` server, `job_runtime`/sandbox wiring, `budget_guard`/`scope_gate_hook` integration, and the P3-ADAPTER falsifier→CEM-hypothesis output contract remain open. `P2-BENCH` dependency untouched — this step neither exercises nor requires the protected benchmark substrate. **Still `GATED`** despite all three listed deps now `[x]`: `GATED` here tracks this task's own unmet §10/§11 acceptance gate (WFC/WFD breadth up against the protected benchmark, quality floor held, FCC==0 — Acceptance-Evidence-Matrix row below), not dependency status, same convention as C1b (GATED on its own promotion A/B outcome despite its deps C1a/P2-BENCH already being `[x]`). | P3-DEP, S-GATE, P2-BENCH | §4, §5(P3) |
 | **P3-ADAPTER** | [ ] | property→hypothesis→CEM adapter (each falsifier hit becomes a hypothesis fed to CEM). | P3-SCHEMA | §5(P3) |
 | **P3-CEMHUNT** | [ ] | CEM auto-run after independent validation **preserving the existing CEM entry precondition** (`CONFIRMED`/determinism gate). *Not a CEM change.* | CEM (frozen), case_store | §5(P3), §7 |
 | **P3-DIFF** | [ ] | Structural differentiation evidence vs disclosed reports (dedupe aid). | `disclosed_reports` | §4, §5(P3) |
@@ -150,7 +150,7 @@ begins.** Tier-2 is NOT optional.*
 
 | ID | Decision required | Blocks |
 |---|---|---|
-| P3-DEP | approve `schemathesis` / spec-parser dependency | P3-SCHEMA (breadth) |
+| P3-DEP | ~~approve `schemathesis` / spec-parser dependency~~ **RESOLVED 2026-10-10: `schemathesis` approved (plain); spec-parser dependency stays separately gated, hand-roll-first per DISC-SPEC** | P3-SCHEMA — unblocked |
 | (S5 dep) | ~~approve rootless runtime dependency~~ **RESOLVED 2026-09-15: Docker/Podman rootless containers** (over bubblewrap/nsjail; microVM excluded per §6 non-goals) | S5/S6 Tier-2 — unblocked |
 | P4-M0 | invariant-model GO/NO-GO | P4-M1 only |
 | P5-A0 | allocation STOP/GO | P5-A1/ALLOC |
@@ -174,7 +174,7 @@ Phase 2 (P2-BENCH · P2-TEL · C1a · P2-E1 · P2-INJ · P2-NK · P2-COV · P2-S
         │
 S Tier-2 (S5 S6 → S-GATE)              ← GATE before Phase-3 breadth
         ↓
-Phase 3 (P3-DEP[!] → P3-SCHEMA · P3-ADAPTER · P3-CEMHUNT · P3-DIFF · P3-DISCSPEC → P3-VALAUTHZ · P3-FANOUT · P3-H4)
+Phase 3 (P3-DEP[x] → P3-SCHEMA[~] · P3-ADAPTER · P3-CEMHUNT · P3-DIFF · P3-DISCSPEC → P3-VALAUTHZ · P3-FANOUT · P3-H4)
         ↓
 Phase 4 (P4-M0 →(GO) P4-M1 ;  P4-RESURRECT · P4-INFOGAIN · P4-SIG · P4-ESCALATE · P4-BM · P4-COVMATRIX · P4-PM+  independent of M0)
         ↓
@@ -244,7 +244,7 @@ baseline (P3, P5).
 | Baseline substrate | 8 | 6 | — | — | substrate ≠ roadmap capability |
 | Phase S | 7 (S1–S6, S-GATE) | — | — | — | Tier-1 + Tier-2 + exit gate all complete; Phase-3 breadth unblocked pending human PR review/merge |
 | Phase 2 | 3 (P2-BENCH, P2-TEL, P2-E1) | — | 5 | — | +C1b GATED |
-| Phase 3 | — | — | 8 | 1 (P3-DEP) | VAL-AUTHZ GATED; Asset-Graph rejected |
+| Phase 3 | 1 (P3-DEP) | 1 (P3-SCHEMA, fixture-validation only) | 7 | — | VAL-AUTHZ GATED; Asset-Graph rejected |
 | Phase 4 | — | — | 8 | 1 (P4-M1 on M0) | +VAL-COND deferred |
 | Phase 5 | — | 1 (toolkit) | 6 | 3 (A0/ALLOC/AMORT) | gated research program |
 | Human blockers | — | — | — | 8 | §8 |
@@ -268,7 +268,9 @@ passed, 0 failed, 5 xfailed. See §3's S-GATE row for the complete account. Veri
 (Tier-1 + Tier-2 + S-GATE), no gated item, no human decision is treated as resolved beyond that. **Phase-3
 breadth work (VAL-AUTHZ's live requests, schemathesis) may now begin, subject to its own prerequisites (P2
 substrate, `P3-DEP` human approval of `schemathesis`, benchmark ground truth) still being unmet** (§3, §9 —
-S5+S6 individually did not satisfy S-GATE; the combined adversarial regression now does).
+S5+S6 individually did not satisfy S-GATE; the combined adversarial regression now does). **[Status as of this
+S-GATE merge, not a live claim: `P3-DEP` was RESOLVED 2026-10-10 — see §8 — after this paragraph was written;
+this paragraph records the S-GATE-merge-time state and is left as-is rather than silently rewritten.]**
 
 ---
 
@@ -283,7 +285,7 @@ S5+S6 individually did not satisfy S-GATE; the combined adversarial regression n
   (§3); evidence-integrity (content-addressed evidence, provenance binding) remains `[~]`/`[ ]` since C1a hasn't
   started.
 - ✅ No gated research marked `[x]` (P3-SCHEMA, P3-VALAUTHZ, C1b, P4-M0, P5-A1, P5-T1, C3, P5-VARIANT all GATED/`[ ]`).
-- ✅ No human decision treated as resolved (P3-DEP, P4-M0, P5-A0, P5-T1, C1b, ROADMAP-INT, V4 all `[!]`).
+- ✅ No human decision treated as resolved without an explicit, dated ruling recorded in §8 (P4-M0, P5-A0, P5-T1, C1b, ROADMAP-INT, V4 remain `[!]`; P3-DEP **RESOLVED 2026-10-10** — see §8 — and the S5-runtime-dependency decision **RESOLVED 2026-09-15**, both recorded there with the human's actual ruling, not silently promoted).
 - ✅ **VAL-AUTHZ present** (P3-VALAUTHZ, GATED, multi-identity/stateful benchmark).
 - ✅ **P2-E1 present** (full analysis-only guardrails).
 - ✅ **Security Tier-1 → Tier-2 → Phase-3-breadth ordering present** (§3, §9); Tier-2 not optional.
