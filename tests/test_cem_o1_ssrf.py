@@ -66,7 +66,7 @@ def _confirmed(url, sig=None):
     "data:text/plain,hi",
 ])
 def test_non_http_schemes_are_refused(url):
-    assert srv._cem_outbound_policy_error(url) is not None
+    assert srv.scope_guard.outbound_policy_error(url) is not None
 
 
 @pytest.mark.parametrize("url", [
@@ -78,7 +78,7 @@ def test_non_http_schemes_are_refused(url):
     "http://metadata/",
 ])
 def test_instance_metadata_targets_are_refused(url):
-    assert srv._cem_outbound_policy_error(url) is not None
+    assert srv.scope_guard.outbound_policy_error(url) is not None
 
 
 @pytest.mark.parametrize("url", [
@@ -88,7 +88,7 @@ def test_instance_metadata_targets_are_refused(url):
     "http://192.168.1.10:9000/x",
 ])
 def test_ordinary_http_targets_are_permitted_by_the_policy(url):
-    assert srv._cem_outbound_policy_error(url) is None
+    assert srv.scope_guard.outbound_policy_error(url) is None
 
 
 # --------------------------------------------------------------------------

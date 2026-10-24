@@ -19,9 +19,10 @@ from __future__ import annotations
 import fnmatch
 import ipaddress
 import os
+import socket
 import sys
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 try:
     import yaml
@@ -203,6 +204,111 @@ def is_in_scope(target: str, engagement: Engagement) -> bool:
                 continue
             return False
     return any(_matches(host, pattern) for pattern in engagement.in_scope)
+
+
+_OUTBOUND_ALLOWED_SCHEMES = ("http", "https")
+_OUTBOUND_METADATA_HOSTS = frozenset({"metadata", "metadata.google.internal", "metadata.goog"})
+_OUTBOUND_METADATA_IPS = frozenset({"169.254.169.254", "fd00:ec2::254"})
+
+
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Shared by outbound_policy_error() (checking a literal IP already in
+    the URL) and resolved_ip_policy_error() (checking what a hostname
+    actually resolved to) -- one classification, not two hand-copies that
+    could drift out of sync with each other."""
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return (ip.is_link_local or (mapped is not None and mapped.is_link_local)
+            or str(ip) in _OUTBOUND_METADATA_IPS or (mapped is not None and str(mapped) in _OUTBOUND_METADATA_IPS))
+
+
+def outbound_policy_error(url: str) -> str | None:
+    """Generic outbound-request policy check, applied IN ADDITION to
+    is_in_scope() -- is_in_scope()'s own is_safe_test_host fast-path treats
+    loopback/RFC1918/link-local addresses as automatically in-scope before
+    out_of_scope is even consulted (correct for this benchmark's own
+    "needs no engagement.yaml" local test-host posture), so on its own it
+    cannot keep a request off a cloud instance-metadata endpoint or a
+    non-HTTP scheme. Originally built as a case-mcp-local CEM helper (despite
+    its CEM-prefixed name, it was already generic, not CEM-specific) --
+    relocated here so every caller shares one
+    implementation instead of each hand-copying it.
+
+    Returns None if the URL is a permissible outbound destination, else a
+    refusal reason. Rejects: any scheme other than http/https (blocks
+    file:/ftp:/gopher:/data:), the cloud instance-metadata IPs/hostnames,
+    and any link-local address (169.254.0.0/16, fe80::/10). Deliberately
+    does NOT reject ordinary loopback/RFC1918 -- callers that need scope
+    enforcement on top of this still call is_in_scope() separately.
+
+    IMPORTANT LIMIT, found during a security review of the P3-SCHEMA task
+    that relocated this function here: this only ever inspects the LITERAL
+    host string in the URL. It cannot catch a hostname whose DNS record
+    resolves to a metadata/link-local address (DNS rebinding), nor an
+    alternate numeric encoding of a metadata IP (e.g. decimal "2852039166"
+    or octal "0251.0376.0251.0376" for 169.254.169.254) that Python's own
+    strict ipaddress.ip_address() rejects but a real resolver (glibc
+    getaddrinfo) still resolves to the real address -- both verified live
+    against this exact function. This function is therefore a cheap EARLY
+    filter only, not the real enforcement boundary; the real boundary is
+    resolved_ip_policy_error(), called inside http_probe.fetch() right
+    before the real connection, which checks what the host ACTUALLY
+    resolves to rather than the literal string."""
+    try:
+        parts = urlsplit(url)
+    except ValueError as e:
+        return f"unparseable URL ({e})"
+    if parts.scheme.lower() not in _OUTBOUND_ALLOWED_SCHEMES:
+        return (f"scheme {parts.scheme.lower()!r} is not permitted -- "
+                "only http/https (no file/ftp/gopher/data)")
+    host = (parts.hostname or "").lower()
+    if not host:
+        return "URL has no host"
+    if host in _OUTBOUND_METADATA_HOSTS or host in _OUTBOUND_METADATA_IPS:
+        return f"host {host!r} is a cloud instance-metadata endpoint -- refused (SSRF)"
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        ip = None
+    if ip is not None and _is_blocked_ip(ip):
+        return (f"host {host!r} resolves to a link-local / instance-metadata address "
+                "(169.254.0.0/16, fe80::/10, or a v4-mapped form) -- refused (SSRF)")
+    return None
+
+
+def resolved_ip_policy_error(host: str) -> str | None:
+    """The real SSRF enforcement boundary outbound_policy_error() itself
+    cannot be (see its own docstring): resolves `host` via the OS resolver
+    (socket.getaddrinfo, the same resolver the real connection will use)
+    and checks EVERY resolved address against the identical denylist
+    outbound_policy_error() applies to a literal IP -- so a hostname that
+    DNS-rebinds to a metadata/link-local address, or a numeric encoding
+    that only the OS resolver (not Python's strict ipaddress module)
+    recognizes, is caught here instead of slipping through as "not a
+    literal IP, therefore permitted."
+
+    Returns None if resolution fails for any reason (the caller's own real
+    connection attempt will surface that failure naturally -- this is a
+    SSRF-deny check, not a reachability check, so a resolution error here
+    is never treated as a refusal) or if every resolved address is
+    permitted. Returns a refusal reason string if ANY resolved address is
+    link-local/instance-metadata. Intended to be called immediately before
+    the real connection (see http_probe.fetch()), not as a standalone
+    cacheable decision -- resolving once here and connecting somewhere
+    else later would reopen the exact TOCTOU gap this exists to close."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        return None
+    for info in infos:
+        raw_ip = info[4][0]
+        try:
+            ip = ipaddress.ip_address(raw_ip.split("%", 1)[0])
+        except ValueError:
+            continue
+        if _is_blocked_ip(ip):
+            return (f"host {host!r} resolves to {raw_ip!r}, a link-local / "
+                    "instance-metadata address -- refused (SSRF)")
+    return None
 
 
 def detect_scope_conflicts(engagement: Engagement) -> list[str]:
