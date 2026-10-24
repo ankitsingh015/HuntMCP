@@ -8,7 +8,9 @@ guard for idor_sweep's own behavior after the refactor; this file is the direct-
 counterpart for the extracted module itself.
 """
 import json
+import socket
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -162,3 +164,42 @@ def test_fetch_captures_response_headers_on_http_error(echo_server):
     result = http_probe.fetch(f"{echo_server}/not-found", "GET", {}, None, 5)
     assert result.status == 404
     assert result.headers.get("Content-Type") == "text/plain"
+
+
+# fetch()'s own SSRF enforcement boundary (added after a security review
+# found scope_guard.outbound_policy_error() alone -- the literal-string
+# pre-check callers like case-mcp's CEM senders run before this -- cannot
+# catch a hostname that resolves to a metadata/link-local address at
+# connect time). These tests mock socket.getaddrinfo the way a real
+# DNS-rebinding attack works (the hostname's own records point wherever
+# the attacker wants), never real DNS/network infrastructure.
+
+
+def _fake_getaddrinfo(answer: str):
+    def _fn(host, port, *a, **k):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (answer, 0))]
+    return _fn
+
+
+def test_fetch_refuses_before_connecting_when_host_resolves_to_metadata_ip(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("169.254.169.254"))
+
+    def _unreachable_urlopen(*a, **k):
+        raise AssertionError("fetch() must refuse before ever calling urlopen")
+    monkeypatch.setattr(urllib.request, "urlopen", _unreachable_urlopen)
+
+    result = http_probe.fetch("http://sub.target.example/", "GET", {}, None, 5)
+
+    assert result.status is None
+    assert result.error is not None
+    assert "169.254.169.254" in result.error
+
+
+def test_fetch_proceeds_normally_when_host_resolves_to_an_ordinary_address(monkeypatch, echo_server):
+    """Confirms the new pre-check is a narrow deny, not a broad allowlist --
+    a real loopback fetch (echo_server) must still work unaffected, without
+    even needing socket.getaddrinfo mocked (127.0.0.1 is already a literal
+    IP, so fetch()'s urlsplit().hostname -> resolved_ip_policy_error() path
+    resolves it trivially and permits it, the same as it always has)."""
+    result = http_probe.fetch(f"{echo_server}/orders/1", "GET", {}, None, 5)
+    assert result.status == 200

@@ -1,5 +1,4 @@
 import inspect
-import ipaddress
 import json
 import os
 import sys
@@ -356,51 +355,6 @@ class PerturbationRefused(Exception):
 _REFUSED_NONIDEMPOTENT = "nonidempotent_perturbation"
 
 
-_CEM_ALLOWED_SCHEMES = ("http", "https")
-_CEM_METADATA_HOSTS = frozenset({"metadata", "metadata.google.internal", "metadata.goog"})
-_CEM_METADATA_IPS = frozenset({"169.254.169.254", "fd00:ec2::254"})
-
-
-def _cem_outbound_policy_error(url: str) -> str | None:
-    """O1 (final security audit): the CEM senders fetch a fully caller-supplied
-    `base_request["url"]`. `scope_guard.is_in_scope` answers "is this host a
-    target we may hit", but its `is_safe_test_host` fast-path returns True for
-    every link-local / loopback / RFC1918 address *before* `out_of_scope` is
-    consulted -- so on its own it cannot keep CEM off a cloud-metadata endpoint
-    or a non-HTTP scheme. This is the CEM-layer outbound allowlist, applied in
-    addition to `is_in_scope` on both the fail-fast and the per-trial path.
-
-    Returns None if the URL is a permissible CEM destination, else a refusal
-    reason. Rejects: any scheme other than http/https (blocks file:/ftp:/gopher:/
-    data:), the cloud instance-metadata IPs/hostnames, and any link-local
-    address (169.254.0.0/16, fe80::/10). Deliberately does NOT reject ordinary
-    loopback / RFC1918 -- that is the F1-approved "needs no engagement.yaml"
-    benchmark posture, unchanged here."""
-    try:
-        parts = urlsplit(url)
-    except ValueError as e:
-        return f"unparseable URL ({e})"
-    if parts.scheme.lower() not in _CEM_ALLOWED_SCHEMES:
-        return (f"scheme {parts.scheme.lower()!r} is not permitted for a CEM request -- "
-                "only http/https (no file/ftp/gopher/data)")
-    host = (parts.hostname or "").lower()
-    if not host:
-        return "URL has no host"
-    if host in _CEM_METADATA_HOSTS or host in _CEM_METADATA_IPS:
-        return f"host {host!r} is a cloud instance-metadata endpoint -- refused (SSRF)"
-    try:
-        ip = ipaddress.ip_address(host.strip("[]"))
-    except ValueError:
-        ip = None
-    if ip is not None:
-        mapped = getattr(ip, "ipv4_mapped", None)      # e.g. ::ffff:169.254.169.254
-        if ip.is_link_local or (mapped is not None and mapped.is_link_local) \
-                or str(ip) in _CEM_METADATA_IPS or (mapped is not None and str(mapped) in _CEM_METADATA_IPS):
-            return (f"host {host!r} resolves to a link-local / instance-metadata address "
-                    "(169.254.0.0/16, fe80::/10, or a v4-mapped form) -- refused (SSRF)")
-    return None
-
-
 def _cem_fetch(url, method, headers, body, timeout_s):
     """The fetch primitive handed to `cem_engine.run_intervention` (O1 final
     security audit): `http_probe.fetch` with redirects DISABLED -- a
@@ -478,7 +432,7 @@ def _record_trial_wire_evidence(finding_id: int, trial, captured_by: str = "cem_
 
 def _fetch_scope_or_error(url: str) -> str | None:
     """Scope gate for fetch_with_provenance() -- the same two checks
-    _scope_or_error()/_cem_outbound_policy_error() already apply to CEM's
+    _scope_or_error()/scope_guard.outbound_policy_error() already apply to CEM's
     own base_request target (O1 SSRF/metadata-link-local policy, then
     scope_guard.is_in_scope), reworded here since this tool isn't CEM and
     its refusal messages must not claim it is. Returns an error-JSON
@@ -486,7 +440,7 @@ def _fetch_scope_or_error(url: str) -> str | None:
     if not isinstance(url, str) or not url.strip():
         return json.dumps({"error":
             "BLOCKED by scope gate: no url given -- refusing to send."})
-    policy = _cem_outbound_policy_error(url)   # O1: scheme allowlist + metadata/link-local deny (generic, not CEM-specific despite the name)
+    policy = scope_guard.outbound_policy_error(url)   # O1: scheme allowlist + metadata/link-local deny
     if policy:
         return json.dumps({"error":
             f"BLOCKED by outbound policy: {url!r} -- {policy}."})
@@ -628,7 +582,7 @@ def _scope_or_error(base_request: dict):
         return json.dumps({"error":
             "BLOCKED by scope gate: CEM base_request has no 'url' -- cannot verify "
             "the request destination is in scope; refusing to send."})
-    policy = _cem_outbound_policy_error(target)          # O1: scheme allowlist + metadata/link-local deny
+    policy = scope_guard.outbound_policy_error(target)          # O1: scheme allowlist + metadata/link-local deny
     if policy:
         return json.dumps({"error":
             f"BLOCKED by CEM outbound policy: CEM base_request target {target!r} -- {policy}."})
@@ -665,7 +619,7 @@ def _make_scope_cb(engagement):
     non-string/blank URL, or any evaluation error -- fail closed."""
     def _cb(url) -> None:
         if isinstance(url, str) and url.strip():
-            policy = _cem_outbound_policy_error(url)      # O1: same allowlist as _scope_or_error, per trial
+            policy = scope_guard.outbound_policy_error(url)      # O1: same allowlist as _scope_or_error, per trial
             if policy:
                 raise ScopeDenied(
                     f"BLOCKED by CEM outbound policy: a CEM request resolved the outbound URL "

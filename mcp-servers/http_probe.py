@@ -5,7 +5,10 @@ module under mcp-servers/ that needs a plain urllib fetch -- idor_sweep today, c
 later task -- imports one implementation instead of duplicating it. Behavior-preserving
 extraction: no change to the fetch mechanics themselves.
 
-Uses only the standard library (urllib) -- no new dependency.
+Uses only the standard library (urllib, socket) -- no new third-party dependency. Does import
+the sibling scope_guard module (an internal project module, not an external package) for its
+resolved_ip_policy_error() SSRF check -- see fetch()'s own docstring for why that check lives
+here rather than purely in scope_guard's own callers.
 """
 
 from __future__ import annotations
@@ -13,6 +16,9 @@ from __future__ import annotations
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
+
+import scope_guard
 
 DEFAULT_TIMEOUT_S = 15
 
@@ -57,7 +63,28 @@ def fetch(url: str, method: str, headers: dict[str, str], body: str | None,
     """`allow_redirects` defaults True (unchanged behaviour for idor_sweep and
     every existing caller). CEM's senders pass allow_redirects=False so a
     scope-checked in-scope URL cannot 3xx the fetch onto an unchecked host
-    (SSRF / scope-bypass via redirect -- O1 final security audit)."""
+    (SSRF / scope-bypass via redirect -- O1 final security audit).
+
+    Before connecting, resolves `url`'s host and refuses if it resolves to a
+    link-local/cloud-instance-metadata address (scope_guard.resolved_ip_policy_error)
+    -- this is the real SSRF enforcement boundary for DNS-rebinding and
+    alternate-IP-encoding bypasses that a caller's own earlier
+    scope_guard.outbound_policy_error() pre-check cannot catch, since that
+    check only ever sees the literal URL string, never what it actually
+    resolves to. Every current and future caller of this shared primitive
+    (idor_sweep, CEM via case-mcp's _cem_fetch, any later caller) gets this
+    for free at the one real point a connection is made, rather than each
+    needing to re-implement it. A resolution FAILURE is never treated as a
+    refusal here -- it falls through to the real connection attempt below,
+    which surfaces that same failure the way it always has."""
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        host = None
+    if host:
+        policy = scope_guard.resolved_ip_policy_error(host)
+        if policy:
+            return FetchResult(status=None, body="", error=f"Blocked before connecting: {policy}")
     data = body.encode() if body else None
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     _open = urllib.request.urlopen if allow_redirects else _NO_REDIRECT_OPENER.open

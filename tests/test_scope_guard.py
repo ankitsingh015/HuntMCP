@@ -1,3 +1,5 @@
+import socket
+
 import pytest
 from scope_guard import (
     Engagement,
@@ -6,6 +8,8 @@ from scope_guard import (
     is_in_scope,
     is_safe_test_host,
     load_engagement,
+    outbound_policy_error,
+    resolved_ip_policy_error,
 )
 
 
@@ -166,3 +170,70 @@ def test_load_engagement_roundtrip(tmp_path):
     assert e.target == "example.com"
     assert is_in_scope("api.example.com", e) is True
     assert is_in_scope("internal.example.com", e) is False
+
+
+def test_outbound_policy_error_rejects_cloud_metadata_ip():
+    assert outbound_policy_error("http://169.254.169.254/latest/meta-data/") is not None
+
+
+def test_outbound_policy_error_rejects_non_http_scheme():
+    assert outbound_policy_error("file:///etc/passwd") is not None
+
+
+def test_outbound_policy_error_allows_ordinary_http_url():
+    assert outbound_policy_error("http://example.com/openapi.json") is None
+
+
+# resolved_ip_policy_error() -- the real SSRF enforcement boundary added
+# after a security review found outbound_policy_error() alone cannot catch
+# DNS-rebinding or alternate numeric IP encodings (see its own docstring).
+
+
+def _fake_getaddrinfo(answer: str):
+    """Returns a function matching socket.getaddrinfo's signature, which
+    reports `answer` as the ONLY resolved address for any host -- same
+    technique a real DNS-rebinding attack uses (the hostname's own records
+    point wherever the attacker wants), without this test depending on real
+    DNS infrastructure."""
+    def _fn(host, port, *a, **k):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (answer, 0))]
+    return _fn
+
+
+def test_resolved_ip_policy_error_catches_dns_rebinding_to_metadata_ip(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("169.254.169.254"))
+    assert resolved_ip_policy_error("sub.target.example") is not None
+
+
+def test_resolved_ip_policy_error_permits_ordinary_resolution(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("93.184.216.34"))
+    assert resolved_ip_policy_error("target.example") is None
+
+
+def test_resolved_ip_policy_error_permits_loopback(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("127.0.0.1"))
+    assert resolved_ip_policy_error("localhost") is None
+
+
+def test_resolved_ip_policy_error_does_not_block_on_resolution_failure():
+    # ".invalid" is RFC 2606 reserved -- guaranteed to never resolve, no
+    # mocking needed, and a resolution FAILURE must never be treated as a
+    # refusal (the caller's own real connection attempt surfaces it).
+    assert resolved_ip_policy_error("this-does-not-exist.invalid") is None
+
+
+def test_resolved_ip_policy_error_catches_real_decimal_ip_encoding():
+    # No mocking -- this is real OS-resolver behavior (glibc getaddrinfo
+    # accepts legacy decimal/octal numeric-host notation that Python's own
+    # strict ipaddress.ip_address() rejects), verified live during this
+    # task's own security review. Self-adapting rather than a blind
+    # assertion: skips rather than fails if this specific machine's
+    # resolver doesn't exhibit that behavior, since this is resolver/libc
+    # behavior this test deliberately does not control.
+    try:
+        infos = socket.getaddrinfo("2852039166", None)
+    except OSError:
+        pytest.skip("this resolver doesn't resolve decimal-notation hosts at all")
+    if infos[0][4][0] != "169.254.169.254":
+        pytest.skip("this resolver's decimal-notation parsing doesn't match glibc's")
+    assert resolved_ip_policy_error("2852039166") is not None
