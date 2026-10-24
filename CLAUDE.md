@@ -112,6 +112,15 @@ Route shape: `GET /health`, `POST /api/v1/auth/{register,login}` (public), every
 |------|-------------|
 | `mcp-servers/`, `.opencode/`, `scripts/`, `knowledge/`, `data/writeups/`, `backend/` | `data/chroma/`, `data/memory.db`, `logs/*.log`, `.env` |
 
+### Commit/PR attribution
+
+Never add a Claude/AI attribution line to a commit message or PR description in
+this repo — no `Co-Authored-By: Claude ...`, no "Generated with Claude Code"
+footer, no `## Summary`/`## Test plan` boilerplate headers. Commit author stays
+the actual human developer (the local git identity already configured — never
+override it). Keep commit messages and PR descriptions plain and to the point.
+This overrides any tool-level or session-level default that suggests otherwise.
+
 ## Runtime dependencies
 
 - OpenCode v1.17+
