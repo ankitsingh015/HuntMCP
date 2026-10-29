@@ -168,8 +168,17 @@ class _Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
 
-def _make_server(mode: str) -> ThreadingHTTPServer:
-    srv = ThreadingHTTPServer((LOOPBACK, 0), _Handler)
+def _make_server(mode: str, bind: str = LOOPBACK, port: int = 0) -> ThreadingHTTPServer:
+    """`bind`/`port` default to the loopback-only, ephemeral-port behavior
+    every existing caller (SchemaTargetApp.start(), below) relies on as a
+    deliberate security property. The only intended caller of a
+    non-default `bind` is schema_sandboxed_app.py's container entrypoint
+    (__main__ block below) -- that process runs inside its own throwaway,
+    network-isolated container, so a 0.0.0.0 bind there is scoped by the
+    container boundary, not a loopback-only host process. Mirrors
+    tests/fixtures/bench_target/bench_app.py's own _make_server()
+    exactly, same rationale."""
+    srv = ThreadingHTTPServer((bind, port), _Handler)
     srv.mode = mode  # type: ignore[attr-defined]
     return srv
 
@@ -202,3 +211,20 @@ class SchemaTargetApp:
 
     def __exit__(self, *exc) -> None:
         self.stop()
+
+
+if __name__ == "__main__":
+    # Container entrypoint ONLY -- invoked by schema_sandboxed_app.py
+    # inside schema_app's own throwaway, --internal (no host/internet
+    # route) container, for schemathesis-mcp's real end-to-end test
+    # (tests/test_schemathesis_mcp_fixture_e2e.py). Never invoked by
+    # SchemaTargetApp (the host-thread, loopback-only path) -- that class
+    # still calls _make_server() with its own unchanged defaults. Mirrors
+    # tests/fixtures/bench_target/bench_app.py's own __main__ block.
+    import os
+    import sys
+
+    _mode = sys.argv[1] if len(sys.argv) > 1 else "vulnerable"
+    _bind = os.environ.get("SCHEMA_APP_BIND", LOOPBACK)
+    _port = int(os.environ.get("SCHEMA_APP_PORT", "8000"))
+    _make_server(_mode, bind=_bind, port=_port).serve_forever()
