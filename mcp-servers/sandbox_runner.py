@@ -52,7 +52,9 @@ mcp-servers/sandbox/Dockerfile.
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -157,6 +159,16 @@ class UnsafeSandboxMount(Exception):
     mistake, not a defense against a hostile argument."""
 
 
+class UnsafeExtraHost(Exception):
+    """Raised when an `extra_hosts` entry (see build_argv()'s own
+    docstring) isn't a syntactically valid hostname/IP pair. Same backstop
+    role as UnsafeSandboxMount: every entry here is meant to come from this
+    codebase's own DNS-resolution code (e.g. scope_guard.resolve_and_pin()),
+    not raw target/agent-controlled text -- this exists to fail closed if
+    a future caller ever passes something malformed, not to defend against
+    a hostile argument that reaches here deliberately."""
+
+
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # System directories where NOTHING legitimate should ever be mounted from --
@@ -228,6 +240,48 @@ def _validate_mount_path(path: str) -> str:
     return resolved
 
 
+# Same hostname shape every DNS label follows (RFC 1123) -- deliberately
+# strict (no wildcards) since every real value here comes from a caller's
+# own, already-scope-checked `url`/`target` hostname, never free-form
+# target-controlled text. ONE optional trailing dot IS allowed (`\.?`
+# before the end): a root-anchored FQDN like "example.com." is valid DNS
+# syntax that socket.getaddrinfo() (and most resolvers) happily accept --
+# found in review that rejecting it here, after resolve_and_pin() had
+# already successfully resolved and pinned it, refused an otherwise
+# legitimate in-scope target with an opaque internal exception instead of
+# a clear scope/policy message.
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*"
+    r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.?$"
+)
+
+
+def _validate_extra_host(host: str, ip: str) -> tuple[str, str]:
+    """Raises UnsafeExtraHost unless `host` is a syntactically valid
+    hostname (or IP literal -- pinning a literal to itself is a legitimate,
+    no-op-shaped call a caller can make without special-casing it) and
+    `ip` is a syntactically valid IP address. Both are spliced into a
+    `--add-host=host:ip` podman flag (see build_argv()) -- validating the
+    shape here, not just trusting the caller, is what keeps a malformed or
+    unexpectedly-flag-shaped value (e.g. an `ip` starting with `-`) from
+    ever reaching that argv position, the same defense-in-depth posture
+    _validate_mount_path() already applies to mount paths."""
+    is_valid_host = bool(_HOSTNAME_RE.match(host))
+    if not is_valid_host:
+        try:
+            ipaddress.ip_address(host)
+            is_valid_host = True
+        except ValueError:
+            pass
+    if not is_valid_host:
+        raise UnsafeExtraHost(f"{host!r} is not a syntactically valid hostname or IP -- refusing to pin it.")
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        raise UnsafeExtraHost(f"{ip!r} is not a syntactically valid IP address -- refusing to pin {host!r} to it.") from None
+    return host, ip
+
+
 def _ensure_group_accessible(path: str) -> None:
     """Add owner+group rwx (dirs) or rw (files) to `path` without removing
     any existing bits, and never touching "other" -- --userns=keep-id (see
@@ -289,6 +343,7 @@ def build_argv(tool_name: str, args: list[str], scratch_dir: str, *,
                 cwd: str | None = None,
                 extra_mounts: list[str] | None = None,
                 extra_mounts_rw: list[str] | None = None,
+                extra_hosts: dict[str, str] | None = None,
                 container_name: str | None = None) -> list[str]:
     """Build the `podman run ...` argv that executes `tool_name` with
     `args` inside a fresh, isolated, ephemeral container. Does not launch
@@ -333,6 +388,20 @@ def build_argv(tool_name: str, args: list[str], scratch_dir: str, *,
     (an agent-controlled tool parameter like ffuf-mcp's `wordlist` could
     otherwise get an arbitrary host path, e.g. under $HOME, silently
     bind-mounted and permission-widened).
+
+    `extra_hosts`, if given, is a `{hostname: ip}` mapping added as
+    `--add-host=hostname:ip` flags -- the container's own DNS resolution of
+    `hostname` returns the pinned `ip` regardless of what real DNS says,
+    verified live (`podman run --add-host=... --read-only` correctly pins
+    even on this image's rootless/`--userns=keep-id` setup). This exists
+    for a caller whose real requests are made by an EXTERNAL process it
+    does not otherwise control (e.g. schemathesis-mcp's sandboxed
+    `schemathesis` CLI) -- resolving a target hostname ONCE via
+    scope_guard.resolve_and_pin() and pinning it here closes the
+    DNS-rebinding TOCTOU window for that process's entire run, not just
+    the instant of a one-time pre-flight check. Each entry is validated
+    (_validate_extra_host) before being spliced into the argv, same
+    defense-in-depth posture as mount paths.
 
     `container_name`, if given, is used as the container's --name instead
     of an auto-generated one -- callers that need to force-remove THEIR
@@ -390,6 +459,8 @@ def build_argv(tool_name: str, args: list[str], scratch_dir: str, *,
         _ensure_group_accessible(resolved_p)
         mount_paths.append((resolved_p, "rw"))
 
+    validated_hosts = [_validate_extra_host(h, ip) for h, ip in (extra_hosts or {}).items()]
+
     workdir = resolved_cwd if resolved_cwd else WORKDIR_IN_CONTAINER
     name = container_name if container_name else new_container_name()
     bench_network = os.environ.get("HUNTMCP_BENCH_NETWORK") or None
@@ -430,6 +501,9 @@ def build_argv(tool_name: str, args: list[str], scratch_dir: str, *,
         "--read-only",
         f"--volume={scratch_dir}:{WORKDIR_IN_CONTAINER}:rw",
         *[f"--volume={p}:{p}:{mode}" for p, mode in sorted(set(mount_paths))],
+        # DNS-rebinding pin (see this function's own docstring) -- each
+        # entry already validated via _validate_extra_host above.
+        *[f"--add-host={h}:{ip}" for h, ip in sorted(set(validated_hosts))],
         f"--workdir={workdir}",
         # tmpfs for /tmp: several of these tools (sqlmap especially) write
         # small scratch files to /tmp by default: --read-only alone would

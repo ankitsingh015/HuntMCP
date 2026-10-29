@@ -4,6 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import job_runtime  # noqa: E402
+import scope_guard  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
 
@@ -119,7 +120,18 @@ def _format_results(url: str | None, stdout: str, returncode: int, stderr: str,
 
 
 def _start(args: list[str], timeout: int, url: str | None,
-           no_results_message: str, field_key: str, wordlist_path: str) -> str:
+           no_results_message: str, field_key: str, wordlist_path: str, pin_url: str) -> str:
+    # DNS-rebinding/numeric-IP-encoding defense (see
+    # scope_guard.pin_hosts_or_error's own docstring): ffuf resolves and
+    # connects on its own, never through this repo's http_probe.fetch(),
+    # so this closes the same TOCTOU window schemathesis-mcp already has.
+    # `pin_url` is ALWAYS the real target url, even when `url` (display/
+    # provenance only) is None -- fuzz_with_data() passes url=None to
+    # _start() purely because there's no single "target" label concept
+    # for a body-fuzzing run, not because there's no real URL to pin.
+    extra_hosts, pin_err = scope_guard.pin_hosts_or_error(pin_url)
+    if pin_err:
+        return f"BLOCKED by scope gate: {pin_err}"
     # S5 (rootless sandboxing): ffuf's default scraper feature reads a
     # bundled rules file at $HOME/.config/ffuf/scraper on first use --
     # this minimal sandbox image doesn't ship one (we don't use ffuf's
@@ -136,7 +148,8 @@ def _start(args: list[str], timeout: int, url: str | None,
         # -- _resolve_wordlist() already guarantees wordlist_path is
         # confined to one of the two approved, reviewed, non-credential
         # directories before this is ever reached.
-        result = job_runtime.start_job("ffuf", args, timeout, _jobs, extra_mounts=[wordlist_path])
+        result = job_runtime.start_job("ffuf", args, timeout, _jobs, extra_mounts=[wordlist_path],
+                                        extra_hosts=extra_hosts or None)
     except FileNotFoundError:
         return "Error: ffuf not found. Install with: go install github.com/ffuf/ffuf/v2@latest"
     except Exception as e:
@@ -178,7 +191,7 @@ def fuzz_directory(url: str, wordlist: str = "", extensions: str = "", timeout: 
     ]
     if extensions:
         args.extend(["-e", extensions])
-    return _start(args, timeout, url, f"No directories found on {url}.", "path", wordlist)
+    return _start(args, timeout, url, f"No directories found on {url}.", "path", wordlist, pin_url=url)
 
 
 @app.tool()
@@ -205,7 +218,7 @@ def fuzz_with_data(url: str, wordlist: str = "", method: str = "POST",
         "-o", "-",
         "-t", "30",
     ]
-    return _start(args, timeout, None, "No results found.", "fuzz", wordlist)
+    return _start(args, timeout, None, "No results found.", "fuzz", wordlist, pin_url=url)
 
 
 @app.tool()

@@ -4,6 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import job_runtime  # noqa: E402
+import scope_guard  # noqa: E402
 from injection_boundary import quarantine as _quarantine
 
 from mcp.server.fastmcp import FastMCP
@@ -69,9 +70,18 @@ def _format_findings(label: str, stdout: str, returncode: int, stderr: str, verb
     return "\n".join(lines)
 
 
-def _start(label: str, args: list[str], timeout: int, verbose: bool) -> str:
+def _start(label: str, args: list[str], timeout: int, verbose: bool, url: str) -> str:
+    # DNS-rebinding/numeric-IP-encoding defense (see
+    # scope_guard.pin_hosts_or_error's own docstring): dalfox resolves and
+    # connects on its own, never through this repo's http_probe.fetch(),
+    # so this closes the same TOCTOU window schemathesis-mcp already has.
+    # `url` (the real target), never `label` (which is just the parameter
+    # name for scan_parameter(), not a host-bearing value).
+    extra_hosts, pin_err = scope_guard.pin_hosts_or_error(url)
+    if pin_err:
+        return f"BLOCKED by scope gate: {pin_err}"
     try:
-        result = job_runtime.start_job("dalfox", args, timeout, _jobs)
+        result = job_runtime.start_job("dalfox", args, timeout, _jobs, extra_hosts=extra_hosts or None)
     except FileNotFoundError:
         return "Error: dalfox not found. Install with: go install github.com/hahwul/dalfox/v2@latest"
     except Exception as e:
@@ -100,7 +110,7 @@ def scan_url(url: str, timeout: int = 180) -> str:
     # real finding unparseable, always reporting "No XSS found" even when
     # dalfox found and verified a real XSS.
     args = ["url", url, "--silence", "--format", "jsonl"]
-    return _start(url, args, timeout, verbose=True)
+    return _start(url, args, timeout, verbose=True, url=url)
 
 
 @app.tool()
@@ -112,7 +122,7 @@ def scan_parameter(url: str, param: str, timeout: int = 180) -> str:
     # See scan_url()'s comment: --format jsonl, not "json" (a pretty-
     # printed JSON array _format_findings() cannot parse line-by-line).
     args = ["url", url, "--param", param, "--silence", "--format", "jsonl"]
-    return _start(param, args, timeout, verbose=False)
+    return _start(param, args, timeout, verbose=False, url=url)
 
 
 @app.tool()

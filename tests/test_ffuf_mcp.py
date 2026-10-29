@@ -12,6 +12,15 @@ ffuf_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ffuf_server)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_dns(monkeypatch):
+    """"target.com" (this file's standard test target) is a REAL,
+    resolvable domain -- without this, every fuzz_directory()/
+    fuzz_with_data() call that reaches _start() does a real DNS lookup
+    via the new scope_guard.pin_hosts_or_error() call there."""
+    monkeypatch.setattr(ffuf_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
+
+
 FFUF_JSON = '{"results": [{"input": {"FUZZ": "admin"}, "status": 200, "length": 512, "words": 40}]}'
 
 
@@ -113,7 +122,7 @@ def test_fuzz_with_data_reports_a_clean_error_for_a_rejected_wordlist():
 def test_start_declares_the_wordlist_path_as_an_explicit_mount(monkeypatch):
     captured = {}
 
-    def _fake_start_job(tool_name, args, timeout, jobs, extra_mounts=None):
+    def _fake_start_job(tool_name, args, timeout, jobs, extra_mounts=None, extra_hosts=None):
         captured["extra_mounts"] = extra_mounts
         return {"job_id": "job-1", "status": "running", "tool": tool_name}
 
@@ -121,6 +130,37 @@ def test_start_declares_the_wordlist_path_as_an_explicit_mount(monkeypatch):
     ffuf_server.fuzz_directory("https://target.com", wordlist="")
     assert captured["extra_mounts"] is not None
     assert len(captured["extra_mounts"]) == 1
+
+
+def test_fuzz_directory_refuses_when_pinning_finds_a_blocked_ip(monkeypatch):
+    def fake_resolve_and_pin(host):
+        return None, f"host {host!r} resolves to a link-local address -- refused (SSRF)"
+    monkeypatch.setattr(ffuf_server.scope_guard, "resolve_and_pin", fake_resolve_and_pin)
+
+    def _unreachable_start_job(*a, **k):
+        raise AssertionError("fuzz_directory must refuse before ever calling start_job")
+    monkeypatch.setattr(ffuf_server.job_runtime, "start_job", _unreachable_start_job)
+
+    out = ffuf_server.fuzz_directory("https://target.com", wordlist="")
+    assert "BLOCKED" in out
+    assert "SSRF" in out
+
+
+def test_fuzz_with_data_pins_its_own_url_even_though_display_url_is_none(monkeypatch):
+    """Regression: fuzz_with_data() passes url=None to _start() for
+    DISPLAY/provenance purposes only (no single "target" label concept for
+    a body-fuzzing run) -- that must not be mistaken for "no real URL to
+    pin". _start() takes a separate pin_url param, always the real url."""
+    captured = {}
+
+    def fake_start_job(tool_name, args, timeout, jobs, extra_mounts=None, extra_hosts=None):
+        captured["extra_hosts"] = extra_hosts
+        return {"job_id": "job-1", "status": "running", "tool": tool_name}
+
+    monkeypatch.setattr(ffuf_server.job_runtime, "start_job", fake_start_job)
+    ffuf_server.fuzz_with_data("https://target.com/login", wordlist="")
+
+    assert captured["extra_hosts"] == {"target.com": "93.184.216.34"}
 
 
 def test_format_results_url_with_braces_does_not_crash():

@@ -177,6 +177,68 @@ def test_build_argv_mounts_an_explicit_rw_extra_mount(tmp_path):
     assert str(out_dir) in argv
 
 
+def test_build_argv_adds_add_host_for_each_extra_hosts_entry():
+    argv = sandbox_runner.build_argv(
+        "curl", ["https://target.example"], "/tmp/scratch", env={},
+        extra_hosts={"target.example": "93.184.216.34", "spec.example": "93.184.216.35"},
+    )
+    assert "--add-host=target.example:93.184.216.34" in argv
+    assert "--add-host=spec.example:93.184.216.35" in argv
+
+
+def test_build_argv_no_add_host_flags_by_default():
+    argv = sandbox_runner.build_argv("curl", ["https://example.com"], "/tmp/scratch", env={})
+    assert not any(a.startswith("--add-host=") for a in argv)
+
+
+def test_build_argv_rejects_a_malformed_extra_host_hostname():
+    with pytest.raises(sandbox_runner.UnsafeExtraHost):
+        sandbox_runner.build_argv(
+            "curl", ["x"], "/tmp/scratch", env={},
+            extra_hosts={"--not-a-hostname": "93.184.216.34"},
+        )
+
+
+def test_build_argv_rejects_a_malformed_extra_host_ip():
+    with pytest.raises(sandbox_runner.UnsafeExtraHost):
+        sandbox_runner.build_argv(
+            "curl", ["x"], "/tmp/scratch", env={},
+            extra_hosts={"target.example": "--not-an-ip"},
+        )
+
+
+def test_build_argv_pins_a_literal_ip_host_to_itself():
+    argv = sandbox_runner.build_argv(
+        "curl", ["x"], "/tmp/scratch", env={},
+        extra_hosts={"127.0.0.1": "127.0.0.1"},
+    )
+    assert "--add-host=127.0.0.1:127.0.0.1" in argv
+
+
+def test_build_argv_accepts_a_trailing_dot_fqdn_host():
+    """Regression: a root-anchored FQDN like "example.com." is valid DNS
+    syntax that socket.getaddrinfo() (used by resolve_and_pin()) happily
+    resolves -- the hostname validator must not then refuse it with an
+    opaque internal exception after it was already successfully pinned."""
+    argv = sandbox_runner.build_argv(
+        "curl", ["x"], "/tmp/scratch", env={},
+        extra_hosts={"example.com.": "93.184.216.34"},
+    )
+    assert "--add-host=example.com.:93.184.216.34" in argv
+
+
+def test_build_argv_pins_an_ipv6_host_correctly():
+    """Regression: podman's --add-host parser splits on the FIRST colon
+    only, so a raw (unbracketed) IPv6 address works correctly even though
+    it contains colons itself -- verified live against the real podman
+    binary during review. No bracket-wrapping needed or expected here."""
+    argv = sandbox_runner.build_argv(
+        "curl", ["x"], "/tmp/scratch", env={},
+        extra_hosts={"v6.example": "fe80::1"},
+    )
+    assert "--add-host=v6.example:fe80::1" in argv
+
+
 def test_build_argv_mounts_an_explicit_file_extra_mount_read_only(tmp_path):
     """The httpx-mcp probe_hosts() case: -l <input_path> is a real file
     httpx only reads target domains from -- mounted read-only (via

@@ -910,6 +910,10 @@ def test_main_gates_tier2_mcp_server(monkeypatch):
     assert _run_main(monkeypatch, payload) == 2
 
 
+def test_schemathesis_mcp_is_a_tier2_server():
+    assert "schemathesis-mcp" in hook.TIER2_MCP_SERVERS
+
+
 def test_main_gates_obscura_mcp(monkeypatch):
     # Regression: obscura-mcp touches the live target the same way
     # browser-mcp/playwright-mcp already do (browser_navigate(url) etc.),
