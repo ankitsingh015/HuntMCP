@@ -338,6 +338,10 @@ def test_cleanup_scratch_dir_tolerates_already_missing():
     sandbox_runner.cleanup_scratch_dir("/tmp/definitely-does-not-exist-huntmcp-xyz")
 
 
+def test_tool_map_includes_schemathesis():
+    assert sandbox_runner._TOOL_MAP["schemathesis"] == "/usr/local/bin/schemathesis"
+
+
 def test_new_container_name_is_unique():
     a = sandbox_runner.new_container_name()
     b = sandbox_runner.new_container_name()

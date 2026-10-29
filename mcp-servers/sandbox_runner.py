@@ -68,7 +68,7 @@ import uuid
 
 # Bump this only alongside a corresponding, deliberate
 # mcp-servers/sandbox/Dockerfile version/tag change -- never silently.
-SANDBOX_IMAGE = "localhost/huntmcp-sandbox:2026-09-15"
+SANDBOX_IMAGE = "localhost/huntmcp-sandbox:2026-10-20"
 
 # In-container path for each approved logical tool name. Impacket's
 # ad-recon-mcp callers resolve to one of 3 possible on-host binary names
@@ -87,6 +87,7 @@ _TOOL_MAP: dict[str, str] = {
     "curl": "/usr/bin/curl",
     "wget": "/usr/bin/wget",
     "sqlmap": "/usr/local/bin/sqlmap",
+    "schemathesis": "/usr/local/bin/schemathesis",
     "impacket-getuserspns": "/usr/local/bin/GetUserSPNs.py",
     "impacket-GetUserSPNs": "/usr/local/bin/GetUserSPNs.py",
     "GetUserSPNs.py": "/usr/local/bin/GetUserSPNs.py",
