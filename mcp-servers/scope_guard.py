@@ -275,6 +275,20 @@ def outbound_policy_error(url: str) -> str | None:
     return None
 
 
+def _resolved_addresses(host: str) -> list[str] | None:
+    """Shared by resolved_ip_policy_error() and resolve_and_pin() -- one
+    resolution loop, not two hand-copies that could drift in how they
+    parse a getaddrinfo() result (the exact drift this helper's sibling,
+    _is_blocked_ip(), was already factored out to avoid one level down).
+    Returns the raw IP strings (IPv6 zone ids stripped), or None if
+    resolution itself failed for any reason."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        return None
+    return [info[4][0].split("%", 1)[0] for info in infos]
+
+
 def resolved_ip_policy_error(host: str) -> str | None:
     """The real SSRF enforcement boundary outbound_policy_error() itself
     cannot be (see its own docstring): resolves `host` via the OS resolver
@@ -294,21 +308,161 @@ def resolved_ip_policy_error(host: str) -> str | None:
     link-local/instance-metadata. Intended to be called immediately before
     the real connection (see http_probe.fetch()), not as a standalone
     cacheable decision -- resolving once here and connecting somewhere
-    else later would reopen the exact TOCTOU gap this exists to close."""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except (socket.gaierror, UnicodeError, OSError):
+    else later would reopen the exact TOCTOU gap this exists to close.
+    (Contrast resolve_and_pin() below, whose caller's real connection does
+    NOT happen right after this check -- a resolution failure there must
+    NOT be treated the same permissive way; see its own docstring.)"""
+    raw_ips = _resolved_addresses(host)
+    if raw_ips is None:
         return None
-    for info in infos:
-        raw_ip = info[4][0]
+    for raw_ip in raw_ips:
         try:
-            ip = ipaddress.ip_address(raw_ip.split("%", 1)[0])
+            ip = ipaddress.ip_address(raw_ip)
         except ValueError:
             continue
         if _is_blocked_ip(ip):
             return (f"host {host!r} resolves to {raw_ip!r}, a link-local / "
                     "instance-metadata address -- refused (SSRF)")
     return None
+
+
+def resolve_and_pin(host: str) -> tuple[str | None, str | None]:
+    """For a caller whose real requests are made by an EXTERNAL process it
+    does not control (e.g. schemathesis-mcp's sandboxed `schemathesis` CLI,
+    which never goes through http_probe.fetch() and so never benefits from
+    resolved_ip_policy_error()'s own per-connection check): resolves `host`
+    ONCE, checks it the same way resolved_ip_policy_error() does, and
+    returns an IP the caller can PIN (e.g. via a container's `--add-host`)
+    for the whole lifetime of that external process -- not just the
+    instant of this call.
+
+    This closes the DNS-rebinding gap more completely than a one-time
+    pre-flight check alone would: resolving again later (if the caller
+    doesn't pin and instead just re-checks before each of many requests)
+    still has a TOCTOU window between each check and that request's own
+    real connection. Pinning removes the window entirely for that
+    process's lifetime, because the pinned entry -- not a fresh DNS
+    lookup -- is what the external process's own resolver will return for
+    every subsequent request to that exact hostname, verified live:
+    `podman run --add-host=host:ip ...` makes the container's own
+    resolution of `host` return `ip` regardless of what real DNS says
+    (also verified live: this is correct for an IPv6 `ip` too, with no
+    bracket needed -- podman's own `--add-host` parser splits on the
+    FIRST colon only).
+
+    Only inspects/pins the FIRST resolved address, deliberately -- unlike
+    resolved_ip_policy_error()'s "scan every address" contract, this
+    function's own caller only ever connects to the ONE address it pins
+    (every other resolved address becomes structurally unreachable via
+    this hostname once pinned), so there is nothing gained by scanning
+    further ones; only the address actually used needs checking.
+
+    Returns `(ip, None)` on success -- `ip` is the first permitted
+    resolved address, suitable for `--add-host=host:ip`. Returns
+    `(None, error)` if resolution fails for ANY reason, INCLUDING a
+    transient one, or if the first resolved address is link-local/
+    instance-metadata, or if resolution produced no usable address at all.
+
+    Deliberately NOT the same "resolution failure is never a refusal"
+    convention resolved_ip_policy_error() uses: that convention is safe
+    there only because that function's caller makes its own real
+    connection attempt immediately afterward, so a resolution failure
+    there surfaces naturally with no protection lost either way. This
+    function's caller does NOT connect itself -- it launches an external
+    process that resolves and connects on its own, later. If resolution
+    merely transiently failed HERE, silently proceeding unpinned would let
+    that later, unprotected resolution succeed with zero SSRF defense --
+    exactly the TOCTOU window this function exists to close. The caller
+    MUST refuse the whole operation whenever this returns a non-None
+    error; it must never launch unpinned."""
+    raw_ips = _resolved_addresses(host)
+    if not raw_ips:
+        return None, (f"could not resolve {host!r} to pin it -- refusing to run "
+                       "unpinned rather than let the sandboxed process's own, "
+                       "later, unprotected resolution decide where this goes")
+    for raw_ip in raw_ips:
+        try:
+            ip = ipaddress.ip_address(raw_ip)
+        except ValueError:
+            continue
+        if _is_blocked_ip(ip):
+            return None, (f"host {host!r} resolves to {raw_ip!r}, a link-local / "
+                          "instance-metadata address -- refused (SSRF)")
+        return raw_ip, None
+    return None, f"host {host!r} resolved to no usable address -- refusing to run unpinned"
+
+
+def pin_hosts_or_error(*urls: str) -> tuple[dict[str, str], str | None]:
+    """Shared convention for EVERY job_runtime-based scanner server whose
+    real HTTP traffic is generated by an external subprocess it does not
+    otherwise control (sqlmap, nuclei, dalfox, ffuf, schemathesis -- every
+    one of them shells out to a binary that resolves and connects on its
+    own, never through http_probe.fetch()'s per-connection check). First
+    built as schemathesis-mcp's own one-off `_hosts_to_pin_or_error`;
+    promoted here after a security review's altitude pass pointed out the
+    identical gap already existed, unpatched, in the 4 servers above --
+    one shared, documented, reusable call site rather than a 5th
+    (or 6th, or Nth) hand-copy that a future scanner server could just as
+    easily skip or get subtly wrong.
+
+    Extracts and dedupes the hostname of every url in `urls` via
+    `_host_of()` -- NOT a bare `urlsplit(u).hostname` -- deliberately:
+    several of this function's own real callers (e.g. nuclei-mcp's
+    `scan_target(target, ...)`) pass a BARE hostname with no scheme (e.g.
+    "target.com", confirmed against this repo's own existing tests), and
+    `urlsplit("target.com").hostname` is `None` (no "//" means the whole
+    string is parsed as a path, not a netloc) -- that would have made this
+    function a silent no-op for exactly the callers that most need it.
+    `_host_of()` already handles "bare host, host:port, or full URL"
+    uniformly (it's what `is_in_scope()` itself uses), so reusing it here
+    keeps "what counts as the host of this value" consistent with the
+    scope decision already made on the same value, not a second,
+    independently-drifting notion of it.
+
+    Resolves and pins each via resolve_and_pin() (fail-closed -- see its
+    own docstring), and returns an `extra_hosts` dict ready for
+    job_runtime.start_job()'s own `extra_hosts` param. Every caller MUST
+    pass the returned dict through to start_job (or refuse the whole
+    operation on a non-None error) -- computing it and then not pinning it
+    would defeat the whole point.
+
+    Returns `(extra_hosts, None)` on success (extra_hosts may be `{}` if
+    none of `urls` had an extractable host -- callers should treat that
+    the same as "nothing to pin", not as a refusal). Returns `({}, error)`
+    if any host should refuse the whole operation (resolution failure,
+    link-local/instance-metadata resolution, or no usable address).
+
+    Skips pinning entirely (returns `({}, None)`) when the process
+    environment sets HUNTMCP_BENCH_NETWORK -- the SAME escape hatch
+    sandbox_runner.build_argv() itself already documents for this exact
+    variable: set ONLY by P2-BENCH's own real-tool fixture-proof tests
+    (tests/test_p2_bench_fixture.py), never by any production launch
+    config, and with no code path from an agent's own tool-call input to
+    it (found live: without this, every real-tool benchmark test started
+    failing, because the sandboxed container's target, e.g.
+    "bench-target", is a name resolvable ONLY via that throwaway,
+    --internal/no-host-route podman network's own embedded DNS, from
+    INSIDE a container joined to it -- never from this host-side process,
+    so resolve_and_pin() would always, correctly, fail to resolve it here
+    and (now fail-closed) refuse every such run). Skipping pinning in
+    this one recognized case is not a new weakening: DNS-rebinding/SSRF
+    protection doesn't meaningfully apply to a network with no real
+    external route in the first place."""
+    if os.environ.get("HUNTMCP_BENCH_NETWORK"):
+        return {}, None
+    hosts: set[str] = set()
+    for u in urls:
+        host = _host_of(u) if isinstance(u, str) else ""
+        if host:
+            hosts.add(host)
+    extra_hosts: dict[str, str] = {}
+    for host in hosts:
+        ip, error = resolve_and_pin(host)
+        if error:
+            return {}, error
+        if ip:
+            extra_hosts[host] = ip
+    return extra_hosts, None
 
 
 def detect_scope_conflicts(engagement: Engagement) -> list[str]:

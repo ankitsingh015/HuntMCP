@@ -37,7 +37,8 @@ def _bypass_sandbox(monkeypatch):
     off PATH here and skip containerization, preserving every existing
     test's exact original intent without needing podman."""
     def _fake_build_argv(tool_name, args, scratch_dir, env, cwd=None,
-                          extra_mounts=None, extra_mounts_rw=None, container_name=None):
+                          extra_mounts=None, extra_mounts_rw=None, extra_hosts=None,
+                          container_name=None):
         binary = shutil.which(tool_name)
         if binary is None:
             raise FileNotFoundError(tool_name)
@@ -55,6 +56,29 @@ def test_start_job_returns_immediately_with_running_status(monkeypatch):
     try:
         assert result["status"] == "running"
         assert result["job_id"] in jobs
+    finally:
+        jobs[result["job_id"]].proc.kill()
+        jobs[result["job_id"]].proc.wait()
+
+
+def test_start_job_threads_extra_hosts_through_to_build_argv(monkeypatch):
+    _no_budget(monkeypatch)
+    captured = {}
+
+    def _fake_build_argv(tool_name, args, scratch_dir, env, cwd=None,
+                          extra_mounts=None, extra_mounts_rw=None, extra_hosts=None,
+                          container_name=None):
+        captured["extra_hosts"] = extra_hosts
+        binary = shutil.which(tool_name)
+        return [binary, *args]
+
+    monkeypatch.setattr(job_runtime.sandbox_runner, "podman_available", lambda: True)
+    monkeypatch.setattr(job_runtime.sandbox_runner, "build_argv", _fake_build_argv)
+    jobs = {}
+    result = job_runtime.start_job("sleep", ["1"], max_wall_seconds=30, jobs=jobs,
+                                    extra_hosts={"target.example": "93.184.216.34"})
+    try:
+        assert captured["extra_hosts"] == {"target.example": "93.184.216.34"}
     finally:
         jobs[result["job_id"]].proc.kill()
         jobs[result["job_id"]].proc.wait()

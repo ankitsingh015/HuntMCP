@@ -31,6 +31,9 @@ def _extract_provenance_payload(result: str) -> dict:
 
 def test_check_scan_emits_invocation_provenance_for_test_injection(monkeypatch, tmp_path):
     monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(tmp_path))
+    # target.com is a REAL, resolvable domain -- mock resolve_and_pin so
+    # this test never does a real DNS lookup.
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
     monkeypatch.setattr(
         sqlmap_server.job_runtime, "start_job",
         lambda *a, **k: {"job_id": "job-inj", "status": "running", "tool": "sqlmap"},
@@ -51,6 +54,9 @@ def test_check_scan_emits_invocation_provenance_for_test_injection(monkeypatch, 
 
 def test_check_scan_emits_invocation_provenance_for_test_with_data(monkeypatch, tmp_path):
     monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(tmp_path))
+    # target.com is a REAL, resolvable domain -- mock resolve_and_pin so
+    # this test never does a real DNS lookup.
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
     monkeypatch.setattr(
         sqlmap_server.job_runtime, "start_job",
         lambda *a, **k: {"job_id": "job-data", "status": "running", "tool": "sqlmap"},
@@ -74,6 +80,9 @@ def test_check_scan_invocation_provenance_is_valid_case_store_provenance(monkeyp
     import case_store
 
     monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(tmp_path))
+    # target.com is a REAL, resolvable domain -- mock resolve_and_pin so
+    # this test never does a real DNS lookup.
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
     monkeypatch.setattr(
         sqlmap_server.job_runtime, "start_job",
         lambda *a, **k: {"job_id": "job-valid", "status": "running", "tool": "sqlmap"},
@@ -93,6 +102,9 @@ def test_check_scan_invocation_provenance_is_valid_case_store_provenance(monkeyp
 
 def test_check_scan_timeout_has_no_provenance_line(monkeypatch, tmp_path):
     monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(tmp_path))
+    # target.com is a REAL, resolvable domain -- mock resolve_and_pin so
+    # this test never does a real DNS lookup.
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
     monkeypatch.setattr(
         sqlmap_server.job_runtime, "start_job",
         lambda *a, **k: {"job_id": "job-timeout", "status": "running", "tool": "sqlmap"},

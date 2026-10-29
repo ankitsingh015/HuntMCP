@@ -9,6 +9,8 @@ from scope_guard import (
     is_safe_test_host,
     load_engagement,
     outbound_policy_error,
+    pin_hosts_or_error,
+    resolve_and_pin,
     resolved_ip_policy_error,
 )
 
@@ -237,3 +239,131 @@ def test_resolved_ip_policy_error_catches_real_decimal_ip_encoding():
     if infos[0][4][0] != "169.254.169.254":
         pytest.skip("this resolver's decimal-notation parsing doesn't match glibc's")
     assert resolved_ip_policy_error("2852039166") is not None
+
+
+# resolve_and_pin() -- for a caller (schemathesis-mcp) whose real requests
+# are made by an external process that never goes through
+# resolved_ip_policy_error()'s own per-connection check.
+
+
+def test_resolve_and_pin_returns_ip_for_ordinary_host(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("93.184.216.34"))
+    ip, error = resolve_and_pin("target.example")
+    assert ip == "93.184.216.34"
+    assert error is None
+
+
+def test_resolve_and_pin_refuses_metadata_ip(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo("169.254.169.254"))
+    ip, error = resolve_and_pin("sub.target.example")
+    assert ip is None
+    assert error is not None
+
+
+def test_resolve_and_pin_refuses_on_resolution_failure():
+    # Unlike resolved_ip_policy_error(), resolve_and_pin()'s whole caller
+    # (schemathesis-mcp) never makes its own connection right after this
+    # check -- an EXTERNAL process does, later. A transient resolution
+    # failure here must therefore be a refusal, not silently-proceed-
+    # unpinned, or the later unprotected resolution gets zero protection.
+    ip, error = resolve_and_pin("this-does-not-exist.invalid")
+    assert ip is None
+    assert error is not None
+
+
+def test_resolve_and_pin_pins_a_literal_ip_to_itself():
+    # A caller-supplied literal IP (no DNS involved at all) resolves to
+    # itself -- same contract, no special-casing needed by the caller.
+    ip, error = resolve_and_pin("127.0.0.1")
+    assert ip == "127.0.0.1"
+    assert error is None
+
+
+# pin_hosts_or_error() -- the shared convention every job_runtime-based
+# scanner server (sqlmap/nuclei/dalfox/ffuf/schemathesis) should use.
+
+
+def test_pin_hosts_or_error_dedupes_shared_host(monkeypatch):
+    calls = []
+
+    def fake_resolve_and_pin(host):
+        calls.append(host)
+        return "93.184.216.34", None
+
+    monkeypatch.setattr("scope_guard.resolve_and_pin", fake_resolve_and_pin)
+    extra_hosts, error = pin_hosts_or_error("https://t.example/a", "https://t.example/b")
+
+    assert error is None
+    assert extra_hosts == {"t.example": "93.184.216.34"}
+    assert calls == ["t.example"]  # resolved once, not twice
+
+
+def test_pin_hosts_or_error_pins_each_distinct_host(monkeypatch):
+    def fake_resolve_and_pin(host):
+        return {"a.example": "10.0.0.1", "b.example": "10.0.0.2"}[host], None
+
+    monkeypatch.setattr("scope_guard.resolve_and_pin", fake_resolve_and_pin)
+    extra_hosts, error = pin_hosts_or_error("https://a.example/", "https://b.example/")
+
+    assert error is None
+    assert extra_hosts == {"a.example": "10.0.0.1", "b.example": "10.0.0.2"}
+
+
+def test_pin_hosts_or_error_refuses_on_any_blocked_host(monkeypatch):
+    def fake_resolve_and_pin(host):
+        if host == "bad.example":
+            return None, "blocked"
+        return "10.0.0.1", None
+
+    monkeypatch.setattr("scope_guard.resolve_and_pin", fake_resolve_and_pin)
+    extra_hosts, error = pin_hosts_or_error("https://ok.example/", "https://bad.example/")
+
+    assert extra_hosts == {}
+    assert error == "blocked"
+
+
+def test_pin_hosts_or_error_returns_empty_dict_for_no_extractable_host():
+    # "" and a path-only string genuinely produce no host via _host_of()
+    # (unlike "not-a-url", which _host_of() DOES treat as a bare hostname
+    # -- see the dedicated test below for exactly why that distinction
+    # matters).
+    extra_hosts, error = pin_hosts_or_error("", "/just/a/path")
+    assert extra_hosts == {}
+    assert error is None
+
+
+def test_pin_hosts_or_error_handles_a_bare_hostname_with_no_scheme(monkeypatch):
+    # Regression: urlsplit("target.com").hostname is None (no "//" means
+    # the whole string parses as a path, not a netloc) -- a bare
+    # urlsplit-based extraction would have made this function a silent
+    # no-op for nuclei-mcp's own real call shape (scan_target("target.com"),
+    # confirmed against tests/test_nuclei_mcp.py). _host_of() handles it.
+    def fake_resolve_and_pin(host):
+        assert host == "target.com"
+        return "93.184.216.34", None
+
+    monkeypatch.setattr("scope_guard.resolve_and_pin", fake_resolve_and_pin)
+    extra_hosts, error = pin_hosts_or_error("target.com")
+
+    assert error is None
+    assert extra_hosts == {"target.com": "93.184.216.34"}
+
+
+def test_pin_hosts_or_error_skips_pinning_entirely_under_bench_network(monkeypatch):
+    # Regression: "bench-target" (P2-BENCH's own real-tool fixture-proof
+    # tests) is resolvable ONLY from inside a container joined to the
+    # throwaway --internal podman network those tests set up -- never
+    # from this host-side process. Without this escape hatch (the same
+    # one sandbox_runner.build_argv() itself already documents for this
+    # exact env var), resolve_and_pin() would always fail to resolve it
+    # here and refuse every real-tool benchmark run.
+    def _unreachable_resolve_and_pin(host):
+        raise AssertionError("must not even attempt resolution under HUNTMCP_BENCH_NETWORK")
+
+    monkeypatch.setattr("scope_guard.resolve_and_pin", _unreachable_resolve_and_pin)
+    monkeypatch.setenv("HUNTMCP_BENCH_NETWORK", "huntmcp-bench-net-deadbeef")
+
+    extra_hosts, error = pin_hosts_or_error("http://bench-target:8000/")
+
+    assert extra_hosts == {}
+    assert error is None

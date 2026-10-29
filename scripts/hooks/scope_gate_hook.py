@@ -105,6 +105,14 @@ TIER2_MCP_SERVERS = {
     "subfinder-mcp", "httpx-mcp", "katana-mcp", "nmap-mcp",
     "nuclei-mcp", "sqlmap-mcp", "dalfox-mcp", "ffuf-mcp", "watch-mcp",
     "waf-bypass-mcp", "browser-mcp", "playwright-mcp", "idor-mcp",
+    # schemathesis-mcp's run_schema_test(url, target) sends real HTTP
+    # requests to `target` (and fetches `url` itself) -- both HOST_ARG_KEYS
+    # entries, caught automatically. The server also enforces this in-code
+    # via scope_guard.outbound_policy_error()+is_in_scope() before ever
+    # calling job_runtime.start_job (see mcp-servers/schemathesis-mcp/
+    # server.py's own _scope_or_error) -- this hook entry is the early
+    # filter, not the only boundary, same relationship as idor-mcp's.
+    "schemathesis-mcp",
     # obscura-mcp is the same live-target-touching browser-automation role
     # as browser-mcp/playwright-mcp above -- added here so it gets the
     # identical structural scope-gate, not just the documented-convention

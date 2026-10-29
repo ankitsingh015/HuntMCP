@@ -12,6 +12,8 @@ import json
 import os
 import sys
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "mcp-servers"))
 
@@ -20,6 +22,13 @@ _spec = importlib.util.spec_from_file_location(
 )
 ffuf_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ffuf_server)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_dns(monkeypatch):
+    """"target.com" is a REAL, resolvable domain -- mock resolve_and_pin
+    so fuzz_directory()/fuzz_with_data() never do a real DNS lookup."""
+    monkeypatch.setattr(ffuf_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
 
 
 def _extract_provenance_payload(result: str) -> dict:

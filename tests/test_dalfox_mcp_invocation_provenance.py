@@ -13,6 +13,8 @@ import os
 import re
 import sys
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "mcp-servers"))
 
@@ -23,6 +25,13 @@ dalfox_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dalfox_server)
 
 _JOB_ID_RE = re.compile(r'job_id="([^"]+)"')
+
+
+@pytest.fixture(autouse=True)
+def _no_real_dns(monkeypatch):
+    """"target.com" is a REAL, resolvable domain -- mock resolve_and_pin
+    so scan_url() never does a real DNS lookup in this file's tests."""
+    monkeypatch.setattr(dalfox_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
 
 FOUND_OUTPUT = (
     '{"vuln":"XSS","param":"q","evidence":"x","severity":"high","type":"reflected","payload":"y"}\n'

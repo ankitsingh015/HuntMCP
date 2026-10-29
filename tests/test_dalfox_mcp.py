@@ -1,6 +1,8 @@
 import importlib.util
 import os
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _spec = importlib.util.spec_from_file_location(
@@ -8,6 +10,15 @@ _spec = importlib.util.spec_from_file_location(
 )
 dalfox_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(dalfox_server)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_dns(monkeypatch):
+    """"target.com" (this file's standard test target) is a REAL,
+    resolvable domain -- without this, every scan_url()/scan_parameter()
+    call does a real DNS lookup via the new scope_guard.pin_hosts_or_error()
+    call in _start() (testing.md: avoid real external targets)."""
+    monkeypatch.setattr(dalfox_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
 
 
 FOUND_OUTPUT = (
@@ -114,6 +125,36 @@ def test_check_scan_surfaces_rate_limit_block(monkeypatch):
     out = dalfox_server.check_scan("job-block")
     assert "RATE_LIMIT" in out
     assert "BLOCK DETECTED" in out
+
+
+def test_scan_url_refuses_when_pinning_finds_a_blocked_ip(monkeypatch):
+    def fake_resolve_and_pin(host):
+        return None, f"host {host!r} resolves to a link-local address -- refused (SSRF)"
+    monkeypatch.setattr(dalfox_server.scope_guard, "resolve_and_pin", fake_resolve_and_pin)
+
+    def _unreachable_start_job(*a, **k):
+        raise AssertionError("scan_url must refuse before ever calling start_job")
+    monkeypatch.setattr(dalfox_server.job_runtime, "start_job", _unreachable_start_job)
+
+    out = dalfox_server.scan_url("https://target.com/?q=1")
+    assert "BLOCKED" in out
+    assert "SSRF" in out
+
+
+def test_scan_parameter_pins_url_host_not_param_name(monkeypatch):
+    """Regression: scan_parameter()'s _start() call used to pass `param`
+    (e.g. "q") as the pinning target -- `param` is never a URL, so pinning
+    it would have been meaningless. _start() now takes an explicit `url`
+    param for this, separate from `label` (the display identifier)."""
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["extra_hosts"] = kwargs.get("extra_hosts")
+        return {"job_id": "job-pin", "status": "running", "tool": tool}
+    monkeypatch.setattr(dalfox_server.job_runtime, "start_job", fake_start_job)
+
+    dalfox_server.scan_parameter("https://target.com/?q=1", "q")
+    assert captured["extra_hosts"] == {"target.com": "93.184.216.34"}
 
 
 def test_check_scan_still_running_does_not_consume_target(monkeypatch):

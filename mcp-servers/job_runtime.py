@@ -93,7 +93,8 @@ class _Job(NamedTuple):
 
 def start_job(tool_name: str, args: list[str], max_wall_seconds: int, jobs: dict,
               cwd: str | None = None, extra_mounts: list[str] | None = None,
-              extra_mounts_rw: list[str] | None = None) -> dict:
+              extra_mounts_rw: list[str] | None = None,
+              extra_hosts: dict[str, str] | None = None) -> dict:
     """Launch `tool_name` with `args` in the background and return
     immediately. Stores the live handle in the caller's `jobs` dict under
     a fresh uuid4 job_id (collision-proof by construction, unlike
@@ -105,6 +106,12 @@ def start_job(tool_name: str, args: list[str], max_wall_seconds: int, jobs: dict
     is the same, mounted READ-WRITE, for the rarer case where the
     sandboxed process must also write there -- e.g. sqlmap-mcp's own
     `--output-dir <tmpdir>` or secrets-mcp's gitleaks report directory.
+
+    `extra_hosts`, if given, is passed straight through to
+    sandbox_runner.build_argv()'s own `extra_hosts` param -- see its
+    docstring for the DNS-rebinding-pinning rationale (schemathesis-mcp's
+    own use case: resolve once via scope_guard.resolve_and_pin(), pin here
+    for the whole sandboxed run).
     Read-only is the safer default: a real, demonstrated data-loss risk
     (an unnecessary `:rw` mount let a sandboxed process delete a real host
     file during this feature's own testing) is why write access is a
@@ -159,7 +166,7 @@ def start_job(tool_name: str, args: list[str], max_wall_seconds: int, jobs: dict
             argv = sandbox_runner.build_argv(
                 tool_name, args, scratch_dir, env=minimal_subprocess_env(), cwd=cwd,
                 extra_mounts=extra_mounts, extra_mounts_rw=extra_mounts_rw,
-                container_name=container_name,
+                extra_hosts=extra_hosts, container_name=container_name,
             )
         except sandbox_runner.UnknownSandboxTool as e:
             # Re-raised as FileNotFoundError (not the original type) so

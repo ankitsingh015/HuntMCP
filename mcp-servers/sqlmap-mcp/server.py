@@ -8,6 +8,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from engagement_paths import resolve_dir  # noqa: E402
 import job_runtime  # noqa: E402
+import scope_guard  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
 
@@ -56,15 +57,21 @@ def _parse_vulns(output: str, include_type: bool) -> list[str]:
 
 
 def _start(args: list[str], timeout: int, tmpdir: str,
-           no_result_message: str, found_header: str, include_type: bool, target: str) -> str:
+           no_result_message: str, found_header: str, include_type: bool, target: str,
+           extra_hosts: dict[str, str] | None) -> str:
     try:
         # S5 (rootless sandboxing): sqlmap now runs inside an ephemeral
         # container that sees nothing from the host by default -- tmpdir
         # (the --output-dir sqlmap writes into and this module reads back
         # from after the job completes) must be explicitly declared via
         # extra_mounts_rw= (sqlmap must WRITE its findings there), or it's
-        # invisible inside the sandbox.
-        result = job_runtime.start_job("sqlmap", args, timeout, _jobs, extra_mounts_rw=[tmpdir])
+        # invisible inside the sandbox. `extra_hosts` DNS-pins `target`'s
+        # host (see scope_guard.pin_hosts_or_error's own docstring for
+        # why -- sqlmap resolves and connects on its own, never through
+        # this repo's http_probe.fetch(), so it needs this same closure of
+        # the DNS-rebinding TOCTOU window schemathesis-mcp already has).
+        result = job_runtime.start_job("sqlmap", args, timeout, _jobs,
+                                        extra_mounts_rw=[tmpdir], extra_hosts=extra_hosts)
     except FileNotFoundError:
         shutil.rmtree(tmpdir, ignore_errors=True)
         return "Error: sqlmap not found. Install with: pip install sqlmap"
@@ -111,10 +118,20 @@ def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1
     URL-parameter injection AND does not regress to a false positive in
     patched mode, unlike bare --forms which aborted before testing
     anything on a formless page."""
+    extra_hosts, pin_err = scope_guard.pin_hosts_or_error(url)
+    if pin_err:
+        return f"BLOCKED by scope gate: {pin_err}"
     tmpdir = tempfile.mkdtemp(dir=_output_dir())
     args = [
         "-u", url,
         "--batch",
+        # Security review finding: sqlmap's --batch mode follows a detected
+        # redirect by default (hence --ignore-redirects existing at all) --
+        # the target's own response could otherwise send sqlmap to an
+        # arbitrary, unchecked, unpinned host (e.g. cloud metadata),
+        # bypassing both the scope check and pin_hosts_or_error() above the
+        # same way schemathesis-mcp's --max-redirects 0 exists to prevent.
+        "--ignore-redirects",
         "--crawl=1",
         "--forms",
         "--output-dir", tmpdir,
@@ -126,7 +143,8 @@ def test_injection(url: str, method: str = "GET", data: str = "", level: int = 1
         args.extend(["--data", data])
     return _start(args, timeout, tmpdir,
                   f"No injection found at {url} (level={level}, risk={risk}).",
-                  f"sqlmap results for {url}:", include_type=True, target=url)
+                  f"sqlmap results for {url}:", include_type=True, target=url,
+                  extra_hosts=extra_hosts or None)
 
 
 @app.tool()
@@ -138,18 +156,25 @@ def test_with_data(url: str, data: str, method: str = "POST", level: int = 2, ti
     No auto-form-detection -- this is for a known endpoint/body shape you
     already have. Also backgrounded -- poll check_scan(job_id) for the
     result."""
+    extra_hosts, pin_err = scope_guard.pin_hosts_or_error(url)
+    if pin_err:
+        return f"BLOCKED by scope gate: {pin_err}"
     tmpdir = tempfile.mkdtemp(dir=_output_dir())
     args = [
         "-u", url,
         "--data", data,
         "--batch",
+        # See test_injection()'s own comment: closes the same
+        # redirect-to-unpinned-host bypass of pin_hosts_or_error() above.
+        "--ignore-redirects",
         "--output-dir", tmpdir,
         "--level", str(level),
         "--threads", "5",
     ]
     return _start(args, timeout, tmpdir,
                   "No injection found with the provided data.",
-                  "sqlmap results:", include_type=False, target=url)
+                  "sqlmap results:", include_type=False, target=url,
+                  extra_hosts=extra_hosts or None)
 
 
 @app.tool()

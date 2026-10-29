@@ -21,6 +21,19 @@ nuclei_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(nuclei_server)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_dns(monkeypatch):
+    """"target.com" (this whole file's standard test target) is a REAL,
+    resolvable domain -- without this, every scan_target()/
+    scan_with_templates() call in this file does a real DNS lookup via
+    the new scope_guard.pin_hosts_or_error() call in _start() (testing.md:
+    avoid real external targets, deterministic fixtures). Autouse so every
+    test gets it without repeating the same monkeypatch line everywhere;
+    a test that specifically needs real resolution behavior can still
+    override this with its own monkeypatch after the fixture runs."""
+    monkeypatch.setattr(nuclei_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
+
+
 FOUND_OUTPUT = (
     '{"template-id":"exposed-panel","info":{"name":"Exposed Admin Panel","severity":"medium"},'
     '"matched-at":"https://target.com/admin","type":"http"}\n'
@@ -76,6 +89,36 @@ def test_scan_target_then_check_scan_round_trip(monkeypatch):
     )
     out = nuclei_server.check_scan("job-nuc")
     assert "Exposed Admin Panel" in out
+
+
+def test_scan_target_refuses_when_pinning_finds_a_blocked_ip(monkeypatch):
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+
+    def fake_resolve_and_pin(host):
+        return None, f"host {host!r} resolves to a link-local address -- refused (SSRF)"
+    monkeypatch.setattr(nuclei_server.scope_guard, "resolve_and_pin", fake_resolve_and_pin)
+
+    def _unreachable_start_job(*a, **k):
+        raise AssertionError("scan_target must refuse before ever calling start_job")
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", _unreachable_start_job)
+
+    out = nuclei_server.scan_target("target.com")
+    assert "BLOCKED" in out
+    assert "SSRF" in out
+
+
+def test_scan_target_pins_the_resolved_host(monkeypatch):
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    monkeypatch.setattr(nuclei_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["extra_hosts"] = kwargs.get("extra_hosts")
+        return {"job_id": "job-pin", "status": "running", "tool": tool}
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
+
+    nuclei_server.scan_target("target.com")
+    assert captured["extra_hosts"] == {"target.com": "93.184.216.34"}
 
 
 def test_scan_with_templates_no_findings_wording_differs_from_scan_target(monkeypatch):

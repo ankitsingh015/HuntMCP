@@ -36,6 +36,10 @@ def test_injection_type_not_truncated_to_one_char(monkeypatch, tmp_path):
     fake_out_dir = tmp_path / "sqlmap-out"
     fake_out_dir.mkdir()
     monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
+    # example.com is a REAL, resolvable domain -- mock resolve_and_pin so
+    # this test never does a real DNS lookup (testing.md: avoid real
+    # external targets, deterministic fixtures).
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
     monkeypatch.setattr(
         sqlmap_server.job_runtime, "start_job",
         lambda *a, **k: {"job_id": "job-1", "status": "running", "tool": "sqlmap"},
@@ -81,6 +85,7 @@ def test_injection_pairs_forms_with_crawl_so_it_never_aborts_on_a_formless_page(
     fake_out_dir = tmp_path / "sqlmap-out"
     fake_out_dir.mkdir()
     monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
     captured = {}
 
     def _fake_start_job(tool, args, timeout, jobs, **kwargs):
@@ -103,6 +108,7 @@ def test_check_scan_actually_removes_the_scratch_tmpdir_from_disk(monkeypatch, t
     fake_out_dir = tmp_path / "sqlmap-out"
     fake_out_dir.mkdir()
     monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
     monkeypatch.setattr(
         sqlmap_server.job_runtime, "start_job",
         lambda *a, **k: {"job_id": "job-cleanup", "status": "running", "tool": "sqlmap"},
@@ -121,6 +127,79 @@ def test_check_scan_actually_removes_the_scratch_tmpdir_from_disk(monkeypatch, t
     sqlmap_server.check_scan("job-cleanup")
     assert not os.path.isdir(tmpdir)
     assert "job-cleanup" not in sqlmap_server._meta
+
+
+def test_test_injection_refuses_when_pinning_finds_a_blocked_ip(monkeypatch, tmp_path):
+    fake_out_dir = tmp_path / "sqlmap-out"
+    fake_out_dir.mkdir()
+    monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
+
+    def fake_resolve_and_pin(host):
+        return None, f"host {host!r} resolves to a link-local address -- refused (SSRF)"
+
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", fake_resolve_and_pin)
+
+    def _unreachable_start_job(*a, **k):
+        raise AssertionError("test_injection must refuse before ever calling start_job")
+    monkeypatch.setattr(sqlmap_server.job_runtime, "start_job", _unreachable_start_job)
+
+    out = sqlmap_server.test_injection("https://example.com/?id=1")
+    assert "BLOCKED" in out
+    assert "SSRF" in out
+
+
+def test_test_injection_pins_the_resolved_host(monkeypatch, tmp_path):
+    fake_out_dir = tmp_path / "sqlmap-out"
+    fake_out_dir.mkdir()
+    monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["extra_hosts"] = kwargs.get("extra_hosts")
+        return {"job_id": "job-pin", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(sqlmap_server.job_runtime, "start_job", fake_start_job)
+    sqlmap_server.test_injection("https://example.com/?id=1")
+
+    assert captured["extra_hosts"] == {"example.com": "93.184.216.34"}
+
+
+def test_test_injection_disables_redirect_following(monkeypatch, tmp_path):
+    """Security review finding: sqlmap's --batch mode follows a detected
+    redirect by default -- the target's own response could otherwise send
+    sqlmap to an arbitrary, unchecked, unpinned host, bypassing both the
+    scope check and pin_hosts_or_error() entirely (the same vector
+    schemathesis-mcp's --max-redirects 0 exists to close)."""
+    fake_out_dir = tmp_path / "sqlmap-out"
+    fake_out_dir.mkdir()
+    monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["args"] = args
+        return {"job_id": "job-redir", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(sqlmap_server.job_runtime, "start_job", fake_start_job)
+    sqlmap_server.test_injection("https://example.com/?id=1")
+    assert "--ignore-redirects" in captured["args"]
+
+
+def test_test_with_data_disables_redirect_following(monkeypatch, tmp_path):
+    fake_out_dir = tmp_path / "sqlmap-out"
+    fake_out_dir.mkdir()
+    monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["args"] = args
+        return {"job_id": "job-redir-2", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(sqlmap_server.job_runtime, "start_job", fake_start_job)
+    sqlmap_server.test_with_data("https://example.com/login", "username=x&password=y")
+    assert "--ignore-redirects" in captured["args"]
 
 
 def test_output_dir_scopes_under_active_engagement(monkeypatch, tmp_path):

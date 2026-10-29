@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import job_runtime  # noqa: E402
+import scope_guard  # noqa: E402
 import templates_pin  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
@@ -110,6 +111,14 @@ def _resolve_templates_arg(templates: str) -> str:
 
 
 def _start(target: str, args: list[str], timeout: int, no_findings_message: str) -> str:
+    # DNS-rebinding/numeric-IP-encoding defense (see
+    # scope_guard.pin_hosts_or_error's own docstring): nuclei resolves and
+    # connects on its own, never through this repo's http_probe.fetch(),
+    # so this closes the same TOCTOU window schemathesis-mcp already has.
+    extra_hosts, pin_err = scope_guard.pin_hosts_or_error(target)
+    if pin_err:
+        return f"BLOCKED by scope gate: {pin_err}"
+
     if not templates_pin.templates_available():
         return templates_pin.missing_templates_error()
 
@@ -121,6 +130,7 @@ def _start(target: str, args: list[str], timeout: int, no_findings_message: str)
         result = job_runtime.start_job(
             "nuclei", args, timeout, _jobs,
             extra_mounts=[templates_pin.TEMPLATES_DIR],
+            extra_hosts=extra_hosts or None,
         )
     except FileNotFoundError:
         return ("Error: nuclei not found. Install with: "
