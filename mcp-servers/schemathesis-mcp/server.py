@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import sys
@@ -7,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import job_runtime  # noqa: E402
 import scope_guard  # noqa: E402
 from engagement_paths import resolve_dir  # noqa: E402
+from injection_boundary import quarantine as _quarantine
 
 from mcp.server.fastmcp import FastMCP
 
@@ -200,13 +202,59 @@ def run_schema_test(url: str, target: str, phases: str = "examples",
             f"(allow up to {timeout}s).")
 
 
+def _find_report_file(report_dir: str) -> str | None:
+    """schemathesis names its JSON report file with a timestamp
+    (json-<UTC timestamp>.json) inside --report-dir, so the exact filename
+    isn't known in advance -- find the one .json file actually written."""
+    if not os.path.isdir(report_dir):
+        return None
+    candidates = [f for f in os.listdir(report_dir) if f.endswith(".json")]
+    if not candidates:
+        return None
+    return os.path.join(report_dir, max(candidates))
+
+
+def _format_report(report: dict, stdout: str, stderr: str) -> str:
+    failures = report.get("failures", [])
+    examples_phase = (report.get("phases") or {}).get("examples") or {}
+    skip_reasons = (report.get("operations") or {}).get("skip_reasons") or []
+
+    lines = []
+    if not failures:
+        if skip_reasons:
+            lines.append(
+                f"No falsifiers found, but schemathesis skipped testing "
+                f"entirely for: {', '.join(skip_reasons)} -- this is NOT the "
+                f"same as a tested-and-clean result."
+            )
+        else:
+            lines.append("No falsifiers found (examples phase: "
+                         f"{examples_phase.get('status', 'unknown')}).")
+    else:
+        lines.append(f"schemathesis found {len(failures)} falsifier(s):")
+        lines.append("")
+        for f in failures:
+            ops = ", ".join(f.get("operations", []))
+            lines.append(f"  [{f.get('severity', '?')}] {f.get('title', f.get('type', '?'))} -- {ops}")
+
+    tail = (stdout + stderr).strip()
+    if tail:
+        lines.append("")
+        lines.append("Raw output (truncated):")
+        lines.append(_quarantine(tail[:2000], source_label="schemathesis output"))
+
+    lines.append("")
+    lines.append(f"Falsifiers (for case-mcp/P3-ADAPTER): {json.dumps(failures)}")
+    return "\n".join(lines)
+
+
 @app.tool()
 def check_scan(job_id: str) -> str:
     """Poll a run started by run_schema_test(). Returns "status: running
-    (Xs elapsed)" while schemathesis is still working. Once done, returns
-    the falsifier report (see Task 4 of this tool's implementation plan
-    for the real report-parsing behavior this placeholder body will be
-    replaced with)."""
+    (Xs elapsed)" while schemathesis is still working. Once done, parses
+    the schemathesis JSON report and returns the falsifier contract (a
+    final "Falsifiers (for case-mcp/P3-ADAPTER): <json>" line) consumed by
+    a future P3-ADAPTER task."""
     result = job_runtime.poll_job(job_id, _jobs)
     if "status" not in result:
         return result["error"]
@@ -215,16 +263,32 @@ def check_scan(job_id: str) -> str:
 
     meta = _meta.pop(job_id, None)
     scratch_dir = meta["scratch_dir"] if meta else None
-    if scratch_dir:
-        shutil.rmtree(scratch_dir, ignore_errors=True)
     if result["status"] == "timeout":
+        if scratch_dir:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
         return result["error"]
     if meta is None:
         return "schemathesis finished, but this job's metadata was already collected."
 
-    # Placeholder body -- Task 4 replaces this with real JSON-report parsing.
-    return (f"{job_runtime.block_prefix(result)}schemathesis finished "
-            f"(exit code {result['returncode']}). Report parsing not yet implemented.")
+    try:
+        report_file = _find_report_file(scratch_dir)
+        if report_file is None:
+            return (f"{job_runtime.block_prefix(result)}Error: schemathesis finished "
+                     f"(exit code {result['returncode']}) but no JSON report file was "
+                     f"found in {scratch_dir!r} -- cannot determine falsifiers.")
+        try:
+            with open(report_file) as f:
+                report = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            return (f"{job_runtime.block_prefix(result)}Error: schemathesis finished "
+                     f"but its report file was unreadable/malformed "
+                     f"({e.__class__.__name__}: {e}).")
+
+        formatted = _format_report(report, result["stdout"], result["stderr"])
+        return f"{job_runtime.block_prefix(result)}{formatted}"
+    finally:
+        if scratch_dir:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
 @app.tool()
