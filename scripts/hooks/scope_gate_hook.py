@@ -180,7 +180,8 @@ TIER2_MCP_SERVERS = {
 # _fetch_scope_or_error() (reusing scope_guard, same as the two senders
 # above) as every whole-server TIER2_MCP_SERVERS entry already has.
 TIER2_MCP_TOOLS: dict[str, frozenset[str]] = {
-    "case-mcp": frozenset({"determinism_gate", "run_counterfactual", "fetch_with_provenance"}),
+    "case-mcp": frozenset({"determinism_gate", "run_counterfactual", "fetch_with_provenance",
+                           "run_cem_pipeline"}),
 }
 
 HOST_ARG_KEYS = ("domains", "domain", "target", "targets", "url", "host", "hosts")

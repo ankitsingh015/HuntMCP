@@ -89,9 +89,12 @@ def test_case_mcp_is_not_whole_server_tier2():
 def test_case_mcp_network_tools_are_declared_at_tool_level():
     # C1a: fetch_with_provenance (curl/tool_resolver wire-provenance
     # source) joined determinism_gate/run_counterfactual as a third real
-    # case-mcp network tool.
+    # case-mcp network tool. P3-CEMHUNT: run_cem_pipeline orchestrates those
+    # senders, so it is gated at the hook too (its `url` arg must equal the
+    # base_request url, making the hook's pre-check meaningful).
     assert hook.TIER2_MCP_TOOLS["case-mcp"] == frozenset(
-        {"determinism_gate", "run_counterfactual", "fetch_with_provenance"})
+        {"determinism_gate", "run_counterfactual", "fetch_with_provenance",
+         "run_cem_pipeline"})
 
 
 def test_mcp_tool_name_parsing():
