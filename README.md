@@ -5,18 +5,17 @@
 [![CI](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![Harness](https://img.shields.io/badge/harness-OpenCode%20%2B%20Claude%20Code-purple)
-![MCP Count](https://img.shields.io/badge/MCP%20servers-24-orange)
+![MCP Count](https://img.shields.io/badge/MCP%20servers-33-orange)
 ![Skills](https://img.shields.io/badge/technique%20skills-52-blueviolet)
 ![Model Providers](https://img.shields.io/badge/models-no%20lock--in-yellow)
 ![Last Commit](https://img.shields.io/github/last-commit/ankitsingh015/HuntMCP?color=blue)
 
-<img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&size=18&pause=1200&color=8B5CF6&center=true&vCenter=true&width=750&lines=Recon+%E2%86%92+Scan+%E2%86%92+Exploit+%E2%86%92+Validate+%E2%86%92+Report;Runs+on+OpenCode+or+native+Claude+Code;Any+model+provider+%E2%80%94+no+lock-in;Scope-gated.+Self-improving.+For+authorized+testing+only." alt="Typing SVG"/>
+<img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&size=18&pause=1200&color=8B5CF6&center=true&vCenter=true&width=750&lines=Recon+%E2%86%92+Scan+%E2%86%92+Chain+%E2%86%92+Exploit+%E2%86%92+Report;Runs+on+OpenCode+or+native+Claude+Code;Any+model+provider+%E2%80%94+no+lock-in;Scope-gated.+Self-improving.+For+authorized+testing+only." alt="Typing SVG"/>
 
 </div>
 
 <p align="center">
-A single orchestrator (<b>HuntBrain</b>) delegates to specialist agents — Recon, Scan, Exploit,
-Chain-Planner, Report, plus unlimited dynamic specialists spawned on demand — that drive real
+A single orchestrator (<b>HuntBrain</b>) delegates to specialist agents that drive real
 security tools through MCP, validate their own findings before calling anything "confirmed,"
 and write back what they learn after every engagement.
 </p>
@@ -48,7 +47,7 @@ and write back what they learn after every engagement.
 
 <br>
 
-## 🎯 Why HuntMCP
+## Why HuntMCP
 
 Most agentic pentest tooling picks one of two extremes: a fixed scan-and-report pipeline
 with no real judgment, or a single do-everything LLM loop with no guardrails. HuntMCP sits
@@ -68,8 +67,8 @@ independently reproduces it. No hallucinated finding ever reaches a report.
 
 **🔒 Safety, structurally enforced**
 
-Scope is validated once against `engagement.yaml`, then checked deterministically
-(no LLM call, can't be reasoned away) before every single tool invocation.
+Scope is checked deterministically, not reasoned about by an LLM — see
+[Scope & Authorization](#scope--authorization) for the full mechanism.
 
 </td>
 <td width="33%" valign="top">
@@ -85,15 +84,15 @@ the next hunt on a similar stack starts smarter than the last one did.
 
 ---
 
-## ✨ Features
+## Features
 
 | | |
 |---|---|
 | 🤖 **Multi-Level AI Orchestration** | Level 1 HuntBrain delegates to Level 2 specialists (Recon, Scan, Exploit, Chain-Planner, Report). Not a fixed pipeline — the AI decides what to run next based on what recon actually finds. |
 | 🔀 **Dual Harness, Zero Lock-In** | Run the exact same agent roster two ways: [OpenCode](https://opencode.ai) (`.opencode/agents/`, any model provider) or native [Claude Code](https://claude.com/claude-code) subagents (`.claude/agents/`, `.mcp.json`). Same MCP servers, same knowledge layer, pick your harness. |
 | 🌐 **No Model Lock-In** | `model_gateway.py` resolves a provider per agent role from an explicit override or an automatic fallback chain: Anthropic → OpenAI → DeepSeek → Groq → OpenRouter → local Ollama. Bring whichever API key you have. |
-| 🔒 **Scope-Gated by Design** | Authorization is validated once per engagement against `engagement.yaml`, then every Tier-2 tool call runs a cheap, deterministic domain check via `scripts/check-scope.sh` before touching a host. No token spent re-verifying scope on every action; no way to silently drift out of scope either. |
-| ⚡ **Reactive Rate Limiting** | No blanket per-request delay. `tool_resolver.run_tool()` only reacts when it actually detects a block: a genuine rate limit gets one backoff-and-retry, a WAF/bot-detection block is surfaced to the agent to escalate with real bypass tooling instead of just sleeping. |
+| 🔒 **Scope-Gated by Design** | A deterministic domain check runs before every Tier-2 tool call — see [Scope & Authorization](#scope--authorization). |
+| ⚡ **Reactive Rate Limiting** | No blanket per-request delay — `tool_resolver.run_tool()` only reacts when it detects a real block. See [How It Works](#how-it-works). |
 | 🧠 **Three-Part Knowledge Layer** | Writeup RAG (ChromaDB + sentence-transformers, learns from public writeups *and* on-demand NVD CVE lookups), Memory DB (SQLite, per-target hunt history), and a self-improving Lessons Registry — structured technique write-back after every confirmed finding *and* every closed false positive. |
 | 🔗 **Vulnerability Chaining** | `chainer-mcp` runs a DAG-based planner across 15 chain templates (IDOR+XSS→ATO, SSRF+cloud→credential access, upload+LFI→RCE…) and escalates severity when a chain lands. |
 | 🎭 **Authenticated Session Testing** | `browser-mcp` seeds a real headless Chromium with cookies, Bearer tokens, or `localStorage` — test an SPA as a logged-in user, or diff the same page across two roles for an IDOR check. |
@@ -105,7 +104,7 @@ the next hunt on a similar stack starts smarter than the last one did.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```mermaid
 flowchart TB
@@ -173,7 +172,7 @@ phase-by-phase build status.
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 <details open>
 <summary><b>1. Prerequisites</b></summary>
@@ -206,14 +205,7 @@ go install github.com/hahwul/dalfox/v2@latest
 go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest
 # nmap via your OS package manager (apt/brew/...)
 
-# Obscura (optional) -- lighter/faster headless-browser alternative to
-# browser-mcp's Playwright/Chromium, ships its own MCP server (`obscura
-# mcp`). Grab a release binary from
-# https://github.com/h4ckf0r0day/obscura/releases (verify its checksum)
-# and put it on PATH, or: cargo install --git https://github.com/h4ckf0r0day/obscura
-# Then: ./scripts/connect-obscura.sh -- personal --scope local registration,
-# same reasoning as Burp below (see that section for the full "why not
-# tracked config" rationale).
+# Obscura / Burp Suite integration: both optional, see "How It Works" below.
 
 # Initialize local databases
 ./scripts/setup-db.sh
@@ -257,7 +249,7 @@ claude
 
 ---
 
-## 💻 Usage
+## Usage
 
 ### OpenCode
 ```bash
@@ -286,7 +278,7 @@ automatically as the engagement progresses.
 
 ---
 
-## 🔒 Scope & Authorization
+## Scope & Authorization
 
 > [!WARNING]
 > Nothing runs against a target without `engagement.yaml` (gitignored — this file names a real
@@ -308,7 +300,7 @@ state on disk.
 
 ---
 
-## ⚙️ How It Works
+## How It Works
 
 ### The HuntBrain Decision Loop
 
@@ -319,8 +311,8 @@ flowchart TD
     S3["3️⃣ RAG QUERY<br/>what techniques work<br/>for this tech stack?"]
     S4["4️⃣ RECON<br/>subfinder → httpx →<br/>katana → nmap"]
     S5["5️⃣ SCAN<br/>nuclei → sqlmap →<br/>dalfox → ffuf"]
-    S6["6️⃣ VALIDATE<br/>exploit-agent independently<br/>re-runs each candidate"]
-    S7["7️⃣ CHAIN<br/>chain-planner detects<br/>exploitable combinations"]
+    S6["6️⃣ CHAIN<br/>chain-planner flags<br/>exploitable combinations"]
+    S7["7️⃣ VALIDATE + EXPLOIT<br/>exploit-agent confirms candidates<br/>and executes flagged chains"]
     S8["8️⃣ REPORT<br/>HackerOne/Bugcrowd-ready<br/>submission, one file per finding"]
 
     S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8
@@ -360,44 +352,25 @@ engagements.
 | 2 | 📝 **Report Agent** | Report generation | `writeup-mcp` |
 | 2 | ⚡ **Dynamic specialists** | GraphQL, JWT, OAuth, Cloud, etc. | Spawned on demand, scoped per-task |
 
-Burp Suite integration (Repeater/Collaborator validation) is an optional enhancement tier in
-[ARCHITECTURE.md](ARCHITECTURE.md), not a hard requirement — the built agents above run
-entirely on the open-source tool chain. Out-of-band confirmation (blind SSRF/XXE/SQLi/RCE) is
-already covered without Burp via `oob-mcp` (wraps `interactsh-client`).
-
-If you do have Burp Suite, wiring it up as a *live* MCP integration (real proxy history,
-Repeater, Collaborator, Scanner issues — 27 tools total) takes one command:
+Two optional, enhancement-tier integrations — Burp Suite and
+[Obscura](https://github.com/h4ckf0r0day/obscura) — extend the agents above; everything built
+runs entirely on the open-source tool chain without either. Each is a personal, local-only MCP
+registration (never forced on a clone), wired up with one command:
 
 ```bash
-# In Burp: Extensions tab > BApp Store > install "MCP Server" > start it.
-./scripts/connect-burp.sh          # registers the bridge, then restart your session
-./scripts/connect-burp.sh --remove # undo
+# Burp Suite (Repeater/Collaborator, 27 tools) -- install the "MCP Server" BApp first, then:
+./scripts/connect-burp.sh          # or --remove to undo
+
+# Obscura (lighter/faster headless-browser alternative to browser-mcp, ~32 tools)
+./scripts/connect-obscura.sh       # or --remove to undo
 ```
 
-This is a personal `--scope local` MCP registration (your own `~/.claude.json`), not
-something the repo forces on every clone — it only works while Burp is open on your
-machine with the extension running. This is separate from `burp-import-mcp` (always
-available, no Burp needed — reads a manually-exported HTTP-history XML file).
-
-Same pattern for [Obscura](https://github.com/h4ckf0r0day/obscura) (a lighter/faster
-headless-browser alternative to `browser-mcp`'s Playwright/Chromium — its own native
-MCP server, ~32 tools):
-
-```bash
-./scripts/connect-obscura.sh          # registers the bridge, then restart your session
-./scripts/connect-obscura.sh --remove # undo
-```
-
-Also a personal `--scope local` registration, not tracked config — its own compiled
-binary is its MCP server (nothing for this repo to wrap in a Python FastMCP server the
-way every other tool-backed MCP server here is), so its calls don't pass through
-`tool_resolver.py`'s shared budget/audit logic the way a wrapped tool's would. Scope-gated
-the same way `browser-mcp`/`playwright-mcp` are either way — see `scripts/hooks/
-scope_gate_hook.py`'s `TIER2_MCP_SERVERS`.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for what each integration adds, how it's scope-gated,
+and why it stays outside `tool_resolver.py`'s shared budget/audit path.
 
 ---
 
-## 🌐 Model Providers
+## Model Providers
 
 Set an explicit override (a provider name, not a model string — the gateway picks each
 provider's default model), or let the fallback chain pick automatically:
@@ -424,7 +397,7 @@ above applies to the OpenCode harness, where every provider is fair game.
 
 ---
 
-## 🛡️ Vulnerability Coverage
+## Vulnerability Coverage
 
 HuntMCP tests 30+ vulnerability classes across the OWASP Web Security Testing Guide (WSTG)
 methodology, backed by 52 technique skills covering everything from low-hanging fruit to
@@ -442,65 +415,9 @@ deep-cut, disclosed-report-derived edge cases:
 
 ---
 
-## 📁 Project Structure
-
-<details>
-<summary><b>Click to expand full directory layout</b></summary>
-
-```
-HuntMCP/
-├── mcp-servers/               24 FastMCP servers (one per tool) + shared libs:
-│   ├── tool_resolver.py         binary resolution + reactive rate-limit/WAF handling
-│   ├── scope_guard.py           engagement.yaml scope checks (shared across harnesses)
-│   ├── budget_guard.py          Tier-2 tool-call budget circuit-breaker
-│   ├── engagement_paths.py      per-target state dirs -- multi-target hunting, no state mixing
-│   ├── model_gateway.py         multi-provider model selection
-│   ├── audit_log.py             per-call JSON audit trail
-│   ├── dedupe_check.py          duplicate-finding check
-│   ├── case_store.py            persistent case state -- hypotheses, evidence, finding lifecycle
-│   ├── bounty_scope.py          aggregated bounty-program scope cache/lookup/diff
-│   ├── disclosed_reports.py     disclosed-vulnerability-report cache/search
-│   ├── content_scanner.py       OWASP Skill/MCP Top 10-style safety scan for new content
-│   ├── browser-mcp/             headless-Chromium JS/DOM confirmation + auth session seeding
-│   ├── idor-mcp/                automated cross-account IDOR/BOLA sweep
-│   ├── secrets-mcp/             gitleaks secret scan + JS-bundle endpoint inventory
-│   └── oob-mcp/                 interactsh-client wrapper (blind SSRF/XXE/SQLi/RCE)
-├── .opencode/
-│   ├── agents/                 Multi-level agent files (OpenCode harness)
-│   ├── plugin/scope-gate.ts     tool.execute.before hook -- structural scope enforcement
-│   └── commands/                /ingest, /learn, /chain, /watch
-├── .claude/
-│   ├── agents/                 Same agent roster, native Claude Code subagents
-│   ├── commands/                /audit
-│   └── settings.json            PreToolUse hook: structural scope + rm enforcement
-├── .mcp.json                   MCP server registration for Claude Code
-├── scripts/
-│   ├── hooks/scope_gate_hook.py     shared scope/rm-block hook, both harnesses
-│   ├── new-target-session.sh        isolate a session for true concurrent multi-target hunting
-│   └── check-scope.sh, check-budget.sh, switch-engagement.sh, setup, ingestion, cron
-├── knowledge/
-│   ├── master-pentest-prompt.md  Phase-mapped WSTG methodology reference
-│   ├── payloads/                 Curated payload lists per vulnerability class
-│   └── wordlists/                Directories, API endpoints, subdomains
-├── data/
-│   ├── chroma/                  Vector DB (local, gitignored)
-│   ├── engagements/<slug>/       Per-target state -- scope, budget, findings, reports
-│   └── writeups/                 Raw writeup markdown (git-tracked)
-├── backend/                     Optional Go + Postgres/pgvector hosted backend
-├── engagement.yaml.example      Scope file format (real engagement.yaml is gitignored)
-├── opencode.jsonc                MCP configuration + permissions (OpenCode)
-├── docker-compose.yml / Dockerfile
-├── CLAUDE.md / AGENTS.md         Coding-agent guidance for this repo
-└── ARCHITECTURE.md               Full system design + phase-by-phase build status
-```
-
-</details>
-
----
-
 <div align="center">
 
-## 📄 License
+## License
 
 [MIT](LICENSE) — use freely, adapt for your project, no attribution required.
 
