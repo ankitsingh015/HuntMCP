@@ -253,8 +253,9 @@ def check_scan(job_id: str) -> str:
     """Poll a run started by run_schema_test(). Returns "status: running
     (Xs elapsed)" while schemathesis is still working. Once done, parses
     the schemathesis JSON report and returns the falsifier contract (a
-    final "Falsifiers (for case-mcp/P3-ADAPTER): <json>" line) consumed by
-    a future P3-ADAPTER task."""
+    final "Falsifiers (for case-mcp/P3-ADAPTER): <json>" line) -- feed that
+    JSON array straight into case-mcp's ingest_schemathesis_falsifiers()
+    to turn it into candidate findings."""
     result = job_runtime.poll_job(job_id, _jobs)
     if "status" not in result:
         return result["error"]
