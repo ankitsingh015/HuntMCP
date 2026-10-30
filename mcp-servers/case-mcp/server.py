@@ -115,6 +115,82 @@ def create_finding(vuln_class: str, endpoint: str, parameter: str = "", hypothes
 
 
 @app.tool()
+def ingest_schemathesis_falsifiers(falsifiers_json: str) -> str:
+    """P3-ADAPTER: converts schemathesis-mcp check_scan()'s own
+    "Falsifiers (for case-mcp/P3-ADAPTER): <json>" contract line into
+    candidate findings, through the SAME log_hypothesis() + create_finding()
+    pipeline every other scanner's candidate goes through -- one hypothesis
+    + one DISCOVERED finding per (failure, operation) pair, since a single
+    failure can list several operations and each is its own finding-worthy
+    endpoint. This is pure translation: it never calls cem_define or any
+    other CEM function, and never sets a finding's status past DISCOVERED --
+    CEM entry stays gated on the normal independent re-run + evidence +
+    update_finding_status(..., "CONFIRMED") flow (see _confirmed_or_error
+    below), exactly like a nuclei/sqlmap/dalfox candidate.
+
+    `falsifiers_json` is the raw JSON array of failure objects schemathesis-
+    mcp's own report emits ({type, title, severity, count, operations} --
+    already sanitized, no target-authored text per that server's own
+    quarantine boundary). A failure with no `type` or an empty/missing
+    `operations` list is skipped (recorded under "skipped", not silently
+    dropped) rather than guessing an endpoint. vuln_class is derived
+    deterministically as f"SCHEMA_{type.upper()}" -- no lookup table to
+    drift out of sync with schemathesis's own check names.
+
+    Returns {"created": [{finding_id, hypothesis_id, vuln_class, endpoint}],
+    "skipped": [{reason, ...}]}, or {"error": ...} if falsifiers_json itself
+    isn't a JSON array."""
+    try:
+        failures = json.loads(falsifiers_json)
+    except json.JSONDecodeError as e:
+        return json.dumps({"error": f"falsifiers_json is not valid JSON: {e}"})
+    if not isinstance(failures, list):
+        return json.dumps({"error": "falsifiers_json must be a JSON array of failure objects"})
+
+    created = []
+    skipped = []
+    for failure in failures:
+        if not isinstance(failure, dict):
+            skipped.append({"reason": "failure entry is not a JSON object", "failure": failure})
+            continue
+        ftype = failure.get("type")
+        operations = failure.get("operations") or []
+        if not ftype or not isinstance(ftype, str):
+            skipped.append({"reason": "failure has no usable 'type'", "failure": failure})
+            continue
+        if not isinstance(operations, list) or not operations:
+            skipped.append({"reason": "failure has no (list-shaped) 'operations' -- cannot derive an endpoint",
+                             "failure": failure})
+            continue
+        title = failure.get("title", ftype)
+        severity = failure.get("severity", "?")
+        count = failure.get("count", 0)
+        vuln_class = f"SCHEMA_{ftype.upper()}"
+        for operation in operations:
+            if not isinstance(operation, str) or not operation:
+                skipped.append({"reason": "invalid operation value", "failure": failure, "operation": operation})
+                continue
+            observation = (f"schemathesis falsifier: {title!r} (type={ftype}, severity={severity}, "
+                            f"count={count}) on {operation}")
+            hypothesis = f"{operation} may violate the {ftype} property schemathesis checks for"
+            hyp = case_store.log_hypothesis(observation, hypothesis)
+            if "error" in hyp:
+                skipped.append({"reason": f"log_hypothesis failed: {hyp['error']}", "operation": operation})
+                continue
+            finding = case_store.create_finding(vuln_class, operation, hypothesis_id=hyp["id"])
+            if "error" in finding:
+                skipped.append({"reason": f"create_finding failed: {finding['error']}", "operation": operation})
+                continue
+            created.append({
+                "finding_id": finding["id"],
+                "hypothesis_id": hyp["id"],
+                "vuln_class": vuln_class,
+                "endpoint": operation,
+            })
+    return json.dumps({"created": created, "skipped": skipped})
+
+
+@app.tool()
 def update_finding_status(finding_id: int, status: str) -> str:
     """Move a finding through its lifecycle: DISCOVERED -> SUSPECTED ->
     VALIDATING -> CONFIRMED -> IMPACT_PROVEN -> REPORTED, or off to
