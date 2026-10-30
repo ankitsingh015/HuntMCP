@@ -120,6 +120,16 @@ def test_build_argv_rejects_a_bench_network_value_not_matching_the_expected_pref
             sandbox_runner.build_argv("curl", ["https://example.com"], "/tmp/scratch", env={})
 
 
+def test_build_argv_joins_the_schema_network_too(monkeypatch):
+    """SandboxedSchemaApp (tests/fixtures/schema_target/
+    schema_sandboxed_app.py, P3-SCHEMA's own real-tool fixture-proof e2e
+    test) is the second, generic-prefix fixture allowed through the same
+    HUNTMCP_BENCH_NETWORK knob -- see _BENCH_NETWORK_PREFIXES."""
+    monkeypatch.setenv("HUNTMCP_BENCH_NETWORK", "huntmcp-schema-net-deadbeef")
+    argv = sandbox_runner.build_argv("curl", ["https://example.com"], "/tmp/scratch", env={})
+    assert "--network=huntmcp-schema-net-deadbeef" in argv
+
+
 def test_build_argv_ignores_an_empty_bench_network_value(monkeypatch):
     """An empty string is not a valid network name -- must behave exactly
     like unset, not produce a bare/broken --network= flag."""
@@ -336,6 +346,10 @@ def test_cleanup_scratch_dir_removes_it():
 
 def test_cleanup_scratch_dir_tolerates_already_missing():
     sandbox_runner.cleanup_scratch_dir("/tmp/definitely-does-not-exist-huntmcp-xyz")
+
+
+def test_tool_map_includes_schemathesis():
+    assert sandbox_runner._TOOL_MAP["schemathesis"] == "/usr/local/bin/schemathesis"
 
 
 def test_new_container_name_is_unique():

@@ -30,7 +30,7 @@ proof / causal-validation engine (CEM), not a discovery-throughput engine.**
 - **Current status:** **effectively COMPLETE as analysis** (the repo-exact reuse map is captured in
   PHASE1-EXECUTION-PLAN §5). Any shared-primitive refactor is folded into Phase 1 Group A.
 
-### Phase 1 — Scientifically-trustworthy CEM vertical slice  ← **CURRENT IMPLEMENTATION FOCUS**
+### Phase 1 — Scientifically-trustworthy CEM vertical slice
 - **Objective:** prove *"Given a confirmed vulnerability and candidate conditions, HuntMCP can experimentally
   determine which tested conditions are necessary, which appear unnecessary, and which remain inconclusive,
   while detecting uncontrolled nondeterminism and producing reproducible evidence."*
@@ -46,17 +46,25 @@ proof / causal-validation engine (CEM), not a discovery-throughput engine.**
   and never emits a false necessity claim on the benchmark.
 - **Exit/acceptance concept:** all acceptance gates G1–G9 pass (see PHASE1-EXECUTION-PLAN §13), headline gate =
   **false-causal-conclusion-rate == 0** on the constructed benchmark.
-- **Current status:** **PLANNING COMPLETE, implementation NOT started.**
+- **Current status:** **ACCEPTED AND FROZEN (2026-09-11)** — G1-G9 acceptance gates all green via
+  `scripts/verify-phase1.sh` (1328 passed, 5 xfailed, 0 failed), O1 signed off. No further Phase-1 change is
+  authorized absent a genuine regression; known residual gaps are documented in
+  [docs/cem-phase1-limitations.md](docs/cem-phase1-limitations.md). See the detailed STATUS block further down
+  this file for the full acceptance record. **This bullet was stale until 2026-10-29** (it previously read
+  "PLANNING COMPLETE, implementation NOT started" even though the rest of this file already recorded Phase 1 as
+  frozen — the 2026-09-11 freeze commit updated the detailed STATUS block but missed this summary line).
 
 ### Phase 2 — Autonomous hunting capability expansion  *(FUTURE — high-level only)*
 - **Objective:** expand discovery breadth toward the publicly-disclosed capability baseline of XBOW-class
   systems (parallel-solver breadth, provider selection via existing `model_gateway`, headless-browser/OOB
   harness already partly present).
 - **Major capabilities:** broader autonomous surface coverage; treated as table-stakes, not the differentiator.
-- **Dependencies:** stable Phase-1 baseline; existing recon/scan/exploit agents.
+- **Dependencies:** stable Phase-1 baseline (now satisfied — see Phase 1's status above); existing
+  recon/scan/exploit agents.
 - **Expected outcome:** competitive discovery throughput without regressing finding quality.
 - **Exit/acceptance concept:** measured coverage/throughput gain with no quality-floor regression.
-- **Current status:** **FUTURE — not to be detailed or started.**
+- **Current status:** **NOT yet started or detailed.** Its Phase-1 dependency is now satisfied, so it's next in
+  sequence, but starting it is a separate human decision this file doesn't make on its own.
 
 ### Phase 3 — CEM + autonomous hunting integration  *(FUTURE — high-level only)*
 - **Objective:** wire CEM to run automatically after each independently-validated finding; add structural
@@ -88,7 +96,9 @@ proof / causal-validation engine (CEM), not a discovery-throughput engine.**
 ---
 
 ## Standing rules (apply to every phase)
-1. **Phase 1 is the current focus.** Phases 2–5 are future work and must not be prematurely detailed or locked.
+1. **Phase 1 is ACCEPTED AND FROZEN (see its status above) — it is no longer "the current focus."** Phases 2–5
+   remain future work and must not be prematurely detailed or locked; starting any of them is a separate human
+   decision this file does not make on its own.
 2. **Intelligence allocation / model routing is NOT part of Phase 1.**
 3. **Future research directions remain hypotheses** until experimentally justified.
 4. **Do not weaken CEM methodology** (determinism gate, replicated arms, verdict labels) to hit a metric.

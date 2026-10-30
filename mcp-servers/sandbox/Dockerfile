@@ -57,7 +57,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # packages colliding with pip's).
 RUN pip3 install --no-cache-dir --break-system-packages \
     sqlmap==1.8.4 \
-    impacket==0.12.0
+    impacket==0.12.0 \
+    schemathesis==4.30.1
 
 COPY --from=go-tools /opt/tools/ /opt/tools/
 
