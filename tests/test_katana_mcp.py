@@ -74,6 +74,56 @@ def test_crawl_then_check_scan_round_trip(monkeypatch):
     assert "job-crawl" not in katana_server._targets
 
 
+def test_crawl_appends_scan_header_when_configured(monkeypatch, tmp_path):
+    path = tmp_path / "engagement.yaml"
+    path.write_text(
+        "target: target.com\nin_scope:\n  - target.com\n"
+        "scan_header_name: X-Bug-Bounty\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+
+    captured = []
+    monkeypatch.setattr(
+        katana_server.job_runtime, "start_job",
+        lambda tool, args, timeout, jobs, **k: (captured.append(args), {"job_id": "j", "status": "running"})[1],
+    )
+    katana_server.crawl("https://target.com")
+    args = captured[0]
+    assert args[args.index("-H") + 1] == "X-Bug-Bounty: ankit015"
+
+
+def test_crawl_with_filter_appends_scan_header_when_configured(monkeypatch, tmp_path):
+    path = tmp_path / "engagement.yaml"
+    path.write_text(
+        "target: target.com\nin_scope:\n  - target.com\n"
+        "scan_header_name: X-Bug-Bounty\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+
+    captured = []
+    monkeypatch.setattr(
+        katana_server.job_runtime, "start_job",
+        lambda tool, args, timeout, jobs, **k: (captured.append(args), {"job_id": "j", "status": "running"})[1],
+    )
+    katana_server.crawl_with_filter("https://target.com")
+    args = captured[0]
+    assert args[args.index("-H") + 1] == "X-Bug-Bounty: ankit015"
+
+
+def test_crawl_omits_scan_header_when_nothing_configured(monkeypatch, tmp_path):
+    path = tmp_path / "engagement.yaml"
+    path.write_text("target: target.com\nin_scope:\n  - target.com\n")
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+
+    captured = []
+    monkeypatch.setattr(
+        katana_server.job_runtime, "start_job",
+        lambda tool, args, timeout, jobs, **k: (captured.append(args), {"job_id": "j", "status": "running"})[1],
+    )
+    katana_server.crawl("https://target.com")
+    assert "-H" not in captured[0]
+
+
 def test_crawl_with_braces_in_url_does_not_crash_check_scan(monkeypatch):
     # End-to-end regression for the same bug via the real crawl()/
     # check_scan() path, not just _format_findings() directly.

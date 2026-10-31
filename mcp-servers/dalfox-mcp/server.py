@@ -4,6 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import job_runtime  # noqa: E402
+import scan_headers  # noqa: E402
 import scope_guard  # noqa: E402
 from injection_boundary import quarantine as _quarantine
 
@@ -80,6 +81,8 @@ def _start(label: str, args: list[str], timeout: int, verbose: bool, url: str) -
     extra_hosts, pin_err = scope_guard.pin_hosts_or_error(url)
     if pin_err:
         return f"BLOCKED by scope gate: {pin_err}"
+    # P3-H4: the scan-identification header, if configured for `url`.
+    args = [*args, *scan_headers.get_scan_header_args(url)]
     try:
         result = job_runtime.start_job("dalfox", args, timeout, _jobs, extra_hosts=extra_hosts or None)
     except FileNotFoundError:

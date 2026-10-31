@@ -23,3 +23,15 @@ notes: "1 req/s per host default; no DoS; no social engineering"
 #   manual  -- no bulk automated scanning; hand-picked checks only.
 # scan_policy: full
 # scanner_volume_cap: 50   # only meaningful when scan_policy is "bounded"
+# Optional. A scan-identification header attached to every target-facing
+# request HuntMCP sends to THIS target (consumed by mcp-servers/
+# scan_headers.py -- http_probe.fetch and the httpx/nuclei/katana/ffuf/
+# sqlmap/dalfox MCP servers) so the program's own access logs/WAF/SOC can
+# attribute and allow-list the traffic. Many bug-bounty programs require
+# this. Both fields are required together; omit both for no header (the
+# default). Never attached to anything other than this target -- never to
+# an LLM/provider API, a notification channel, or any other service -- and
+# stripped before http_probe.fetch() follows a redirect onto a different
+# host.
+# scan_header_name: X-Bug-Bounty
+# scan_header_value: your-handle-or-program-id

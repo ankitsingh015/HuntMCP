@@ -132,6 +132,62 @@ def test_start_declares_the_wordlist_path_as_an_explicit_mount(monkeypatch):
     assert len(captured["extra_mounts"]) == 1
 
 
+def test_fuzz_directory_appends_scan_header_when_configured(monkeypatch, tmp_path):
+    path = tmp_path / "engagement.yaml"
+    path.write_text(
+        "target: target.com\nin_scope:\n  - target.com\n"
+        "scan_header_name: X-Bug-Bounty\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+    captured = {}
+
+    def _fake_start_job(tool_name, args, timeout, jobs, extra_mounts=None, extra_hosts=None):
+        captured["args"] = args
+        return {"job_id": "job-1", "status": "running", "tool": tool_name}
+
+    monkeypatch.setattr(ffuf_server.job_runtime, "start_job", _fake_start_job)
+    ffuf_server.fuzz_directory("https://target.com", wordlist="")
+    args = captured["args"]
+    assert args[args.index("-H") + 1] == "X-Bug-Bounty: ankit015"
+
+
+def test_fuzz_with_data_appends_scan_header_for_its_pin_url_even_though_display_url_is_none(monkeypatch, tmp_path):
+    """fuzz_with_data() passes url=None to _start() for display purposes
+    only -- the scan-identification header must still be attached based
+    on the REAL target (pin_url), same as the extra_hosts DNS pin above."""
+    path = tmp_path / "engagement.yaml"
+    path.write_text(
+        "target: target.com\nin_scope:\n  - target.com\n"
+        "scan_header_name: X-Bug-Bounty\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+    captured = {}
+
+    def _fake_start_job(tool_name, args, timeout, jobs, extra_mounts=None, extra_hosts=None):
+        captured["args"] = args
+        return {"job_id": "job-1", "status": "running", "tool": tool_name}
+
+    monkeypatch.setattr(ffuf_server.job_runtime, "start_job", _fake_start_job)
+    ffuf_server.fuzz_with_data("https://target.com/login", wordlist="")
+    args = captured["args"]
+    assert args[args.index("-H") + 1] == "X-Bug-Bounty: ankit015"
+
+
+def test_fuzz_directory_omits_scan_header_when_nothing_configured(monkeypatch, tmp_path):
+    path = tmp_path / "engagement.yaml"
+    path.write_text("target: target.com\nin_scope:\n  - target.com\n")
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+    captured = {}
+
+    def _fake_start_job(tool_name, args, timeout, jobs, extra_mounts=None, extra_hosts=None):
+        captured["args"] = args
+        return {"job_id": "job-1", "status": "running", "tool": tool_name}
+
+    monkeypatch.setattr(ffuf_server.job_runtime, "start_job", _fake_start_job)
+    ffuf_server.fuzz_directory("https://target.com", wordlist="")
+    assert "-H" not in captured["args"]
+
+
 def test_fuzz_directory_refuses_when_pinning_finds_a_blocked_ip(monkeypatch):
     def fake_resolve_and_pin(host):
         return None, f"host {host!r} resolves to a link-local address -- refused (SSRF)"

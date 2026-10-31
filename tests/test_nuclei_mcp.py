@@ -91,6 +91,43 @@ def test_scan_target_then_check_scan_round_trip(monkeypatch):
     assert "Exposed Admin Panel" in out
 
 
+def test_scan_target_appends_scan_header_when_configured(monkeypatch, tmp_path):
+    """P3-H4: when the active engagement configures a scan-identification
+    header for this target, scan_target() passes it to nuclei the same
+    way httpx/ffuf/dalfox accept it -- "-H", "Name: Value"."""
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    path = tmp_path / "engagement.yaml"
+    path.write_text(
+        "target: target.com\nin_scope:\n  - target.com\n"
+        "scan_header_name: X-Bug-Bounty\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+
+    captured = []
+    monkeypatch.setattr(
+        nuclei_server.job_runtime, "start_job",
+        lambda tool, args, timeout, jobs, **k: (captured.append(args), {"job_id": "j", "status": "running"})[1],
+    )
+    nuclei_server.scan_target("target.com")
+    args = captured[0]
+    assert args[args.index("-H") + 1] == "X-Bug-Bounty: ankit015"
+
+
+def test_scan_target_omits_scan_header_when_nothing_configured(monkeypatch, tmp_path):
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    path = tmp_path / "engagement.yaml"
+    path.write_text("target: target.com\nin_scope:\n  - target.com\n")
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+
+    captured = []
+    monkeypatch.setattr(
+        nuclei_server.job_runtime, "start_job",
+        lambda tool, args, timeout, jobs, **k: (captured.append(args), {"job_id": "j", "status": "running"})[1],
+    )
+    nuclei_server.scan_target("target.com")
+    assert "-H" not in captured[0]
+
+
 def test_scan_target_refuses_when_pinning_finds_a_blocked_ip(monkeypatch):
     monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
 

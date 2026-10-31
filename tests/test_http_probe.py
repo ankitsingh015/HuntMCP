@@ -203,3 +203,159 @@ def test_fetch_proceeds_normally_when_host_resolves_to_an_ordinary_address(monke
     resolves it trivially and permits it, the same as it always has)."""
     result = http_probe.fetch(f"{echo_server}/orders/1", "GET", {}, None, 5)
     assert result.status == 200
+
+
+# ---------------------------------------------------------------------------
+# P3-H4 -- scan-identification header auto-attachment + destination
+# boundary (the header must reach the engagement's own target, and must
+# never survive a redirect onto a different host).
+# ---------------------------------------------------------------------------
+
+def _write_engagement_with_scan_header(tmp_path, target_host, header_name="X-Bug-Bounty",
+                                        header_value="ankit015"):
+    p = tmp_path / "engagement.yaml"
+    p.write_text(
+        f"target: {target_host}\nin_scope:\n  - {target_host}\n"
+        f"scan_header_name: {header_name}\nscan_header_value: {header_value}\n",
+    )
+    return str(p)
+
+
+def test_fetch_attaches_scan_header_for_in_scope_target(monkeypatch, echo_server, tmp_path):
+    path = _write_engagement_with_scan_header(tmp_path, "127.0.0.1")
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", path)
+
+    result = http_probe.fetch(f"{echo_server}/orders/1", "GET", {}, None, 5)
+    payload = json.loads(result.body)
+    assert payload["headers"].get("X-Bug-Bounty") == "ankit015"
+
+
+def test_fetch_sends_scan_header_with_exact_configured_case_on_the_wire(monkeypatch, echo_server, tmp_path):
+    """Regression: urllib.request.Request.add_header() title-cases every
+    header key it's given (str.capitalize() -- first char up, rest down),
+    so a naive headers={**headers, **scan_hdrs} merge sent "X-Bug-Bounty"
+    out as "X-bug-bounty" on the wire, while the CLI scanners (httpx/
+    nuclei/etc., which pass the literal "-H" string untouched by urllib)
+    sent the correct case -- the same engagement produced two differently
+    -cased headers. The configured name must reach the wire byte-for-byte
+    as written in engagement.yaml."""
+    path = _write_engagement_with_scan_header(tmp_path, "127.0.0.1")
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", path)
+
+    result = http_probe.fetch(f"{echo_server}/orders/1", "GET", {}, None, 5)
+    payload = json.loads(result.body)
+    assert "X-Bug-Bounty" in payload["headers"]
+    assert "X-bug-bounty" not in payload["headers"]
+
+
+def test_fetch_does_not_attach_scan_header_when_url_is_out_of_scope(monkeypatch, echo_server):
+    """The destination-boundary decision itself (is this URL the
+    authorized target?) is scan_headers.get_scan_headers()'s own job and
+    is fully unit-tested in test_scan_headers.py -- a loopback address used
+    for a real network fixture here is always scope_guard's "safe test
+    host" regardless of engagement.yaml, so this test instead verifies
+    fetch() actually calls get_scan_headers() and respects an empty
+    result, rather than trying to fabricate a real out-of-scope network
+    target."""
+    monkeypatch.setattr(http_probe.scan_headers, "get_scan_headers", lambda url: {})
+
+    result = http_probe.fetch(f"{echo_server}/orders/1", "GET", {}, None, 5)
+    payload = json.loads(result.body)
+    assert "X-Bug-Bounty" not in payload["headers"]
+
+
+def test_fetch_omits_scan_header_when_nothing_configured(monkeypatch, echo_server, tmp_path):
+    path = tmp_path / "engagement.yaml"
+    path.write_text("target: 127.0.0.1\nin_scope:\n  - 127.0.0.1\n")
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+
+    result = http_probe.fetch(f"{echo_server}/orders/1", "GET", {}, None, 5)
+    payload = json.loads(result.body)
+    assert "X-Bug-Bounty" not in payload["headers"]
+
+
+class _RedirectHandler(BaseHTTPRequestHandler):
+    """Redirects every request to another ORIGIN entirely (a different
+    host:port) so the test can assert the scan-identification header is
+    stripped before the redirect is followed -- it must never reach a host
+    other than the one the engagement actually authorizes, including via
+    a redirect the target itself issues."""
+    other_origin = ""
+
+    def do_GET(self) -> None:  # noqa: N802
+        self.send_response(302)
+        self.send_header("Location", f"{self.other_origin}/landed")
+        self.end_headers()
+
+    def log_message(self, *args) -> None:
+        pass
+
+
+@pytest.fixture
+def redirect_pair():
+    """Two loopback servers: `origin` (the authorized target, issues a
+    redirect) and `other` (a different host:port the redirect points at,
+    captures whatever headers actually arrived)."""
+    captured: dict[str, dict] = {}
+
+    class _CaptureHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            captured["headers"] = {k: v for k, v in self.headers.items()}
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"landed")
+
+        def log_message(self, *args) -> None:
+            pass
+
+    other_httpd = ThreadingHTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    other_thread = threading.Thread(target=other_httpd.serve_forever, daemon=True)
+    other_thread.start()
+    other_origin = f"http://127.0.0.1:{other_httpd.server_address[1]}"
+
+    _RedirectHandler.other_origin = other_origin
+    origin_httpd = ThreadingHTTPServer(("127.0.0.1", 0), _RedirectHandler)
+    origin_thread = threading.Thread(target=origin_httpd.serve_forever, daemon=True)
+    origin_thread.start()
+    origin = f"http://127.0.0.1:{origin_httpd.server_address[1]}"
+
+    try:
+        yield origin, captured
+    finally:
+        origin_httpd.shutdown()
+        origin_httpd.server_close()
+        origin_thread.join(timeout=5)
+        other_httpd.shutdown()
+        other_httpd.server_close()
+        other_thread.join(timeout=5)
+
+
+def test_fetch_never_raises_when_scan_header_config_is_malformed(monkeypatch, echo_server, tmp_path):
+    """Regression: fetch()'s own documented contract is "always returns a
+    FetchResult, never raises" -- a malformed scan_header_name (here, a
+    bare YAML int, a plausible typo for `scan_header_name: X-Bug-Bounty`)
+    must not break that for every caller (idor-mcp, CEM, cors_probe, ...)."""
+    path = tmp_path / "engagement.yaml"
+    path.write_text(
+        "target: 127.0.0.1\nin_scope:\n  - 127.0.0.1\n"
+        "scan_header_name: 123\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+
+    result = http_probe.fetch(f"{echo_server}/orders/1", "GET", {}, None, 5)
+    assert result.status == 200
+
+
+def test_fetch_strips_scan_header_on_cross_host_redirect(monkeypatch, redirect_pair, tmp_path):
+    origin, captured = redirect_pair
+    path = tmp_path / "engagement.yaml"
+    path.write_text(
+        "target: 127.0.0.1\nin_scope:\n  - 127.0.0.1\n"
+        "scan_header_name: X-Bug-Bounty\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+
+    result = http_probe.fetch(origin, "GET", {}, None, 5)
+
+    assert result.status == 200
+    assert "X-Bug-Bounty" not in captured["headers"]

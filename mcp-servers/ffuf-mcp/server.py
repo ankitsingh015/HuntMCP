@@ -4,6 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import job_runtime  # noqa: E402
+import scan_headers  # noqa: E402
 import scope_guard  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
@@ -140,7 +141,10 @@ def _start(args: list[str], timeout: int, url: str | None,
     # directory" and falls back to printing usage/help, which looked
     # exactly like an argv-parsing bug at first. -scrapers "" (empty
     # active-groups list) skips loading it entirely.
-    args = [*args, "-scrapers", ""]
+    # P3-H4: the scan-identification header, if configured for pin_url
+    # (always the real target, even when `url` is None -- see this
+    # function's own docstring above).
+    args = [*args, "-scrapers", "", *scan_headers.get_scan_header_args(pin_url)]
     try:
         # S5 (rootless sandboxing): the resolved wordlist file must be
         # explicitly declared via extra_mounts=, or ffuf can't read it

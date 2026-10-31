@@ -19,6 +19,7 @@ from mcp.server.fastmcp import FastMCP
 
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 import job_runtime
+import scan_headers
 from injection_boundary import quarantine as _quarantine
 
 app = FastMCP("httpx-mcp")
@@ -35,12 +36,14 @@ _jobs: dict = {}
 _meta: dict[str, dict] = {}
 
 
+def _split_domains(domains: str) -> list[str]:
+    return [d.strip() for d in domains.replace(",", "\n").splitlines() if d.strip()]
+
+
 def _write_domains_file(domains: str) -> str:
     with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
-        for d in domains.replace(",", "\n").splitlines():
-            d = d.strip()
-            if d:
-                f.write(d + "\n")
+        for d in _split_domains(domains):
+            f.write(d + "\n")
         return f.name
 
 
@@ -112,6 +115,7 @@ def probe_hosts(domains: str, ports: str = "80,443", threads: int = 50, timeout:
         "-status-code", "-title", "-tech-detect",
         "-content-length", "-web-server",
         "-json",
+        *scan_headers.get_scan_header_args_for_hosts(_split_domains(domains)),
     ]
     try:
         # S5 (rootless sandboxing): input_path (the domains file httpx
@@ -159,6 +163,7 @@ def screenshot_hosts(domains: str, ports: str = "80,443", timeout: int = 180) ->
         # process's cwd happens to be. We only need screenshot_bytes from
         # the JSON below, so the files themselves are deleted afterward.
         "-srd", work_dir,
+        *scan_headers.get_scan_header_args_for_hosts(_split_domains(domains)),
     ]
     if shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chromium-browser"):
         args.append("-system-chrome")
