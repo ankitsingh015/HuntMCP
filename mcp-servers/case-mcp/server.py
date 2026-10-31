@@ -1264,6 +1264,102 @@ def evidence_bundle(finding_id: int) -> str:
     return json.dumps(bundle)
 
 
+@app.tool()
+def run_cem_pipeline(finding_id: int, url: str, base_request: str, success_signature: str,
+                     conditions: str, k: int = 5, nonidempotent_approval: str = "") -> str:
+    """P3-CEMHUNT: run the whole CEM sequence for one already-CONFIRMED finding in
+    a fixed, gated order -- define_conditions -> determinism_gate -> one
+    run_counterfactual per condition -> minimal_condition_sets (only if some
+    condition was `necessary`) -> evidence_bundle. Sender (Tier-2).
+
+    This adds NO CEM logic and NO request path of its own: it calls the existing
+    tool functions, so each one's CONFIRMED guard, scope check (fail-fast and
+    per-trial), per-finding + engagement budget, audit line and read-only-method
+    gate (UD-4) apply exactly as when they are called one by one.
+
+    The caller supplies the oracle (UD-3): `success_signature`, `base_request` and
+    `conditions` are the same JSON strings define_conditions takes, and are never
+    derived here. `url` is the hook's pre-filter label and MUST equal
+    base_request["url"] -- the hook can only check this argument, so a label that
+    named a different host than the request actually sent would blind that layer.
+
+    Ordering is the point: if the unperturbed baseline is not STABLE the
+    counterfactual verdicts would be uninterpretable (and cost 2k requests per
+    condition), so the run stops after the gate and reports every condition as
+    untested. A condition that cannot be applied (e.g. a path segment, which
+    Phase-1 cannot drop) is recorded under `condition_errors` and the rest still
+    run. A budget/scope/method stop ends the loop and sets `incomplete`.
+
+    One-shot per finding, like define_conditions (a second call errors at
+    define_conditions). To continue a run that stopped early, call
+    determinism_gate / run_counterfactual directly on the already-defined finding.
+
+    Returns one fixed shape on every path: {finding_id, stopped_at (null when the
+    sequence finished, else "define_conditions"|"determinism_gate"|
+    "run_counterfactual"), determinism_status, verdicts {condition: verdict},
+    condition_errors, untested, incomplete (true when a sender refused or was cut
+    off -- CONFIRMED guard, scope, budget or method -- so no conclusion was
+    reached), minimal_condition_sets|null, evidence_bundle|null, plus `error`
+    and/or `stop_reason` when the run stopped early}."""
+    result = {
+        "finding_id": finding_id, "stopped_at": None, "determinism_status": None,
+        "verdicts": {}, "condition_errors": {}, "untested": [], "incomplete": False,
+        "minimal_condition_sets": None, "evidence_bundle": None,
+    }
+
+    def _refuse(error: str) -> str:
+        return json.dumps({**result, "stopped_at": "define_conditions", "error": error})
+
+    if not isinstance(k, int) or isinstance(k, bool) or k < 1:
+        # Validated before define_conditions persists anything: define is one-shot
+        # per finding, so a k the senders later reject (run_intervention raises on
+        # k < 1) would otherwise leave an unusable CEM state that cannot be redefined.
+        return _refuse(f"k must be an integer >= 1, got {k!r}")
+    try:
+        base = json.loads(base_request)
+    except json.JSONDecodeError as e:
+        return _refuse(f"base_request must be JSON: {e}")
+    if not isinstance(base, dict) or str(url).strip() != str(base.get("url", "")).strip():
+        return _refuse("url must equal base_request[\"url\"] -- it is the scope-hook's "
+                       "pre-filter label and must name the host actually requested")
+
+    defined = json.loads(define_conditions(
+        finding_id, base_request, success_signature, conditions, k=k,
+        nonidempotent_approval=nonidempotent_approval,
+    ))
+    if "error" in defined:
+        return _refuse(defined["error"])
+    names = {c["id"]: c["name"] for c in case_store.cem_load_state(finding_id)["conditions"]}
+    ordered = [(cid, names[cid]) for cid in defined["condition_ids"]]
+
+    gate = json.loads(determinism_gate(finding_id, url, k))
+    result["determinism_status"] = gate.get("determinism_status")
+    if "error" in gate:
+        result.update(stopped_at="determinism_gate", incomplete=True, error=gate["error"],
+                      untested=[n for _, n in ordered])
+    elif gate.get("determinism_status") != "STABLE":
+        result.update(stopped_at="determinism_gate", untested=[n for _, n in ordered],
+                      stop_reason="baseline is not STABLE -- counterfactual verdicts "
+                                  "would be uninterpretable, so none were run")
+    else:
+        for i, (cid, name) in enumerate(ordered):
+            r = json.loads(run_counterfactual(finding_id, url, cid, k))
+            if r.get("incomplete"):
+                result.update(stopped_at="run_counterfactual", incomplete=True, error=r["error"],
+                              untested=[n for _, n in ordered[i:]])
+                break
+            if "error" in r:
+                result["condition_errors"][name] = r["error"]
+            else:
+                result["verdicts"][name] = r["verdict"]
+
+    if cem_engine.VERDICT_NECESSARY in result["verdicts"].values():
+        sets = json.loads(minimal_condition_sets(finding_id))
+        result["minimal_condition_sets"] = None if "error" in sets else sets
+    result["evidence_bundle"] = json.loads(evidence_bundle(finding_id))
+    return json.dumps(result)
+
+
 if __name__ == "__main__":
     print("case-mcp starting...", file=sys.stderr)
     app.run(transport="stdio")
