@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import job_runtime  # noqa: E402
+import scan_headers  # noqa: E402
 import scope_guard  # noqa: E402
 import templates_pin  # noqa: E402
 
@@ -125,7 +126,10 @@ def _start(target: str, args: list[str], timeout: int, no_findings_message: str)
     # -duc: without it nuclei still attempts an outbound network update
     # check on every run even though -t already points at a local,
     # non-default directory -- see templates_pin.py's module docstring.
-    args = [*args, "-duc"]
+    # P3-H4: the scan-identification header, if the active engagement
+    # configures one for this exact target (scan_headers.py enforces the
+    # destination boundary itself -- [] for anything out of scope).
+    args = [*args, "-duc", *scan_headers.get_scan_header_args(target)]
     try:
         result = job_runtime.start_job(
             "nuclei", args, timeout, _jobs,

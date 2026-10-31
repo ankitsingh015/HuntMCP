@@ -4,6 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import job_runtime  # noqa: E402
+import scan_headers  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
 
@@ -68,6 +69,7 @@ def crawl(url: str, depth: int = 2, delay: int = 0, timeout: int = 120) -> str:
     args = ["-u", url, "-d", str(depth), "-silent", "-o", "-"]
     if delay > 0:
         args.extend(["-delay", str(delay)])
+    args.extend(scan_headers.get_scan_header_args(url))
     return _start(args, timeout, url)
 
 
@@ -81,6 +83,7 @@ def crawl_with_filter(url: str, depth: int = 2, extensions: str = "", timeout: i
     args = ["-u", url, "-d", str(depth), "-silent", "-o", "-"]
     if extensions:
         args.extend(["-ef", extensions])
+    args.extend(scan_headers.get_scan_header_args(url))
     return _start(args, timeout, None)
 
 

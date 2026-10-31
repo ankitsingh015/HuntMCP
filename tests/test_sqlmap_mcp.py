@@ -202,6 +202,48 @@ def test_test_with_data_disables_redirect_following(monkeypatch, tmp_path):
     assert "--ignore-redirects" in captured["args"]
 
 
+def test_test_injection_appends_scan_header_when_configured(monkeypatch, tmp_path):
+    fake_out_dir = tmp_path / "sqlmap-out"
+    fake_out_dir.mkdir()
+    monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
+    engagement_file = tmp_path / "engagement.yaml"
+    engagement_file.write_text(
+        "target: example.com\nin_scope:\n  - example.com\n"
+        "scan_header_name: X-Bug-Bounty\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(engagement_file))
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["args"] = args
+        return {"job_id": "job-hdr", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(sqlmap_server.job_runtime, "start_job", fake_start_job)
+    sqlmap_server.test_injection("https://example.com/?id=1")
+    args = captured["args"]
+    assert args[args.index("--header") + 1] == "X-Bug-Bounty: ankit015"
+
+
+def test_test_injection_omits_scan_header_when_nothing_configured(monkeypatch, tmp_path):
+    fake_out_dir = tmp_path / "sqlmap-out"
+    fake_out_dir.mkdir()
+    monkeypatch.setattr(sqlmap_server, "_output_dir", lambda: str(fake_out_dir))
+    monkeypatch.setattr(sqlmap_server.scope_guard, "resolve_and_pin", lambda host: ("93.184.216.34", None))
+    engagement_file = tmp_path / "engagement.yaml"
+    engagement_file.write_text("target: example.com\nin_scope:\n  - example.com\n")
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(engagement_file))
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["args"] = args
+        return {"job_id": "job-nohdr", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(sqlmap_server.job_runtime, "start_job", fake_start_job)
+    sqlmap_server.test_injection("https://example.com/?id=1")
+    assert "--header" not in captured["args"]
+
+
 def test_output_dir_scopes_under_active_engagement(monkeypatch, tmp_path):
     # The real bug this closes: sqlmap-mcp used to hardcode OUTPUT_DIR =
     # "/tmp/huntmcp-sqlmap" -- one flat, unscoped dir shared across every

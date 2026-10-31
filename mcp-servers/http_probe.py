@@ -18,6 +18,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+import scan_headers
 import scope_guard
 
 DEFAULT_TIMEOUT_S = 15
@@ -58,6 +59,33 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 _NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
 
 
+class _StripOnCrossHostRedirect(urllib.request.HTTPRedirectHandler):
+    """P3-H4 destination-boundary enforcement for the redirect case: forwards
+    a redirect normally (same behavior as urllib's own default handler) but
+    strips any header name in `sensitive_names` before following it onto a
+    DIFFERENT host than the one this fetch() call actually started with. The
+    scan-identification header scan_headers attaches is only ever authorized
+    for the engagement's own target -- a 3xx the target itself issues to a
+    different host (CDN, OAuth provider, an open redirect) must not carry it
+    along, scope_guard.is_in_scope() was never re-checked against the new
+    host at all."""
+
+    def __init__(self, sensitive_names: frozenset[str]) -> None:
+        super().__init__()
+        self._sensitive = {n.lower() for n in sensitive_names}
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is None or not self._sensitive:
+            return new_req
+        if urlsplit(req.full_url).netloc == urlsplit(newurl).netloc:
+            return new_req
+        for name in list(new_req.headers.keys()):
+            if name.lower() in self._sensitive:
+                del new_req.headers[name]
+        return new_req
+
+
 def fetch(url: str, method: str, headers: dict[str, str], body: str | None,
           timeout_s: float, *, allow_redirects: bool = True) -> FetchResult:
     """`allow_redirects` defaults True (unchanged behaviour for idor_sweep and
@@ -86,8 +114,15 @@ def fetch(url: str, method: str, headers: dict[str, str], body: str | None,
         if policy:
             return FetchResult(status=None, body="", error=f"Blocked before connecting: {policy}")
     data = body.encode() if body else None
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    _open = urllib.request.urlopen if allow_redirects else _NO_REDIRECT_OPENER.open
+    scan_hdrs = scan_headers.get_scan_headers(url)
+    merged_headers = {**headers, **scan_hdrs} if scan_hdrs else headers
+    req = urllib.request.Request(url, data=data, headers=merged_headers, method=method)
+    if not allow_redirects:
+        _open = _NO_REDIRECT_OPENER.open
+    elif scan_hdrs:
+        _open = urllib.request.build_opener(_StripOnCrossHostRedirect(frozenset(scan_hdrs))).open
+    else:
+        _open = urllib.request.urlopen
     try:
         with _open(req, timeout=timeout_s) as resp:
             return FetchResult(

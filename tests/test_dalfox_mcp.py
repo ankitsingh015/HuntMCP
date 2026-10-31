@@ -157,6 +157,40 @@ def test_scan_parameter_pins_url_host_not_param_name(monkeypatch):
     assert captured["extra_hosts"] == {"target.com": "93.184.216.34"}
 
 
+def test_scan_url_appends_scan_header_when_configured(monkeypatch, tmp_path):
+    path = tmp_path / "engagement.yaml"
+    path.write_text(
+        "target: target.com\nin_scope:\n  - target.com\n"
+        "scan_header_name: X-Bug-Bounty\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["args"] = args
+        return {"job_id": "job-hdr", "status": "running", "tool": tool}
+    monkeypatch.setattr(dalfox_server.job_runtime, "start_job", fake_start_job)
+
+    dalfox_server.scan_url("https://target.com/?q=1")
+    args = captured["args"]
+    assert args[args.index("-H") + 1] == "X-Bug-Bounty: ankit015"
+
+
+def test_scan_url_omits_scan_header_when_nothing_configured(monkeypatch, tmp_path):
+    path = tmp_path / "engagement.yaml"
+    path.write_text("target: target.com\nin_scope:\n  - target.com\n")
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["args"] = args
+        return {"job_id": "job-nohdr", "status": "running", "tool": tool}
+    monkeypatch.setattr(dalfox_server.job_runtime, "start_job", fake_start_job)
+
+    dalfox_server.scan_url("https://target.com/?q=1")
+    assert "-H" not in captured["args"]
+
+
 def test_check_scan_still_running_does_not_consume_target(monkeypatch):
     monkeypatch.setattr(
         dalfox_server.job_runtime, "start_job",

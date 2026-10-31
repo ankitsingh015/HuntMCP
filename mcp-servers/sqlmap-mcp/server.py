@@ -8,6 +8,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from engagement_paths import resolve_dir  # noqa: E402
 import job_runtime  # noqa: E402
+import scan_headers  # noqa: E402
 import scope_guard  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
@@ -59,6 +60,10 @@ def _parse_vulns(output: str, include_type: bool) -> list[str]:
 def _start(args: list[str], timeout: int, tmpdir: str,
            no_result_message: str, found_header: str, include_type: bool, target: str,
            extra_hosts: dict[str, str] | None) -> str:
+    # P3-H4: the scan-identification header, if configured for `target`
+    # (sqlmap's own flag is --header, not the -H every other scanner here
+    # shares -- see scan_headers.get_scan_header_args()'s flag= param).
+    args = [*args, *scan_headers.get_scan_header_args(target, flag="--header")]
     try:
         # S5 (rootless sandboxing): sqlmap now runs inside an ephemeral
         # container that sees nothing from the host by default -- tmpdir

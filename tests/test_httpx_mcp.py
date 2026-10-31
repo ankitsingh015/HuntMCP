@@ -54,6 +54,62 @@ def test_probe_hosts_then_check_scan_cleans_up_input_file(monkeypatch, tmp_path)
     assert "job-probe" not in httpx_server._meta
 
 
+def test_probe_hosts_appends_scan_header_when_all_domains_in_scope(monkeypatch, tmp_path):
+    path = tmp_path / "engagement.yaml"
+    path.write_text(
+        "target: target.com\nin_scope:\n  - target.com\n"
+        "scan_header_name: X-Bug-Bounty\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["args"] = args
+        return {"job_id": "job-hdr", "status": "running", "tool": tool}
+    monkeypatch.setattr(httpx_server.job_runtime, "start_job", fake_start_job)
+
+    httpx_server.probe_hosts("target.com")
+    args = captured["args"]
+    assert args[args.index("-H") + 1] == "X-Bug-Bounty: ankit015"
+
+
+def test_probe_hosts_omits_scan_header_when_any_domain_out_of_scope(monkeypatch, tmp_path):
+    path = tmp_path / "engagement.yaml"
+    path.write_text(
+        "target: target.com\nin_scope:\n  - target.com\n"
+        "scan_header_name: X-Bug-Bounty\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["args"] = args
+        return {"job_id": "job-nohdr", "status": "running", "tool": tool}
+    monkeypatch.setattr(httpx_server.job_runtime, "start_job", fake_start_job)
+
+    httpx_server.probe_hosts("target.com,attacker.example")
+    assert "-H" not in captured["args"]
+
+
+def test_screenshot_hosts_appends_scan_header_when_all_domains_in_scope(monkeypatch, tmp_path):
+    path = tmp_path / "engagement.yaml"
+    path.write_text(
+        "target: target.com\nin_scope:\n  - target.com\n"
+        "scan_header_name: X-Bug-Bounty\nscan_header_value: ankit015\n",
+    )
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", str(path))
+    captured = {}
+
+    def fake_start_job(tool, args, timeout, jobs, **kwargs):
+        captured["args"] = args
+        return {"job_id": "job-shot-hdr", "status": "running", "tool": tool}
+    monkeypatch.setattr(httpx_server.job_runtime, "start_job", fake_start_job)
+
+    httpx_server.screenshot_hosts("target.com")
+    args = captured["args"]
+    assert args[args.index("-H") + 1] == "X-Bug-Bounty: ankit015"
+
+
 def test_screenshot_hosts_timeout_still_cleans_up_workdir(monkeypatch):
     monkeypatch.setattr(
         httpx_server.job_runtime, "start_job",
