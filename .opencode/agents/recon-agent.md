@@ -14,6 +14,7 @@ tools:
   "writeup-mcp*": true
   "osint-mcp*": true
   "github-security-mcp*": true
+  "discspec-mcp*": true
 permission:
   edit: allow
   # webfetch is deliberately NOT scope-gated (unlike bash) -- its real

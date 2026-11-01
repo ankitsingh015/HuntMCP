@@ -58,6 +58,7 @@
     "burp-import-mcp*": false,
     "case-mcp*": false,
     "idor-mcp*": false,
+    "discspec-mcp*": false,
     "azure-postexploit-mcp*": false,
     "aws-postexploit-mcp*": false,
     "gcp-postexploit-mcp*": false,
@@ -195,6 +196,11 @@
       "type": "local",
       "enabled": true,
       "command": ["./scripts/venv-python.sh", "mcp-servers/idor-mcp/server.py"]
+    },
+    "discspec-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": ["./scripts/venv-python.sh", "mcp-servers/discspec-mcp/server.py"]
     },
     "ws-rpc-mcp": {
       "type": "local",
