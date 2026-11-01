@@ -151,6 +151,15 @@ TIER2_MCP_SERVERS = {
     # whole-server registration never gated a hypothetical local-only
     # tool on that server either.
     "ws-rpc-mcp",
+    # discspec-mcp's discover_from_openapi(url)/discover_from_graphql(url)
+    # both fetch real content from the live target (the spec itself, or a
+    # POSTed introspection query) via http_probe.fetch() -- same
+    # live-target-touching role as idor-mcp/schemathesis-mcp. The
+    # server's own in-code _resolve_engagement()/_scope_or_error() check
+    # (mirroring schemathesis-mcp's identical pattern) is the real,
+    # definitive scope boundary; this hook entry is the early filter on
+    # top of it, same relationship as schemathesis-mcp's own entry above.
+    "discspec-mcp",
 }
 
 # MIXED MCP servers: mostly local (bookkeeping / DB reads), but a NAMED subset
