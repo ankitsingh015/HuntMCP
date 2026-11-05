@@ -28,6 +28,7 @@ to store or re-derive the real value.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 
 # Key names (as they'd appear before `=` in a query string, or before `:` in
@@ -137,3 +138,105 @@ def redact_text(text: str) -> str:
     text = _JWT_RE.sub(_jwt_sub, text)
     text = _CARD_CANDIDATE_RE.sub(_card_sub, text)
     return text
+
+
+# ---------------------------------------------------------------------------
+# Structured (parsed JSON) redaction -- the part redact_text() cannot do: it only sees one
+# string at a time, so a secret whose KEY name lives in a different string ({"payment_token":
+# "tok_live_..."}) slips through. Word-based key matching, NOT the substring matching
+# DENY_KEY_TOKENS uses on query strings: a substring "pin" would hide "shipping_address", and
+# "auth" would hide "author" -- fields the evidence needs to stay readable.
+# ---------------------------------------------------------------------------
+
+_SECRET_WORDS = frozenset({"pwd", "otp", "cvv", "cvc", "ssn", "pin", "pass", "sid", "auth",
+                           "authorization", "jwt", "totp", "sess", "ssid", "sapisid"})
+# Matched as substrings of the key's words joined together, so "accesstoken", "userPassword" and
+# "private_key" are all caught. Only long, unambiguous stems live here.
+_SECRET_STEMS = ("password", "passwd", "passphrase", "passcode", "secret", "token", "cookie",
+                 "credential", "session", "sessid", "bearer", "apikey", "privatekey", "accesskey",
+                 "signingkey", "encryptionkey")
+# Short, low-entropy secrets: even a truncated hash of "123456" is brute-forceable, so these get a
+# marker with no hash at all.
+_LOW_ENTROPY_WORDS = frozenset({"pwd", "otp", "cvv", "cvc", "ssn", "pin", "pass"})
+_LOW_ENTROPY_STEMS = ("password", "passwd", "passcode", "passphrase")
+_KEY_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+
+
+def _key_words(key: str) -> list[str]:
+    return [w.lower() for w in _KEY_WORD_RE.findall(key)]
+
+
+def _safe_int(text: str):
+    try:
+        return int(text)
+    except ValueError:  # a digit string beyond Python's int-conversion limit: keep it as text
+        return text
+
+
+def loads_for_redaction(text: str):
+    """json.loads that does not give up on an absurdly long integer literal (Python refuses > 4300
+    digits with ValueError), which would otherwise let a hostile body skip key-aware redaction
+    entirely. Non-JSON still raises ValueError."""
+    return json.loads(text, parse_int=_safe_int)
+
+
+def is_secret_key(key: str) -> bool:
+    """True if a JSON object key names a secret: any camelCase/snake/kebab word of it is an
+    exact short secret word (pin, otp, pass, sid...), or the words joined together contain a long
+    secret stem (password, token, cookie, session, privatekey...)."""
+    words = _key_words(key)
+    joined = "".join(words)
+    return any(w in _SECRET_WORDS for w in words) or any(stem in joined for stem in _SECRET_STEMS)
+
+
+def _is_low_entropy_key(key: str) -> bool:
+    words = _key_words(key)
+    return bool(_LOW_ENTROPY_WORDS & set(words)) or any(stem in "".join(words) for stem in _LOW_ENTROPY_STEMS)
+
+
+def _pair_name(node: dict):
+    """For a {"name": "api_key", "value": "..."}-style pair, the name that decides whether
+    "value" is secret (else None)."""
+    if "value" not in node:
+        return None
+    for field in ("name", "key", "field"):
+        name = node.get(field)
+        if isinstance(name, str) and is_secret_key(name):
+            return name
+    return None
+
+
+def redact_structured(node):
+    """Returns a redacted COPY of parsed JSON: the value under a secret-named key (a str/number,
+    or a whole dict/list, hashed as one) becomes `[REDACTED:<key> sha256:<hash12>]` -- or, for
+    low-entropy secrets (otp, pin, password...), `[REDACTED:<key>]` with no hash; a "value" next
+    to a secret "name"/"key" is treated the same; a JSON integer that is a Luhn-valid card number
+    is redacted; None/bool stay; every other string leaf gets redact_text(). Very deep input
+    raises RecursionError -- the caller decides what to do with a body it cannot safely redact."""
+    if isinstance(node, dict):
+        pair = _pair_name(node)
+        out = {}
+        for key, value in node.items():
+            effective = pair if (key == "value" and pair) else key
+            # The KEY itself can carry a secret too ({"https://x?api_key=...": 1}, a JWT used as a map
+            # key), so every key goes through redact_text as well.
+            out_key = redact_text(key) if isinstance(key, str) else key
+            if (isinstance(key, str) and isinstance(effective, str) and is_secret_key(effective)
+                    and value is not None and not isinstance(value, bool)):
+                label = redact_text(effective).lower()
+                if _is_low_entropy_key(effective):
+                    out[out_key] = f"[REDACTED:{label}]"
+                    continue
+                raw = json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
+                out[out_key] = redacted(raw, label)
+            else:
+                out[out_key] = redact_structured(value)
+        return out
+    if isinstance(node, list):
+        return [redact_structured(v) for v in node]
+    if isinstance(node, int) and not isinstance(node, bool):
+        digits = str(node)
+        if 13 <= len(digits) <= 19 and _luhn_valid(digits):
+            return redacted(digits, "card-number")
+        return node
+    return redact_text(node) if isinstance(node, str) else node

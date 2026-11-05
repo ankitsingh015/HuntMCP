@@ -13,7 +13,8 @@ import case_store
 import cem_engine
 import http_probe
 import research_manifest
-import scope_guard
+import scope_check
+import scope_guard  # noqa: F401 -- kept as an attribute: tests and callers reach srv.scope_guard
 from audit_log import log_call as _log_call
 from budget_guard import BudgetExceeded
 from budget_guard import enforce as _enforce_budget
@@ -513,20 +514,19 @@ def _fetch_scope_or_error(url: str) -> str | None:
     scope_guard.is_in_scope), reworded here since this tool isn't CEM and
     its refusal messages must not claim it is. Returns an error-JSON
     string, or None if `url` is a permissible, in-scope destination."""
-    if not isinstance(url, str) or not url.strip():
+    refusal = scope_check.check_url(url, _resolve_engagement)   # O1 policy, then is_in_scope; fail closed
+    if refusal is None:
+        return None
+    if refusal.kind == scope_check.EMPTY:
         return json.dumps({"error":
             "BLOCKED by scope gate: no url given -- refusing to send."})
-    policy = scope_guard.outbound_policy_error(url)   # O1: scheme allowlist + metadata/link-local deny
-    if policy:
+    if refusal.kind == scope_check.POLICY:
         return json.dumps({"error":
-            f"BLOCKED by outbound policy: {url!r} -- {policy}."})
-    try:
-        if scope_guard.is_in_scope(url, _resolve_engagement()):
-            return None
-    except Exception as e:  # noqa: BLE001 - any resolution/parse failure -> refuse
+            f"BLOCKED by outbound policy: {url!r} -- {refusal.detail}."})
+    if refusal.kind == scope_check.VERIFY_FAILED:
         return json.dumps({"error":
             f"BLOCKED by scope gate: could not verify {url!r} is in scope "
-            f"({e.__class__.__name__}: {e}); refusing to send."})
+            f"({refusal.detail}); refusing to send."})
     return json.dumps({"error":
         f"BLOCKED by scope gate: {url!r} is not in the active engagement's "
         "in_scope list -- refusing to send."})
@@ -623,10 +623,7 @@ def _resolve_engagement():
     `NoEngagementFile` -> an empty `Engagement` (a safe test host still passes via
     `is_in_scope`'s `is_safe_test_host` branch; a real host does not). Any other
     resolution failure propagates so the caller fails closed."""
-    try:
-        return scope_guard.load_engagement()
-    except scope_guard.NoEngagementFile:
-        return scope_guard.Engagement(target="(no engagement.yaml)")
+    return scope_check.resolve_engagement()
 
 
 def _scope_or_error(base_request: dict):
@@ -658,17 +655,16 @@ def _scope_or_error(base_request: dict):
         return json.dumps({"error":
             "BLOCKED by scope gate: CEM base_request has no 'url' -- cannot verify "
             "the request destination is in scope; refusing to send."})
-    policy = scope_guard.outbound_policy_error(target)          # O1: scheme allowlist + metadata/link-local deny
-    if policy:
+    refusal = scope_check.check_url(target, _resolve_engagement)   # O1 policy, then is_in_scope; fail closed
+    if refusal is None:
+        return None
+    if refusal.kind == scope_check.POLICY:
         return json.dumps({"error":
-            f"BLOCKED by CEM outbound policy: CEM base_request target {target!r} -- {policy}."})
-    try:
-        if scope_guard.is_in_scope(target, _resolve_engagement()):
-            return None
-    except Exception as e:  # noqa: BLE001 - any resolution/parse failure -> refuse
+            f"BLOCKED by CEM outbound policy: CEM base_request target {target!r} -- {refusal.detail}."})
+    if refusal.kind == scope_check.VERIFY_FAILED:
         return json.dumps({"error":
             f"BLOCKED by scope gate: could not verify CEM target {target!r} is in "
-            f"scope ({e.__class__.__name__}: {e}); refusing to send."})
+            f"scope ({refusal.detail}); refusing to send."})
     return json.dumps({"error":
         f"BLOCKED by scope gate: CEM request target {target!r} (base_request['url'], "
         "the URL determinism_gate/run_counterfactual actually fetches) is not in "
@@ -694,27 +690,25 @@ def _make_scope_cb(engagement):
     truth as F1 and the hook. Raises `ScopeDenied` on an out-of-scope URL, a
     non-string/blank URL, or any evaluation error -- fail closed."""
     def _cb(url) -> None:
-        if isinstance(url, str) and url.strip():
-            policy = scope_guard.outbound_policy_error(url)      # O1: same allowlist as _scope_or_error, per trial
-            if policy:
-                raise ScopeDenied(
-                    f"BLOCKED by CEM outbound policy: a CEM request resolved the outbound URL "
-                    f"to {url!r} -- {policy}."
-                )
-        try:
-            ok = isinstance(url, str) and bool(url.strip()) and scope_guard.is_in_scope(url, engagement)
-        except Exception as e:  # any parse/resolution failure -> refuse (fail closed)
+        refusal = scope_check.check_url(url, engagement)         # O1: same allowlist as _scope_or_error, per trial
+        if refusal is None:
+            return
+        if refusal.kind == scope_check.POLICY:
+            raise ScopeDenied(
+                f"BLOCKED by CEM outbound policy: a CEM request resolved the outbound URL "
+                f"to {url!r} -- {refusal.detail}."
+            )
+        if refusal.kind == scope_check.VERIFY_FAILED:
             raise ScopeDenied(
                 f"BLOCKED by scope gate: could not verify perturbed CEM target "
-                f"{url!r} is in scope ({e.__class__.__name__}: {e}); refusing to send."
-            ) from e
-        if not ok:
-            raise ScopeDenied(
-                f"BLOCKED by scope gate: a CEM perturbation resolved the outbound URL "
-                f"to {url!r}, which is not in the active engagement's in_scope list -- "
-                "refusing to send. (F3: the URL actually fetched is scope-checked "
-                "per trial, not just the stored base_request URL.)"
+                f"{url!r} is in scope ({refusal.detail}); refusing to send."
             )
+        raise ScopeDenied(  # out of scope, or a blank/non-string URL -- both refuse
+            f"BLOCKED by scope gate: a CEM perturbation resolved the outbound URL "
+            f"to {url!r}, which is not in the active engagement's in_scope list -- "
+            "refusing to send. (F3: the URL actually fetched is scope-checked "
+            "per trial, not just the stored base_request URL.)"
+        )
     return _cb
 
 

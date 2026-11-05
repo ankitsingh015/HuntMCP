@@ -24,7 +24,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import disc_spec  # noqa: E402
 import http_probe  # noqa: E402
-import scope_guard  # noqa: E402
+import scope_check  # noqa: E402
 from audit_log import log_call as _log_call  # noqa: E402
 from budget_guard import BudgetExceeded  # noqa: E402
 from budget_guard import enforce as _enforce_budget  # noqa: E402
@@ -46,25 +46,20 @@ def _resolve_engagement():
     """Mirrors schemathesis-mcp's own _resolve_engagement: NoEngagementFile
     -> an empty Engagement (a safe test host still passes via
     is_in_scope's is_safe_test_host branch; a real host does not)."""
-    try:
-        return scope_guard.load_engagement()
-    except scope_guard.NoEngagementFile:
-        return scope_guard.Engagement(target="(no engagement.yaml)")
+    return scope_check.resolve_engagement()
 
 
 def _scope_or_error(url, engagement) -> str | None:
-    if not isinstance(url, str) or not url:
+    refusal = scope_check.check_url(url, engagement)
+    if refusal is None:
+        return None
+    if refusal.kind == scope_check.EMPTY:
         return "Error: url must be a non-empty string."
-    policy = scope_guard.outbound_policy_error(url)
-    if policy:
-        return f"BLOCKED by outbound policy: url {url!r} -- {policy}."
-    try:
-        in_scope = scope_guard.is_in_scope(url, engagement)
-    except Exception as e:  # noqa: BLE001 - any resolution/parse failure -> refuse
-        return f"BLOCKED by scope gate: could not verify url {url!r} is in scope ({e.__class__.__name__}: {e})."
-    if not in_scope:
-        return f"BLOCKED by scope gate: url {url!r} is not in the active engagement's in_scope list."
-    return None
+    if refusal.kind == scope_check.POLICY:
+        return f"BLOCKED by outbound policy: url {url!r} -- {refusal.detail}."
+    if refusal.kind == scope_check.VERIFY_FAILED:
+        return f"BLOCKED by scope gate: could not verify url {url!r} is in scope ({refusal.detail})."
+    return f"BLOCKED by scope gate: url {url!r} is not in the active engagement's in_scope list."
 
 
 def _parse_spec_body(body: str) -> dict:

@@ -6,6 +6,7 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import job_runtime  # noqa: E402
+import scope_check
 import scope_guard  # noqa: E402
 from engagement_paths import resolve_dir  # noqa: E402
 from injection_boundary import quarantine as _quarantine
@@ -61,10 +62,7 @@ def _resolve_engagement():
     """Mirrors case-mcp's own _resolve_engagement: NoEngagementFile -> an
     empty Engagement (a safe test host still passes via is_in_scope's
     is_safe_test_host branch; a real host does not)."""
-    try:
-        return scope_guard.load_engagement()
-    except scope_guard.NoEngagementFile:
-        return scope_guard.Engagement(target="(no engagement.yaml)")
+    return scope_check.resolve_engagement()
 
 
 def _scope_or_error(label: str, value: str, engagement) -> str | None:
@@ -75,20 +73,18 @@ def _scope_or_error(label: str, value: str, engagement) -> str | None:
     the caller and passed in -- resolving it separately per value meant
     run_schema_test did two full file-read-and-YAML-parse passes over the
     identical engagement.yaml for data that can't change within one call."""
-    if not isinstance(value, str) or not value:
+    refusal = scope_check.check_url(value, engagement)
+    if refusal is None:
+        return None
+    if refusal.kind == scope_check.EMPTY:
         return f"Error: {label} must be a non-empty string."
-    policy = scope_guard.outbound_policy_error(value)
-    if policy:
-        return f"BLOCKED by outbound policy: {label} {value!r} -- {policy}."
-    try:
-        in_scope = scope_guard.is_in_scope(value, engagement)
-    except Exception as e:  # noqa: BLE001 - any resolution/parse failure -> refuse
+    if refusal.kind == scope_check.POLICY:
+        return f"BLOCKED by outbound policy: {label} {value!r} -- {refusal.detail}."
+    if refusal.kind == scope_check.VERIFY_FAILED:
         return (f"BLOCKED by scope gate: could not verify {label} {value!r} is in "
-                f"scope ({e.__class__.__name__}: {e}); refusing to run.")
-    if not in_scope:
-        return (f"BLOCKED by scope gate: {label} {value!r} is not in the active "
-                "engagement's in_scope list -- refusing to run.")
-    return None
+                f"scope ({refusal.detail}); refusing to run.")
+    return (f"BLOCKED by scope gate: {label} {value!r} is not in the active "
+            "engagement's in_scope list -- refusing to run.")
 
 
 def _validate_run_params(phases: str, checks: str, max_examples: int,
