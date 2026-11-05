@@ -264,6 +264,7 @@ from __future__ import annotations
 
 import difflib
 import itertools
+import json
 import re
 import time
 from collections.abc import Callable
@@ -271,7 +272,14 @@ from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from http_probe import DEFAULT_TIMEOUT_S, FetchResult
-from redact import KNOWN_SECRET_HEADER_NAMES, redact_text, redacted
+from redact import (
+    KNOWN_SECRET_HEADER_NAMES,
+    is_secret_key,
+    loads_for_redaction,
+    redact_structured,
+    redact_text,
+    redacted,
+)
 
 _VALID_SIGNATURE_KEYS = {"status_in", "body_contains", "body_regex", "similarity_to_baseline"}
 _VALID_SIMILARITY_KEYS = {"body", "threshold"}
@@ -968,7 +976,29 @@ def minimize_poc(
     )
 
 
-def _redact_recursive(value):
+_WITHHELD_JSON = "[withheld: JSON body nested too deeply to redact safely]"
+
+
+def _redact_string_leaf(value: str) -> str:
+    """redact_text(), plus key-aware redaction when the string is a JSON object/array that actually
+    contains a secret-named key. Unchanged strings come back exactly as redact_text() returned them."""
+    if value.lstrip()[:1] not in ("{", "["):
+        return redact_text(value)
+    try:
+        parsed = loads_for_redaction(value)
+    except ValueError:
+        return redact_text(value)
+    except RecursionError:
+        return _WITHHELD_JSON
+    try:
+        cleaned = redact_structured(parsed)
+    except RecursionError:
+        return _WITHHELD_JSON
+    dumped = json.dumps(cleaned, sort_keys=True)
+    return redact_text(value) if dumped == json.dumps(parsed, sort_keys=True) else dumped
+
+
+def _redact_recursive(value, _headers: bool = False):
     """Recursively apply redact_text to every string leaf of a nested
     dict/list/tuple structure (task C8). Dict values are walked, not keys --
     keys are our own field names, never target-controlled data. Lists and
@@ -1013,20 +1043,32 @@ def _redact_recursive(value):
     secret-named key (not a plain string, not a list purely of strings --
     e.g. a stray non-string element, or a nested dict) falls back to the
     ordinary recursive walk rather than guessing: this fix covers exactly
-    the two realistic header-value shapes, not every conceivable structure."""
+    the two realistic header-value shapes, not every conceivable structure.
+
+    JSON-aware extension (closes the secret-in-JSON-key and non-canonical-header-name halves of
+    docs/cem-phase1-limitations.md C8; no verdict logic touched): (a) a string leaf that is itself a
+    JSON object/array (a request/response body) gets redact.redact_structured() -- secret-NAMED keys
+    like payment_token / api_key are redacted wherever they nest -- but ONLY if that actually
+    changes something; otherwise the string is returned exactly as redact_text() always returned it
+    (formatting of an evidence body is preserved). (b) the children of a dict stored under the key
+    "headers" are checked with redact.is_secret_key() as well as the 4 canonical names, so
+    X-Auth-Token / X-Session-Id are caught. Deliberately NOT done for arbitrary dict keys: CEM's own
+    structural dicts use condition names (session_cookie, auth_cookie) as keys."""
     if isinstance(value, str):
-        return redact_text(value)
+        return _redact_string_leaf(value)
     if isinstance(value, dict):
         result = {}
         for k, v in value.items():
-            is_secret_key = isinstance(k, str) and k.lower() in KNOWN_SECRET_HEADER_NAMES
-            if is_secret_key and isinstance(v, str) and v:
+            secret_header = isinstance(k, str) and (
+                k.lower() in KNOWN_SECRET_HEADER_NAMES or (_headers and is_secret_key(k)))
+            if secret_header and isinstance(v, str) and v:
                 result[k] = redacted(v, "header-value")
-            elif (is_secret_key and isinstance(v, (list, tuple))
+            elif (secret_header and isinstance(v, (list, tuple))
                     and all(isinstance(item, str) for item in v)):
                 result[k] = [redacted(item, "header-value") if item else item for item in v]
             else:
-                result[k] = _redact_recursive(v)
+                result[k] = _redact_recursive(
+                    v, _headers=isinstance(k, str) and k.lower() == "headers" and isinstance(v, dict))
         return result
     if isinstance(value, (list, tuple)):
         return [_redact_recursive(v) for v in value]

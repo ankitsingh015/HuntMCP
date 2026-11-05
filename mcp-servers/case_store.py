@@ -449,6 +449,18 @@ def add_evidence(type: str, content: str, hypothesis_id: int | None = None,
         conn.close()
 
 
+def has_evidence(finding_id: int, content_hash: str, db_path: str | None = None) -> bool:
+    """True if `finding_id` already has an evidence row with this content hash -- lets a producer
+    re-attach evidence idempotently instead of inserting an identical row again."""
+    conn = _get_conn(db_path)
+    try:
+        row = conn.execute("SELECT 1 FROM evidence WHERE finding_id = ? AND content_hash = ? LIMIT 1",
+                           (finding_id, content_hash)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def get_evidence(evidence_id: int, db_path: str | None = None) -> dict | None:
     """One evidence row, with provenance_json decoded back into a dict (or
     None if this row predates C1a / was stored without provenance) --
@@ -595,6 +607,20 @@ def get_finding(finding_id: int, db_path: str | None = None) -> dict | None:
     conn = _get_conn(db_path)
     try:
         row = conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def find_finding(vuln_class: str, endpoint: str, parameter: str = "",
+                  db_path: str | None = None) -> dict | None:
+    """The oldest finding with exactly this vuln_class+endpoint+parameter, or None -- lets a
+    producer (e.g. authz_diff.emit_finding) avoid inserting a duplicate on a re-run."""
+    conn = _get_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM findings WHERE vuln_class = ? AND endpoint = ? AND parameter = ? "
+            "ORDER BY id LIMIT 1", (vuln_class, endpoint, parameter)).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()

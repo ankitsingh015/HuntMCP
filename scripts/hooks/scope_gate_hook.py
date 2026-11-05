@@ -563,12 +563,14 @@ _PROTECTED_RELATIVE_PATHS = (
     "mcp-servers/sandbox_runner.py",
     "mcp-servers/dotenv_loader.py",
     "mcp-servers/hook_confirm.py",
+    "mcp-servers/state_change_confirm.py",
     ".claude/settings.json",
     ".claude/settings.local.json",
     ".opencode/plugin/scope-gate.ts",
     "opencode.jsonc",
     "scripts/confirm-os-shell.sh",
     "scripts/confirm-hook-edit.sh",
+    "scripts/confirm-state-change.sh",
 )
 
 

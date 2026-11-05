@@ -25,17 +25,23 @@ let a large object_ids list blow past the intended per-engagement request
 ceiling without ever tripping the circuit breaker).
 """
 
+import json
+import os
+import shlex
 import sys
 import time
 
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 
+import authz_diff
 import idor_sweep
 import session_context
+import state_change_confirm
 from audit_log import log_call as _log_call
 from budget_guard import BudgetExceeded
 from budget_guard import enforce as _enforce_budget
 from mcp.server.fastmcp import FastMCP
+from redact import redact_text
 
 app = FastMCP("idor-mcp")
 
@@ -217,6 +223,174 @@ def guess_idor(url: str, known_id: str, method: str = "GET", cookie_header: str 
         lines.append(f"{marker} {v.object_id}: {v.verdict} [status={v.status}]")
         lines.append(f"    {v.detail}")
     return "\n".join(lines)
+
+
+def _valauthz_enabled() -> bool:
+    return os.environ.get("HUNTMCP_VALAUTHZ", "").lower() in ("1", "true", "yes")
+
+
+def _audit(tool: str, url: str, start: float, requests: int = 0, extra=()) -> None:
+    """One audit-log entry per tool call, on EVERY exit path (refusals included)."""
+    _log_call("idor-mcp", [url, tool, f"{requests} requests", *extra],
+              returncode=None, duration_ms=(time.monotonic() - start) * 1000, block=None)
+
+
+@app.tool()
+def replay_authz_two_step(url: str, carried_path: str, step2_url_template: str,
+                          owner_cookie_header: str = "", owner_bearer_token: str = "",
+                          other_cookie_header: str = "", other_bearer_token: str = "",
+                          step1_method: str = "GET", step2_method: str = "GET",
+                          step1_body: str = "", emit_finding: bool = False) -> str:
+    """P3-VALAUTHZ two-step authorization replay (feature-flagged: set HUNTMCP_VALAUTHZ=1;
+    off by default, in which case use sweep_idor). `url` is step 1, fetched as the OWNER;
+    `carried_path` is the dotted JSON path in its response that yields an opaque id (e.g.
+    "carts.0.cart_ref"); `step2_url_template` is step 2 with exactly one `{carried}`
+    placeholder, same origin as `url`. Step 2 is fetched as the owner (stable baseline,
+    twice), then as the OTHER identity carrying the owner's id, then with controls: no
+    credentials (public?) and the other identity's own id (authenticated-but-global?). If the
+    owner's body itself varies per fetch (timestamps, request ids) those JSON paths are masked
+    from every comparison -- but only if at least 2 stable fields remain, else INCONCLUSIVE.
+    Verdicts: LEAKED (exact same object, all controls clean -- a CANDIDATE, never CONFIRMED
+    here), PROTECTED, PUBLIC, SHARED, DIFFERENT, INCONCLUSIVE, BASELINE_FAILED, ERROR,
+    BLOCKED (scope/budget/method gate stopped the run). Read-only by default: a step method
+    other than GET/HEAD/OPTIONS is refused before any request unless the HUMAN has confirmed it in
+    their own terminal with scripts/confirm-state-change.sh <host> <METHODS> (single-use,
+    time-limited, bound to this host and these methods -- you cannot supply an approval yourself).
+    An approved state-changing step 2 is sent once per identity only (the stability / unauthenticated
+    / own-object controls would each repeat the mutation), so it ends DIFFERENT/INCONCLUSIVE rather
+    than LEAKED; an approved state-changing step 1 (create-then-read: e.g. POST /drafts returns the
+    new object's id, step 2 GETs it) is sent by the owner, and by the other identity only if the
+    controls run. `step1_body` (optional, step 1 only) is a JSON string of at most 4 KiB, sent with
+    Content-Type: application/json; it must not contain the carried id, is rejected on a read-only
+    step 1, and is never echoed or stored (evidence keeps only a short hash). Scope is checked before EVERY request and Tier-2
+    budget is charged per request. emit_finding=True records a LEAKED result as a DISCOVERED
+    case_store finding with the candidate CEM conditions (identity, step order, carried id)
+    in its evidence. Requires scope-gate clearance first (Tier-2)."""
+    start = time.monotonic()
+
+    def _done(text: str, requests: int = 0) -> str:
+        _audit("replay_authz_two_step", url, start, requests)
+        return text
+
+    if not _valauthz_enabled():
+        return _done("replay_authz_two_step is disabled (HUNTMCP_VALAUTHZ is not set) -- "
+                     "use sweep_idor for the single-request cross-account sweep.")
+    wf = authz_diff.Workflow(step1_url=url, carried_path=carried_path,
+                             step2_url_template=step2_url_template,
+                             step1_method=step1_method, step2_method=step2_method,
+                             step1_body=step1_body or None)
+    owner_headers = idor_sweep._build_headers(owner_cookie_header or None, owner_bearer_token or None)
+    other_headers = idor_sweep._build_headers(other_cookie_header or None, other_bearer_token or None)
+
+    bad = authz_diff.structural_error(wf, owner_headers, other_headers)
+    if bad:  # reject a malformed workflow before it can spend a human-issued approval
+        return _done(f"{bad[0]}: {redact_text(bad[1])} -- no request was sent.")
+    approval = None
+    needed = authz_diff.state_changing_methods(wf)
+    if needed:
+        refusal = authz_diff.scope_precheck(wf)  # never spend a human approval on an out-of-scope run
+        if refusal:
+            return _done(f"BLOCKED: {redact_text(refusal)} -- no request was sent.")
+        host = authz_diff.approval_host(url)
+        fingerprint = authz_diff.workflow_fingerprint(wf, owner_headers, other_headers)
+        summary = authz_diff.workflow_summary(wf, owner_headers, other_headers)
+        if len(summary) > state_change_confirm.PROMPT_SUMMARY_LIMIT:  # the human could not read all of it
+            return _done("ERROR: this workflow's description is too long for a human to confirm in full "
+                         "(shorten the URLs) -- no request was sent.")
+        # what the human's confirm prompt will show, built here from the real workflow
+        state_change_confirm.write_pending(host, needed, fingerprint, summary)
+        approval = state_change_confirm.consume_approval(host, needed, fingerprint)
+        if approval is None:
+            return _done(
+                f"BLOCKED: this workflow sends state-changing method(s) {needed}, which need a human's "
+                f"single-use confirmation bound to exactly what will be sent: {summary}. "
+                "Ask the user to read that, then run in their own "
+                f"terminal: scripts/confirm-state-change.sh {shlex.quote(host)} {','.join(needed)} {fingerprint} "
+                "-- no request was sent.")
+    result = authz_diff.run_two_step(wf, owner_headers, other_headers,
+                                     budget_cb=lambda: _enforce_budget("idor-mcp"), approval=approval)
+    lines = [f"Workflow: {redact_text(url)} -> {redact_text(step2_url_template)}",
+             f"Verdict: {result.verdict}",
+             f"Requests sent: {len(result.requests)}", result.detail]
+    for r in result.requests:
+        lines.append(f"  [{r['role']} step{r['step']}] {r['method']} {r['url']} -> {r['status']}")
+    if emit_finding:
+        emitted = authz_diff.emit_finding(result, wf)
+        if emitted is None:
+            lines.append(f"No finding recorded (nothing to record for verdict {result.verdict}).")
+        else:
+            lines.append(f"Finding recorded: {emitted} (DISCOVERED -- confirm independently before CONFIRMED).")
+    return _done("\n".join(lines), len(result.requests))
+
+
+@app.tool()
+def replay_authz_matrix(url: str, carried_path: str, step2_url_template: str,
+                        owner_cookie_header: str = "", owner_bearer_token: str = "",
+                        identities_json: str = "", emit_finding: bool = False) -> str:
+    """P3-VALAUTHZ identity matrix (feature-flagged: HUNTMCP_VALAUTHZ=1; off by default). The same
+    owner-fetch-and-compare oracle as replay_authz_two_step, run once per declared identity against the
+    OWNER's object: e.g. a same-tenant user, an admin, a user of another tenant. READ-ONLY (GET): a
+    state-changing step is refused -- use replay_authz_two_step for that. `identities_json` is a JSON
+    list (max 5) of {"name": "bobby", "cookie_header": "...", "bearer_token": "...",
+    "should_have_access": false}; name is 1-32 chars [A-Za-z0-9_-]; should_have_access is the access
+    POLICY you were given (true for an admin or a same-tenant colleague who is SUPPOSED to read the
+    object): such an identity gets EXPECTED_ACCESS instead of LEAKED. Do not guess the policy -- take it
+    from the program's rules; the default (false) means "must not have access". Per-identity verdicts
+    are the same as replay_authz_two_step's (LEAKED is a CANDIDATE only, never CONFIRMED). A BLOCKED
+    identity (scope/budget) stops the rest of the matrix. Scope is checked before EVERY request and
+    Tier-2 budget is charged per request. emit_finding=True records one DISCOVERED case_store finding per
+    wrongly-allowed identity. Requires scope-gate clearance first (Tier-2)."""
+    start = time.monotonic()
+
+    def _done(text: str, requests: int = 0, rows=()) -> str:
+        # identity names, the declared policy and each verdict are durable audit facts: a LEAKED
+        # that was dismissed as "policy: allowed" must leave a trace
+        _audit("replay_authz_matrix", url, start, requests,
+               [f"{r.name}={r.verdict}" + ("(policy:allowed)" if r.should_have_access else "") for r in rows])
+        return text
+
+    if not _valauthz_enabled():
+        return _done("replay_authz_matrix is disabled (HUNTMCP_VALAUTHZ is not set) -- "
+                     "use sweep_idor for the single-request cross-account sweep.")
+    try:
+        raw = json.loads(identities_json)
+        if not isinstance(raw, list):
+            raise TypeError("identities_json must be a JSON list")
+        identities = []
+        for entry in raw:
+            if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+                raise TypeError("each identity must be an object with a string name")
+            headers = idor_sweep._build_headers(entry.get("cookie_header") or None,
+                                                entry.get("bearer_token") or None)
+            if not headers:
+                raise TypeError(f"identity {entry['name'][:32]!r} needs a cookie_header or bearer_token")
+            allowed = entry.get("should_have_access", False)
+            if not isinstance(allowed, bool):
+                raise TypeError(f"should_have_access for {entry['name'][:32]!r} must be true or false")
+            identities.append(authz_diff.MatrixIdentity(entry["name"], headers, allowed))
+    except (ValueError, TypeError) as e:
+        return _done(f"ERROR: invalid identities_json ({redact_text(str(e))}) -- no request was sent.")
+
+    wf = authz_diff.Workflow(step1_url=url, carried_path=carried_path, step2_url_template=step2_url_template)
+    owner_headers = idor_sweep._build_headers(owner_cookie_header or None, owner_bearer_token or None)
+    try:
+        rows = authz_diff.run_matrix(wf, owner_headers, identities,
+                                     budget_cb=lambda: _enforce_budget("idor-mcp"))
+    except authz_diff.MatrixError as e:
+        return _done(f"ERROR: {redact_text(str(e))} -- no request was sent.")
+
+    total = sum(len(r.result.requests) for r in rows)
+    lines = [f"Matrix: {redact_text(url)} -> {redact_text(step2_url_template)}",
+             f"Identities tested: {len(rows)}/{len(identities)}"]
+    for r in rows:
+        lines.append(f"{r.name}: {r.verdict} ({len(r.result.requests)} requests)"
+                     + (" [policy: should have access]" if r.should_have_access else ""))
+        lines.append(f"    {r.result.detail}")
+    if emit_finding:
+        emitted = authz_diff.emit_matrix_findings(rows, wf)
+        lines.append(f"Findings recorded: {emitted} (DISCOVERED -- confirm independently before CONFIRMED)."
+                     if emitted else "No finding recorded (no identity was wrongly allowed).")
+    return _done("\n".join(lines), total, rows)
 
 
 if __name__ == "__main__":

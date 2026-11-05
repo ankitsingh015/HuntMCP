@@ -149,8 +149,16 @@ overview:
   be rebuilt from the bundle.
 - **`SuccessSignature` `body_regex=""` vacuous-oracle vector** (C1) — left open,
   tracked under §6 C1.
-- **Secret-header redaction for names outside the 4 canonical ones**
-  (e.g. `X-Auth-Token`, `X-Session-Id`) — left open, tracked under §6 C8.
+- ~~**Secret-header redaction for names outside the 4 canonical ones**
+  (e.g. `X-Auth-Token`, `X-Session-Id`) — left open, tracked under §6 C8.~~
+  **Closed 2026-11-01 (P3-VALAUTHZ follow-up, human-authorized):** inside a dict stored under the
+  key `"headers"`, `cem_engine._redact_recursive` now also redacts any header whose name
+  `redact.is_secret_key()` flags. The same change also redacts secret-NAMED keys (`payment_token`,
+  `api_key`, ...) inside a string leaf that is itself a JSON object/array (request/response
+  bodies in bundles and in `case_store` provenance), and withholds a JSON body too deeply nested to
+  redact. Verdict logic untouched; a string with nothing to redact is returned byte-for-byte as
+  before; arbitrary dict keys are deliberately NOT treated as secret keys (CEM condition names such
+  as `session_cookie` / `auth_cookie` are structural keys). Tests: `tests/test_cem_redaction_json.py`.
 
 ---
 
