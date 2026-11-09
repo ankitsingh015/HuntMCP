@@ -18,14 +18,13 @@ start_batch()/check_batch() instead of reinventing bounded concurrency.
 
 ## What this task does NOT yet do
 
-Later tasks add per-target dedupe (so two batches started against the same
-target reuse one job instead of double-firing it against a live target)
-and inter-batch backoff (so a target that errors isn't immediately
-relaunched into the next slot). This module is deliberately just the
-bounded-concurrency core those build on top of -- `in_flight`'s value type
-(currently a bare job_id string) and the slot-ceiling check in
-_fill_slots() are kept as small, single-site pieces specifically so later
-tasks can extend them without touching call sites elsewhere in this file.
+Per-target dedupe now skips a target already in progress elsewhere
+(tracked via `work_registry`) instead of double-firing it against a live
+target. A later task still owes inter-batch backoff, so a target that
+errors isn't immediately relaunched into the next slot. The slot-ceiling
+check in _fill_slots() is kept as a small, single-site piece specifically
+so that task can extend it without touching call sites elsewhere in this
+file.
 """
 
 from __future__ import annotations
@@ -35,6 +34,7 @@ import uuid
 from typing import Callable, NamedTuple
 
 import job_runtime
+import work_registry
 
 # Per-tool concurrency ceiling -- how many jobs for a given tool_name may be
 # in_flight at once across all callers sharing one `jobs` dict. A plain
@@ -48,7 +48,7 @@ class _Batch(NamedTuple):
     tool_name: str
     prepare: Callable[[str], dict]
     pending: list[str]
-    in_flight: dict[str, str]  # target -> job_id
+    in_flight: dict[str, tuple[str, str]]  # target -> (job_id, work_id)
     results: dict[str, dict]
 
 
@@ -69,16 +69,26 @@ def _fill_slots(batch: _Batch, jobs: dict) -> None:
     shouldn't count against the concurrency ceiling the way a real running
     job does. This keeps the loop moving past rejected targets instead of
     stalling with open capacity and pending work.
+
+    A target already showing up as in-progress elsewhere in
+    `work_registry` (another batch, another specialist entirely) is
+    likewise recorded without consuming a slot, as `{"kind":
+    "skipped_in_flight"}` -- it never becomes a job here, so it shouldn't
+    count against this batch's concurrency ceiling either.
     """
     cap = _cap_for(batch.tool_name)
     while len(batch.in_flight) < cap and batch.pending:
         target = batch.pending.pop(0)
+        if work_registry.list_active_work(host=target):
+            batch.results[target] = {"kind": "skipped_in_flight"}
+            continue
         prepared = batch.prepare(target)
         if "error" in prepared:
             batch.results[target] = {"kind": "prepare_error", "error": prepared["error"]}
             continue
         started = job_runtime.start_job(batch.tool_name, jobs=jobs, **prepared)
-        batch.in_flight[target] = started["job_id"]
+        work_id = work_registry.start_work("fanout", target, task=batch.tool_name)
+        batch.in_flight[target] = (started["job_id"], work_id)
 
 
 def _snapshot(batch_id: str, batch: _Batch) -> dict:
@@ -124,9 +134,10 @@ def check_batch(batch_id: str, batches: dict, jobs: dict) -> dict:
     if batch is None:
         return {"error": f"no batch with batch_id={batch_id!r}"}
 
-    for target, job_id in list(batch.in_flight.items()):
+    for target, (job_id, work_id) in list(batch.in_flight.items()):
         polled = job_runtime.poll_job(job_id, jobs)
         if polled.get("status") != "running":
+            work_registry.complete_work(work_id, outcome=polled.get("status", ""))
             batch.results[target] = {"kind": "job_result", **polled}
             del batch.in_flight[target]
 
