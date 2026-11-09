@@ -35,6 +35,10 @@ from typing import Callable, NamedTuple
 
 import job_runtime
 import work_registry
+# For test/integration isolation (e.g. a fixture-based e2e test), point the
+# dedupe check at an isolated registry file via the HUNTMCP_WORK_REGISTRY_PATH
+# env var -- work_registry._resolve_path() already honors it -- rather than
+# adding a path= parameter to this module's own functions.
 
 # Per-tool concurrency ceiling -- how many jobs for a given tool_name may be
 # in_flight at once across all callers sharing one `jobs` dict. A plain
