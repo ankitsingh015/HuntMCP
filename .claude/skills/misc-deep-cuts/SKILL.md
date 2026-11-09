@@ -127,3 +127,15 @@ by vuln class.
     side effect via OOB or a readable state change, tamper-the-signature
     check). Skipping straight to "no auth on the webhook" from a bare 200
     is exactly the false-positive shape that check exists to catch.
+- **Salesforce security misconfiguration review**: when a target runs on
+  Salesforce, check the platform's own configuration surface rather than
+  just the app built on top of it -- password policy strength (complexity
+  requirements, whether the password-reset secret-answer is obscured
+  rather than shown in plaintext, a real lockout duration, and a low
+  max-invalid-attempts threshold before lockout); whether Real-Time Event
+  Monitoring is actually enabled for the events that matter (anomalous
+  API call patterns, bulk data access via list views); whether Login IP
+  Ranges are configured to restrict which source IPs can authenticate at
+  all; and whether clickjacking protection is enabled on sensitive pages
+  (Salesforce ships this as a toggle, and it's easy to leave off on a
+  custom Visualforce/Lightning page).

@@ -35,7 +35,16 @@ signing key covers domains beyond the target's own.
 ## Other checks
 
 - **Open relay probe**: test whether the mail server or a contact form
-  can be abused as an arbitrary-recipient spam relay.
+  can be abused as an arbitrary-recipient spam relay. SMTP typically
+  listens on 25, 465, or 587 -- `nmap -sV --script smtp-open-relay -v
+  <target>` or Metasploit's `auxiliary/scanner/smtp/smtp_relay` module
+  will flag it automatically. To confirm manually: `telnet <server_ip>
+  25`, then `HELO <attacker-domain>`, `MAIL FROM: someone@target.com`,
+  `RCPT TO: you@attacker-domain`, `DATA`, a body, then a line with just
+  `.` to send -- if the message delivers to an external address using a
+  spoofed `MAIL FROM` on the target's own domain, the relay is open.
+  Shodan dorks like `port:25` combined with `"smtp"` help locate exposed
+  mail servers during recon.
 - **ARC laundering**: forwarded mail can carry `dmarc=pass` from the
   forwarding step even when the original message wouldn't have passed --
   check whether ARC headers are being trusted uncritically.

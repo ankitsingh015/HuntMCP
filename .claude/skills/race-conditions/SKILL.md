@@ -88,6 +88,16 @@ seat/item, both attempting to redeem the same one-time link. Look for
 the resource ending up in an impossible or double-allocated state as the
 tell.
 
+## OAuth2 "eternal persistence" race
+
+A distinct state-transition race specific to OAuth2 flows: racing token
+refresh/revocation against token issuance (or racing concurrent
+authorization-code exchanges) can leave a token that should have been
+invalidated still accepted by the resource server indefinitely, because
+the revocation write and the token-validation read weren't made mutually
+exclusive. Treat any OAuth2 revoke/refresh/exchange endpoint as a
+race-conditions target in its own right, not just a business-logic one.
+
 ## Precedent
 
 - **GitLab CVE-2022-4037** — concurrent email-change requests raced

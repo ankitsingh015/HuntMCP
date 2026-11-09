@@ -38,9 +38,25 @@ check whether it chains into RCE via this skill's second half.
 - **Shellshock vectors** in User-Agent, Referer, Cookie.
 - **LDAP, XPath, XQuery, XSLT, EL** (SpEL/OGNL), **SSTI**
   (Jinja2/Twig/Freemarker) -- see `knowledge/payloads/ssti.txt`.
+- **Client-Side Template Injection (CSTI)**: the client-side analog of
+  SSTI, seen in JS template engines (AngularJS, VueJS) rather than a
+  backend template. Presence of `ng-app` in the page source signals a
+  template engine is in play; drop a math canary like `{{11*5}}` into a
+  suspected field and a reflected `55` confirms live template
+  evaluation. Where SSTI usually escalates to RCE, CSTI's escalation
+  path is to XSS -- escape the expression context to break out into
+  script execution.
 - **CRLF -> Header Injection -> Cache Poisoning -> Stored XSS** chain.
 - **HTTP Parameter Pollution (HPP)**: `;` vs `&`, duplicate params, JSON
-  vs form encoding.
+  vs form encoding. Test by submitting the same parameter name twice
+  with different values (`to=123&to=456`) or as incremental keys
+  (`u1=a&u2=b`) and watch for divergent backend-vs-framework parsing;
+  concrete impact categories to check for, since different
+  app-server/framework pairs pick the first/last/concatenated value
+  differently: authentication bypass, WAF-rule bypass (the WAF inspects
+  one occurrence while the backend consumes another), and business-logic
+  abuse such as a payment/transfer endpoint applying the action to more
+  than one polluted recipient value.
 - **Hidden parameter tampering** (Param Miner style): `debug`, `test`,
   `source`, `deprecated`.
 - **Server-side prototype pollution -> RCE** -- see
@@ -131,6 +147,18 @@ same as knowing how to actually trigger it:
   intentionally malformed expression (`{{bad` with no closing brace);
   the resulting stack trace/error string usually names the engine,
   framework version, and template path directly.
+- **XSLT injection mechanics**: occurs when untrusted data reaches an
+  XSL stylesheet that a server-side transform engine (libxslt, Apache
+  Xalan, Saxon) processes -- look for it anywhere a report-generation,
+  data-export (PDF/XML/CSV), or print/email feature does a document
+  transformation. Vectors go well beyond RCE: stored XSS via a
+  `<script>` tag emitted into the HTML output, local file read via
+  `document('/etc/passwd')` inside an `<xsl:copy-of select=...>`, SSRF/
+  port-scanning via `document()` against an internal URL, and full
+  Xalan-specific RCE by binding a Java class as an XSLT namespace and
+  calling it directly -- `xmlns:rt="...java.lang.Runtime"` then
+  `rt:exec($rtobject,'id')` -- since Xalan's Java-extension mechanism
+  lets XSLT invoke arbitrary JVM methods, not just transform XML.
 - **Unauthenticated Redis -> webshell RCE**: `CONFIG SET dir
   /var/www/html`, `CONFIG SET dbfilename shell.php`, `SET x
   "<?php system($_GET['c']); ?>"`, `SAVE` -- writes the in-memory value

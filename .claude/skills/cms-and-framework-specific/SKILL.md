@@ -118,7 +118,27 @@ product and version are known.
   unique Collaborator subdomain -- a 200 returns an optimized *image*,
   not the upstream response body, so status code alone never proves
   SSRF, and a 400 on a non-whitelisted URL is `images.remotePatterns`
-  working as intended, not a bypassed filter.
+  working as intended, not a bypassed filter; **CVE-2025-29927**
+  (middleware auth-bypass, Next.js <=15.2.2): a route whose only
+  protection is `middleware.ts` (not a server-side check in the route
+  itself) can be reached by sending `x-middleware-subrequest:
+  middleware:middleware:middleware:middleware:middleware` (one
+  `middleware:` segment per configured middleware layer, so try escalating
+  counts if the first attempt doesn't bypass) -- confirm by diffing the
+  response to the same path with and without the header (a protected
+  route returning its normal authenticated content instead of a
+  redirect/403 is the bypass; a 404/same-redirect either way means the
+  version is patched or the route isn't middleware-only protected).
+- **Vite dev server exposure (CVE-2024-23331)**: a production deployment
+  that accidentally ships the Vite dev server (`/@vite/client` returns
+  200, not a build artifact) exposes `/@fs/<absolute-path>` as an
+  unauthenticated file-read primitive outside the project root -- confirm
+  with a single read of a known-location file you expect to exist (e.g.
+  the app's own `/@fs/<app-root>/package.json`) rather than broad
+  filesystem enumeration; a 403/404 on `/@fs/` with `/@vite/client`
+  returning 200 means the traversal itself is patched even though the
+  dev server is still exposed, worth reporting on its own (dev server in
+  production is an info-disclosure/misconfiguration finding regardless).
 - **Node.js/Express**: prototype-pollution-to-RCE chains specific to
   Express middleware -- `__proto__`/`constructor.prototype` injection
   via `body-parser`/`qs` reaching a `child_process` sink (a polluted
@@ -172,7 +192,24 @@ wins once confirmed.
 - **Jenkins**: script-console RCE, Groovy sandbox escapes, unauthenticated
   project-config access, CVE-2024-23897 (args4j arbitrary file read).
 - **Jira**: `/secure/QuickEdit.jspa` IDOR, CVE-2017-9506,
-  CVE-2019-11581.
+  CVE-2019-11581. Further unauthenticated CVE classes worth checking by
+  endpoint: CVE-2020-14179 sensitive info disclosure via
+  `/secure/QueryComponent!Default.jspa` (leaks custom-field/SLA config);
+  CVE-2020-14181 user enumeration via
+  `/secure/ViewUserHover.jspa?username=`; CVE-2020-14178 project-key
+  enumeration via `/browse/<project_key>` (diff the error message on a
+  valid vs. invalid key -- sometimes yields outright unauthenticated
+  project access, not just enumeration); CVE-2019-3402 reflected XSS via
+  the `searchOwnerUserName` parameter on
+  `/secure/ConfigurePortalPages!default.jspa`; CVE-2019-3396 path
+  traversal; CVE-2019-8451 SSRF via
+  `/plugins/servlet/gadgets/makeRequest?url=` (chainable into XSS);
+  CVE-2019-8449 unauthenticated user-info disclosure via
+  `/rest/api/latest/groupuserpicker?query=`; CVE-2019-3403 user
+  enumeration via `/rest/api/2/user/picker?query=` (response-diffing, a
+  distinct endpoint from CVE-2020-14181); CVE-2019-8442 sensitive-file
+  disclosure via the Maven `pom.xml` path reachable under
+  `/s/<anything>/_/META-INF/maven/...`.
 - **SharePoint**: unauthenticated SSRF (CVE-2021-34473), ViewState RCE;
   the CVE-2025-53770/53771 "ToolShell" chain -- anonymous `GET
   /_layouts/15/ToolPane.aspx?DisplayMode=Edit` (reachable via the
@@ -211,7 +248,18 @@ wins once confirmed.
 - **MediaWiki**: CVE-2019-20203 eval-based issue, general API abuse.
 - **Kibana/Elasticsearch**: CVE-2019-7609 prototype-pollution RCE,
   unauthenticated `_search?q=` giving arbitrary query access, script
-  fields used for RCE.
+  fields used for RCE. Fingerprinting unauthenticated instances:
+  Shodan dorks `title:"kibana" port:"443"` and `kibana content-length:
+  217` (a 217-byte response body is the tell for a publicly reachable
+  dashboard with no auth), plus Google dorks like `inurl:app/kibana`;
+  CVE-2018-17246 LFI via the console API proxy --
+  `/api/console/api_server?sense_version=%40%40SENSE_VERSION&apis=../../../../../../etc/passwd`
+  reads arbitrary files; CVE-2015-1427 Groovy sandbox-escape RCE in
+  older Elasticsearch. Once an Elasticsearch endpoint is reachable
+  directly: `_cat/indices?v` enumerates every index, `<index>/_search`
+  dumps its documents, and `_shutdown`/`_cluster/nodes/_master/_shutdown`
+  are unauthenticated DoS primitives worth noting even without going
+  further.
 - **Grafana**: `/public/plugins/` directory traversal for file read.
 - **Others worth a quick CVE check when fingerprinted**: Ghost,
   PrestaShop, Concrete5, ExpressionEngine, and any WordPress plugin

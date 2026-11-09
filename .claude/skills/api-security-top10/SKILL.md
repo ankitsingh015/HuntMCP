@@ -60,6 +60,19 @@ SOAP/XML (XXE -- see the `xxe` skill), WebSocket subscriptions with no
 auth check, and importer/webhook features that follow an
 attacker-supplied URL.
 
+On GraphQL specifically, also check unauthenticated reachability before
+anything else: hit `/graphiql` (or the app's equivalent console path) as
+a logged-out user and see whether the IDE itself loads and lets you run
+schema-extraction or data queries; if no console is exposed, try the
+same query directly against `/graphql?query={...}` without a session.
+Separately, watch for the endpoint running in debug mode -- verbose
+GraphQL error responses that include stack traces or resolver internals
+well beyond a normal error message are a distinct misconfiguration from
+ordinary verbose-error security misconfiguration, since GraphQL's own
+error-formatting layer has its own debug toggle. InQL and GraphQL Raider
+(Burp extensions) are worth loading for this pass -- they automate schema
+walking and query crafting rather than hand-building every query.
+
 On GraphQL specifically, also check the REST/GraphQL dual-write desync:
 when an app exposes the same underlying data model through both a REST
 API and a GraphQL API, authorization is frequently enforced inconsistently

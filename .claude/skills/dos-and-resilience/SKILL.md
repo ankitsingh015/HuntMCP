@@ -22,6 +22,17 @@ rate-limit policy allows.
 - **ReDoS**: crafted input against a regex-validated field; billion-laughs
   style entity expansion (see the `xxe` skill for the XML-specific
   variant).
+  - **Finding the vulnerable regex**: in white/gray-box, grep the source
+    for the validation pattern directly; in black-box, pull every reachable
+    JS bundle and search for `RegExp(`/inline `/.../ ` literals to figure
+    out which client-side pattern gates which field -- the same pattern is
+    frequently reused server-side.
+  - **Evaluating catastrophic backtracking**: don't hand-craft the exploit
+    string -- run the extracted pattern through an automated regex-DoS
+    evaluator (e.g. ReScue-style tools) that both flags whether the pattern
+    is vulnerable and generates the specific input that drives it into
+    exponential backtracking, then time the request to confirm real
+    server-side slowdown.
 - **Unbounded input**: field length limits, multiple-file upload limits,
   zip-decompression bombs.
 - **HPP DoS**: HTTP Parameter Pollution used to amplify processing cost.

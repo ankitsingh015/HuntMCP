@@ -25,6 +25,44 @@ JSONP hijacking specifically: a `callback=` parameter that echoes data
 back wrapped in a function call lets an attacker's page define that
 function and steal the authenticated response.
 
+**Finding the callback param when it's hidden**: grep HTTP history for
+`?callback=` or similarly-named params directly, but also try forcing it
+on endpoints where it isn't obviously present -- append `?callback=x` to
+a plain JSON endpoint, or flip an existing `?format=json` to
+`?format=jsonp`. Some APIs support JSONP at the framework level without
+advertising it on any given call.
+
+**XSSI variants beyond JSONP** -- distinguish which situation applies,
+since the test differs:
+- *Static JS, hardcoded data*: a `.js` file with sensitive values baked
+  in regardless of who requests it -- just fetch it unauthenticated.
+- *Authenticated-only static JS*: the same file, but only served to a
+  logged-in session -- cross-origin `<script src>` inclusion from an
+  attacker page still works if the victim's cookies ride along.
+- *Dynamic JS*: the file's content changes based on actions the user has
+  taken (not just who they are). To confirm: perform an action as an
+  authenticated user, repeat unauthenticated (or as a different user),
+  and diff the two JS responses -- a difference indicates dynamically
+  injected sensitive data. The Burp "Detect Dynamic JS" plugin automates
+  this by passively collecting JS responses and replaying them without
+  auth identifiers, flagging any that differ.
+- *Non-script attack*: the leak happens without the file ever being
+  treated as a script by the including page (e.g. error-based leaks, see
+  below).
+
+**OWASP WSTG XSSI leak primitives** -- the concrete mechanisms behind a
+non-JSONP XSSI leak, worth checking individually against any
+authenticated JS/data endpoint:
+- Leakage via global variables the included script sets on `window`.
+- Leakage via parameters passed into a global function the attacker page
+  defines ahead of inclusion.
+- Leakage via a CSV response wrapped in quotation marks that, when
+  included as a script, throws a parseable syntax error exposing data.
+- Leakage via JavaScript runtime errors whose message text contains
+  fragments of the sensitive response (error-message side channel).
+- Leakage via prototype chaining using `this`, where overriding a
+  built-in prototype method captures values the included script touches.
+
 ## AngularJS template sandbox escapes
 
 Older Angular 1.x sandbox bypasses (client-side, not server SSTI, but the
