@@ -297,3 +297,15 @@ def test_check_batch_records_a_block_from_a_terminal_job_result(monkeypatch, tmp
     fanout.check_batch(result["batch_id"], batches, jobs)
 
     assert recorded == ["nuclei"]
+
+
+def test_default_caps_are_env_overridable(monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("HUNTMCP_FANOUT_MAX_NUCLEI", "7")
+    try:
+        importlib.reload(fanout)
+        assert fanout.DEFAULT_CAPS["nuclei"] == 7
+    finally:
+        monkeypatch.undo()
+        importlib.reload(fanout)

@@ -53,17 +53,17 @@ except ImportError:
 import file_lock
 
 # Per-tool concurrency ceiling -- how many jobs for a given tool_name may be
-# in_flight at once across all callers sharing one `jobs` dict. A plain
-# dict/int is enough for this task's tests to monkeypatch directly; real
-# env-var-driven configuration of these values is Task 4's job.
-DEFAULT_CAPS: dict[str, int] = {}
-DEFAULT_CAP_FALLBACK: int = 3
+# in_flight at once across all callers sharing one `jobs` dict. Read once at
+# import, same convention as budget_guard.MAX_CALLS -- a mid-engagement env
+# change isn't a supported scenario.
+DEFAULT_CAPS: dict[str, int] = {
+    "nuclei": int(os.getenv("HUNTMCP_FANOUT_MAX_NUCLEI", "5")),
+}
+DEFAULT_CAP_FALLBACK: int = int(os.getenv("HUNTMCP_FANOUT_MAX_DEFAULT", "3"))
 
 # How long a per-tool backoff (set by _record_block()) holds the reduced cap
-# before _effective_cap() lets it ramp back to DEFAULT_CAPS. A plain literal
-# for now -- Task 4 wraps this in os.getenv("HUNTMCP_FANOUT_COOLDOWN_SECONDS",
-# "300") under the same name.
-COOLDOWN_SECONDS: int = 300
+# before _effective_cap() lets it ramp back to DEFAULT_CAPS.
+COOLDOWN_SECONDS: int = int(os.getenv("HUNTMCP_FANOUT_COOLDOWN_SECONDS", "300"))
 
 # Snapshot only, for introspection -- _resolve_backoff_path() re-resolves
 # fresh on every call instead of trusting this frozen value (same rationale
