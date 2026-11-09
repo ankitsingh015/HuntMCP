@@ -1,3 +1,5 @@
+import time
+
 import fanout
 import job_runtime
 import work_registry
@@ -236,3 +238,62 @@ def test_fill_slots_registers_and_completes_work_for_a_launched_target(monkeypat
 
     assert complete_work_calls == [("work-target-c", "done")]
     assert result2["results"]["target-c"]["kind"] == "job_result"
+
+
+def test_effective_cap_returns_default_with_no_prior_block(tmp_path):
+    path = str(tmp_path / "fanout-backoff.json")
+    assert fanout._effective_cap("nuclei", path=path) == fanout.DEFAULT_CAPS.get("nuclei", fanout.DEFAULT_CAP_FALLBACK)
+
+
+def test_record_block_halves_the_cap_and_sets_a_cooldown(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanout, "COOLDOWN_SECONDS", 300)
+    path = str(tmp_path / "fanout-backoff.json")
+    full = fanout.DEFAULT_CAPS.get("nuclei", fanout.DEFAULT_CAP_FALLBACK)
+    fanout._record_block("nuclei", path=path)
+    assert fanout._effective_cap("nuclei", path=path) == max(1, full // 2)
+
+
+def test_a_second_block_compounds_rather_than_resetting(tmp_path):
+    path = str(tmp_path / "fanout-backoff.json")
+    fanout._record_block("nuclei", path=path)
+    once = fanout._effective_cap("nuclei", path=path)
+    fanout._record_block("nuclei", path=path)
+    assert fanout._effective_cap("nuclei", path=path) == max(1, once // 2)
+
+
+def test_cap_ramps_back_to_default_once_cooldown_elapses(tmp_path, monkeypatch):
+    path = str(tmp_path / "fanout-backoff.json")
+    fanout._record_block("nuclei", path=path)
+    # simulate time passing past blocked_until -- capture the future timestamp
+    # BEFORE patching fanout.time.time, since fanout.time is the same module
+    # object as this file's own `time` import: a lambda that calls time.time()
+    # itself would recurse into its own patched version.
+    future = time.time() + fanout.COOLDOWN_SECONDS + 1
+    monkeypatch.setattr(fanout.time, "time", lambda: future)
+    assert fanout._effective_cap("nuclei", path=path) == fanout.DEFAULT_CAPS.get("nuclei", fanout.DEFAULT_CAP_FALLBACK)
+
+
+def test_check_batch_records_a_block_from_a_terminal_job_result(monkeypatch, tmp_path):
+    monkeypatch.setattr(fanout, "DEFAULT_CAPS", {"nuclei": 5})
+    recorded = []
+    monkeypatch.setattr(fanout, "_record_block", lambda tool_name, path=None: recorded.append(tool_name))
+    _stub_work_registry(monkeypatch)
+
+    def fake_start_job(tool_name, jobs, **kwargs):
+        job_id = "job-0"
+        jobs[job_id] = {"status": "running"}
+        return {"job_id": job_id, "status": "running", "tool": tool_name}
+
+    monkeypatch.setattr(job_runtime, "start_job", fake_start_job)
+
+    def fake_poll_job(job_id, jobs):
+        return {"status": "done", "job_id": job_id, "block": "rate_limit"}
+
+    monkeypatch.setattr(job_runtime, "poll_job", fake_poll_job)
+
+    batches = {}
+    jobs = {}
+    result = fanout.start_batch("nuclei", ["target-a"], lambda t: {"args": []}, batches, jobs)
+    fanout.check_batch(result["batch_id"], batches, jobs)
+
+    assert recorded == ["nuclei"]

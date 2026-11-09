@@ -16,20 +16,24 @@ hand-roll its own cap-tracking and backfill logic per MCP server. This
 module is that logic, written once, so a new discovery tool wires in
 start_batch()/check_batch() instead of reinventing bounded concurrency.
 
-## What this task does NOT yet do
+## What this module does
 
-Per-target dedupe now skips a target already in progress elsewhere
-(tracked via `work_registry`) instead of double-firing it against a live
-target. A later task still owes inter-batch backoff, so a target that
-errors isn't immediately relaunched into the next slot. The slot-ceiling
-check in _fill_slots() is kept as a small, single-site piece specifically
-so that task can extend it without touching call sites elsewhere in this
-file.
+Per-target dedupe skips a target already in progress elsewhere (tracked
+via `work_registry`) instead of double-firing it against a live target.
+Persistent, per-tool backoff (`_effective_cap()`/`_record_block()`) means
+a tool that comes back blocked (rate-limited/WAF'd) gets a reduced slot
+ceiling for COOLDOWN_SECONDS, surviving across separate start_batch()
+calls rather than resetting each time -- the state lives in one JSON
+file, keyed by tool_name only (not per-target), on the same read-lock-
+mutate-save-unlock convention as `work_registry.py`.
 """
 
 from __future__ import annotations
 
-import time  # noqa: F401 -- unused here; Task 3 monkeypatches fanout.time.time for backoff
+import json
+import os
+import sys
+import time
 import uuid
 from typing import Callable, NamedTuple
 
@@ -40,12 +44,33 @@ import work_registry
 # env var -- work_registry._resolve_path() already honors it -- rather than
 # adding a path= parameter to this module's own functions.
 
+try:
+    import engagement_paths
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import engagement_paths
+
+import file_lock
+
 # Per-tool concurrency ceiling -- how many jobs for a given tool_name may be
 # in_flight at once across all callers sharing one `jobs` dict. A plain
 # dict/int is enough for this task's tests to monkeypatch directly; real
-# env-var-driven configuration of these values is Task 3's job.
+# env-var-driven configuration of these values is Task 4's job.
 DEFAULT_CAPS: dict[str, int] = {}
 DEFAULT_CAP_FALLBACK: int = 3
+
+# How long a per-tool backoff (set by _record_block()) holds the reduced cap
+# before _effective_cap() lets it ramp back to DEFAULT_CAPS. A plain literal
+# for now -- Task 4 wraps this in os.getenv("HUNTMCP_FANOUT_COOLDOWN_SECONDS",
+# "300") under the same name.
+COOLDOWN_SECONDS: int = 300
+
+# Snapshot only, for introspection -- _resolve_backoff_path() re-resolves
+# fresh on every call instead of trusting this frozen value (same rationale
+# as work_registry.DEFAULT_PATH / engagement_paths.resolve()'s own docstring:
+# a literal default would freeze onto whatever active-engagement pointer
+# existed at import time).
+DEFAULT_PATH = engagement_paths.resolve("fanout-backoff.json", override_env="HUNTMCP_FANOUT_BACKOFF_PATH")
 
 
 class _Batch(NamedTuple):
@@ -60,8 +85,56 @@ def _new_batch_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def _cap_for(tool_name: str) -> int:
+def _resolve_backoff_path(path: str | None) -> str:
+    if path is not None:
+        return path
+    return engagement_paths.resolve("fanout-backoff.json", override_env="HUNTMCP_FANOUT_BACKOFF_PATH")
+
+
+def _load_backoff(path: str | None = None) -> dict:
+    path = _resolve_backoff_path(path)
+    if not os.path.isfile(path):
+        return {}
+    with open(path) as f:
+        return json.load(f)
+
+
+def _save_backoff(state: dict, path: str | None = None) -> None:
+    path = _resolve_backoff_path(path)
+    with open(path, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def _effective_cap(tool_name: str, path: str | None = None) -> int:
+    """The slot ceiling to use for `tool_name` right now -- the per-tool
+    DEFAULT_CAPS value, unless a prior _record_block() for this tool is
+    still within its cooldown window, in which case the reduced cap
+    recorded at that time applies instead."""
+    path = _resolve_backoff_path(path)
+    with file_lock.locked(path):
+        state = _load_backoff(path)
+    entry = state.get(tool_name)
+    if entry and time.time() < entry["blocked_until"]:
+        return entry["cap"]
     return DEFAULT_CAPS.get(tool_name, DEFAULT_CAP_FALLBACK)
+
+
+def _record_block(tool_name: str, path: str | None = None) -> None:
+    """Record that `tool_name` just came back blocked (rate-limited/WAF'd):
+    halve its current effective cap and start a new COOLDOWN_SECONDS
+    window. A second block before the first cooldown elapses compounds --
+    it halves the ALREADY-reduced cap, rather than resetting from the
+    tool's full DEFAULT_CAPS value -- since repeated blocks are evidence
+    the first backoff wasn't cautious enough yet."""
+    path = _resolve_backoff_path(path)
+    with file_lock.locked(path):
+        state = _load_backoff(path)
+        baseline = state.get(tool_name, {}).get("cap", DEFAULT_CAPS.get(tool_name, DEFAULT_CAP_FALLBACK))
+        state[tool_name] = {
+            "cap": max(1, baseline // 2),
+            "blocked_until": time.time() + COOLDOWN_SECONDS,
+        }
+        _save_backoff(state, path)
 
 
 def _fill_slots(batch: _Batch, jobs: dict) -> None:
@@ -80,7 +153,7 @@ def _fill_slots(batch: _Batch, jobs: dict) -> None:
     "skipped_in_flight"}` -- it never becomes a job here, so it shouldn't
     count against this batch's concurrency ceiling either.
     """
-    cap = _cap_for(batch.tool_name)
+    cap = _effective_cap(batch.tool_name)
     while len(batch.in_flight) < cap and batch.pending:
         target = batch.pending.pop(0)
         if work_registry.list_active_work(host=target):
@@ -142,6 +215,8 @@ def check_batch(batch_id: str, batches: dict, jobs: dict) -> dict:
         polled = job_runtime.poll_job(job_id, jobs)
         if polled.get("status") != "running":
             work_registry.complete_work(work_id, outcome=polled.get("status", ""))
+            if polled.get("block"):
+                _record_block(batch.tool_name)
             batch.results[target] = {"kind": "job_result", **polled}
             del batch.in_flight[target]
 
