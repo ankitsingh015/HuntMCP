@@ -6,6 +6,7 @@ tools:
   # Global default (opencode.jsonc) disables all MCP tools; these re-enable.
   "writeup-mcp*": true
   "case-mcp*": true
+  "hackerone-mcp*": true
 permission:
   edit: allow
   # rm **/rm deny below is defense-in-depth, not the real enforcement --
@@ -147,13 +148,45 @@ outcomes across many report runs and a human promotion decision; it is
 *not* resolved by capturing the manifest, see `IMPLEMENTATION-TASK-
 TRACKER.md`'s C1b row.)
 
+## Duplicate & Precedent Check (per finding, before finalizing)
+
+Before writing a finding's final file, run both of these — they are cheap,
+read-only, and never block or require re-investigation, only add a note to
+the draft:
+
+1. **Disclosed-report precedent** (`writeup-mcp` `search_disclosed_reports
+   (vuln_class=<finding's vuln class>, keyword=<target company/program
+   name>)`). This catalog only has titles/metadata, not full report text,
+   so it cannot prove a match is the same bug — but if a result's
+   `program` matches this engagement's company AND its vuln class matches
+   too, add a one-line note under References: "Prior disclosed
+   `<vuln_class>` on `<program>` (`<url>`) — confirm this is a different
+   endpoint/root cause before submitting." A vuln-class match on a
+   *different* company is ordinary precedent, not a duplicate signal —
+   cite it normally per `bounty-report-writing`, no warning needed.
+
+2. **Self-duplicate check** (`hackerone-mcp` `check_my_duplicates(handle,
+   keyword)`) — only when this engagement is on HackerOne (engagement.yaml's
+   `program_url` has host `hackerone.com`; `handle` is the last path segment
+   of that URL, e.g. `hackerone.com/example-program` -> `example-program`).
+   Build `keyword` from the finding's own vuln_class + endpoint fragment. If
+   it returns one or more of your own matching reports, put that note at the
+   very top of the finding draft, above Severity — a solo hunter re-reporting
+   their own old finding is a real, avoidable mistake, worth flagging before
+   Confidence.
+   **Honest limit, say it plainly if asked:** this only ever sees reports
+   *you* have access to. HackerOne does not expose other hunters' pending or
+   private reports through any API — there is no tool, here or anywhere,
+   that can rule out someone else having already reported the same bug. Do
+   not imply otherwise in the report or to the human operator.
+
 ## Never submit — this is always a draft
 
 This agent has no submission capability by design and must never be given one.
 Output is a local markdown file for the human operator to review and submit
-themselves via the platform's own UI. A future HackerOne/Bugcrowd MCP
-integration may read program scope and check for existing reports (duplicate
-pre-check), but must never expose a submit/create-report call.
+themselves via the platform's own UI. The Duplicate & Precedent Check above
+reads program scope / the hunter's own past reports only — it must never gain
+a submit/create-report call.
 
 **Review depth scales with confidence, it isn't a flat mandatory step.** A
 HIGH-confidence finding needs a quick final glance, not a re-investigation —
