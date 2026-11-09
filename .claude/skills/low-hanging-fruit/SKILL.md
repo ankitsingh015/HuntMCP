@@ -58,7 +58,20 @@ clean positive integer.
 
 Fullwidth `%uff07` normalizing to `'` (a quote-stripping filter bypass
 for SQLi), Turkish `İ`/`i` case-folding oddities, zero-width characters
-slipping past an allowlist regex that wasn't unicode-aware.
+slipping past an allowlist regex that wasn't unicode-aware. Unicode-to-
+ASCII conversion is itself a two-step pipeline worth knowing explicitly:
+first normalization (folding characters to a standard form), then
+punycoding (turning the normalized Unicode into ASCII) -- a bypass can
+target either step. The standard defines two kinds of equivalence
+(canonical -- same appearance and meaning; compatibility -- a weaker
+equivalence where two values represent the same abstract character but
+can render differently) and four normalization forms (NFD canonical
+decomposition, NFC canonical decomposition+composition, NFKD
+compatibility decomposition, NFKC compatibility decomposition
++composition) -- a filter normalized with one form and a renderer/
+comparator using another is exactly the gap that enables WAF/filter
+bypass, account-takeover via look-alike usernames, and other text-
+transformation attacks.
 
 ## More method/content-type confusion
 
@@ -118,6 +131,37 @@ Explicitly check: OTP/2FA verification (a 6-digit code is only 10^6
 values -- at 100 requests/second that's a ~83-minute account takeover if
 truly unlimited), login, password-reset token verification,
 registration, SMS/email sending, and API key generation.
+
+## Captcha bypass
+
+Captcha is mostly deployed to slow automated abuse of auth/registration
+forms, but the implementation itself is frequently the weak point:
+
+- **Missing server-side validation**: strip the captcha parameter from
+  the request entirely and replay it -- some apps only render/check the
+  captcha client-side and never validate it server-side, which reopens
+  the form to brute-force/rate-limit-bypass tooling.
+- **Missing field-integrity checks**: send an empty captcha value, or
+  mutate a few characters of it -- some backends only check that the
+  parameter is *present* (or matches a length), not that its *value* is
+  correct.
+- **HTTP verb swap**: change the captcha-protected request from POST to
+  GET (dropping the captcha parameter in the process) -- validation
+  logic bound to one verb often doesn't run on the other.
+- **Content-type conversion**: switch the request body's content type
+  (e.g. JSON to plain text/form) while dropping the captcha field, and
+  see if the handler still processes it.
+- **Reusable captcha**: replay the same captcha solution/key across
+  multiple requests. In Burp, hold the original request in the
+  intercepting proxy (don't forward it) and fire the same captcha value
+  through Intruder -- some backends only invalidate the captcha when the
+  original held request finally completes, letting it be reused an
+  unbounded number of times until then.
+- **Trusted-header bypass**: supply `X-Forwarded-For`/`X-Originating-IP`/
+  similar client-trust headers -- some captcha/rate-limit gating keys off
+  the perceived source IP and can be reset per request by spoofing it.
+- **Automated solving**: OCR-based solvers or human-solving services
+  remain a viable (if noisier) bypass path when the above all fail.
 
 ## PortSwigger's 2025-26 top web hacking techniques
 

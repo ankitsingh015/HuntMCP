@@ -212,6 +212,148 @@ of what's actually working against "unbreakable" MFA in practice:
   verification" is just a replayable static assertion. Check the result
   token's claims for `iat`/`jti`; their absence is the tell.
 
+### 2FA-specific implementation flaws
+
+Beyond the MFA bypass classes above, these are structural flaws in how a 2FA
+step is wired into the surrounding app rather than attacks on the factor
+itself:
+
+- **Status-code manipulation**: if a failed 2FA check returns a 4xx, try
+  rewriting it to `200 OK` in the proxy before it reaches the client-side
+  logic -- some front ends gate the next step on status code alone.
+- **2FA code leakage in the triggering response**: inspect the response
+  body of the request that *sends* the 2FA code (SMS/email/push trigger)
+  for the code itself, not just the challenge/session ID.
+- **2FA code reusability**: resubmit an already-consumed code -- it should
+  be invalidated immediately after one successful (or even one failed, past
+  a limit) use.
+- **Missing 2FA code integrity validation**: generate a valid 2FA code for
+  your own account, then submit it against the victim's challenge session --
+  if the server checks "is this code valid" rather than "is this code valid
+  *for this session/user*", any account's code bypasses any other account's
+  2FA.
+- **CSRF on 2FA disabling**: check whether the endpoint that turns 2FA off
+  has a CSRF token and requires re-confirmation of the current password --
+  if not, it's forgeable cross-site with no re-auth.
+- **Password/email change silently disables 2FA**: change the account
+  password or primary email and check whether 2FA is still enforced on the
+  next login.
+- **Clickjacking on the 2FA-disabling page**: check whether that page can
+  be iframed; if so a social-engineered click can silently turn 2FA off.
+- **Enabling 2FA doesn't expire existing sessions**: if a session was
+  already hijacked (or a session-timeout bug exists), turning 2FA on
+  afterward doesn't revoke it -- the attacker's pre-existing session
+  survives untouched.
+- **Null/default-code bypass**: try submitting `000000`, an empty value, or
+  `null` as the 2FA code directly -- some implementations special-case these
+  as a bypass left over from testing.
+
+### Password reset: token-handling checks beyond leakage
+
+- **Token reusability**: use a reset token once, then replay it -- it
+  should be dead after first use. Also request a fresh token and confirm
+  the old one is now rejected, and measure how long an unused token stays
+  valid (reusable and alive >24h is reportable).
+- **IDOR via the reset-link's user identifier**: when the reset URL carries
+  both a token and a separate user/email parameter (e.g.
+  `?token=X&user=attacker`), swap only the user value to the victim while
+  keeping your own valid token -- if the backend doesn't bind the token to
+  the user it was issued for, this resets the victim's password directly.
+- **Non-random/identical tokens**: request several reset tokens back to
+  back and compare them -- if they're identical or derived from a
+  predictable value (timestamp, sequential ID, user ID hash) rather than
+  cryptographically random, the generation scheme itself can be reversed or
+  guessed.
+- **Token not validated at all**: strip the token parameter (or send it
+  empty) and keep only the user identifier, swapped to the victim -- some
+  implementations only check that a user parameter was supplied, not that
+  the token matches it.
+- **JWT-based reset tokens**: decode the token and check for excessive
+  embedded claims (e.g. the old password hash) and confirm an asymmetric
+  signing algorithm is used -- a symmetric secret for a reset token is a
+  forgery path once leaked/guessed.
+
+### SAML: additional vectors beyond XSW
+
+- **SAML message replay via Assertion ID**: each assertion's ID should be
+  accepted exactly once -- replay a previously-used (but still
+  time-valid) assertion and confirm the IdP/SP rejects the duplicate ID
+  rather than re-authenticating from it.
+- **Token/response recipient confusion**: obtain a SAML response/assertion
+  issued for your own account/client and submit it to a different
+  SP/recipient endpoint -- if the SP doesn't verify the `Recipient`/
+  `Audience` restriction matches itself, a token meant for one service logs
+  you into another.
+- **XML DoS/XXE in assertion parsing**: SAML's XML processing is a second
+  DTD/entity-expansion surface distinct from the app's normal XML inputs --
+  test the assertion/metadata parser for XXE and billion-laughs-style
+  entity expansion the same way you would any other XML endpoint.
+
+### Session puzzling (session-variable overloading)
+
+- An application that reuses the *same* session variable/identifier across
+  multiple purposes can be tricked into treating an unauthenticated or
+  low-privilege session as an authenticated/high-privilege one. Classic
+  pattern: trigger a password-reset flow (unauthenticated) for the victim's
+  username, note the session identifier the app assigns during that flow,
+  then present that same identifier against an authenticated endpoint
+  (e.g. a profile page) -- if it resolves to the victim's data, the app is
+  overloading one session variable across both flows.
+- **How to test**: for every page that issues or mutates a session
+  identifier at a lower privilege level (forgot-password, pre-login,
+  guest checkout, OTP-trigger), check whether that same identifier is
+  later accepted by a higher-privilege/authenticated endpoint.
+
+### Cookie-based auth: additional checks
+
+- **Guessable/weak cookie generation**: request the same session cookie
+  multiple times (e.g. repeated logins) and diff the values -- a lack of
+  real randomness, or a cookie that's just Base64/hex of a predictable
+  value (user ID, timestamp, sequential counter), means sessions can be
+  forged without stealing one.
+- **Authentication bypass by cookie removal**: strip the session cookie
+  entirely and request a normally-protected resource directly -- if it's a
+  GET and the app only gates access in client-side JS, forceful browsing
+  with zero cookies can still return protected data.
+- **Cookie-based parameter pollution / mass assignment**: where a cookie
+  carries an access-scoping value (`user_id=`, `org_id=`), try adding a
+  second instance of the same key with a different value
+  (`user_id=attacker&user_id=victim`) rather than just overwriting it --
+  some parsers take the first/last/merged value and this can surface data
+  from both identities even when simple substitution doesn't.
+- **Session donation**: check whether an attacker can hand a victim a
+  pre-authenticated session (rather than stealing one) so actions the
+  victim takes land in the attacker's account context.
+- **Sensitive data stored directly in cookies**: decode every cookie value
+  and check for PII (email, DOB, phone, address, SSN) stored in the clear
+  or in a trivially reversible encoding rather than referenced by an opaque
+  session ID.
+
+### OIDC: additional implementation-specific checks
+
+- **Login confusion attack**: where a Relying Party supports multiple IdPs,
+  check whether it correctly tracks *which* IdP a given login flow was
+  started with -- completing the flow against a different, attacker-
+  influenced IdP than the one the session expects can let an attacker's
+  identity resolve into the victim's account context.
+- **CRLF injection in the OIDC flow**: parameters that get reflected into
+  redirect/response headers during the auth-code or implicit flow (not just
+  the final `redirect_uri`) are a CRLF/response-splitting surface worth
+  probing on their own.
+- **SSRF via OIDC endpoints**: the RP's server-side calls to IdP-provided
+  URLs (`issuer`, `jwks_uri`, dynamic client registration, discovery
+  document fields) can be a server-side request forgery vector if any of
+  those URLs are attacker-influenceable.
+- **Redirect URI custom schemes**: for native/mobile OIDC clients using a
+  custom URI scheme (not `https://`) as the redirect target, check whether
+  that scheme can be claimed/intercepted by another app on the same device
+  -- a generic scheme shared across apps leaks the auth code/token to
+  whichever app registers it.
+- **Reusable `state` parameter**: beyond state being missing or leaked,
+  check whether a given `state` value can be replayed across multiple
+  separate auth flows -- it should be single-use and bound to one specific
+  flow/session, not just present.
+
 ### Legacy-Protocol Matrix (probe first on any custom-branded login)
 
 Generalizes the WordPress-XMLRPC-bypassing-SSO pattern (an old, unbranded

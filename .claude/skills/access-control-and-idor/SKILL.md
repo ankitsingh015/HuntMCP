@@ -176,6 +176,30 @@ is also accepted by:
    an `active=false` flag but doesn't revoke the session/PAT, a token
    captured before removal keeps working after -- a *temporal* IDOR the
    access-control policy table doesn't catch.
+5. **Broken/incomplete deletion** -- distinct from #4 above: that's a
+   session surviving a soft-delete, this is the underlying *artifact*
+   surviving a delete entirely. After a DELETE (or a UI "remove"/"delete"
+   action) returns success, re-fetch the object by its OWN direct
+   reference -- not the list endpoint that stopped showing it, but its
+   direct URL/ID (a file's storage/CDN URL, an attachment's direct
+   download link, an API `GET /resource/{id}` on the same ID). A
+   soft-delete that only unlinks the DB row from the list query, or a
+   storage/CDN layer with its own cache the delete never invalidated,
+   leaves the data reachable to anyone who kept (or can still enumerate)
+   the direct reference -- especially damaging for anything uploaded with
+   a predictable or previously-leaked URL.
+6. **Cancel/downgrade without entitlement revocation** -- after a
+   subscription-cancel or plan-downgrade action reports success, re-check
+   access to the premium feature/endpoint directly (not just the billing
+   page's own "you are now on Free" confirmation, which only reflects
+   client-side state or the billing provider's own record). A webhook
+   that's supposed to flip the account's entitlement flag but is missing,
+   delayed, or filterable (e.g. the cancel request itself races the
+   webhook, or a client can suppress the webhook call) leaves full
+   premium access running on an account that should no longer have it --
+   test both immediately after cancellation and after the billing
+   period's stated end date, since some apps only revoke on a cron pass
+   rather than on the cancel action itself.
 
 Hunt for both halves of the pair -- the write half usually shares the exact
 same missing-ownership-check root cause as the read half you already found,
@@ -221,6 +245,61 @@ Test every naming convention (`is_admin`/`isAdmin`/`IsAdmin`) against every
 shape above -- a framework that rejects one combination often accepts
 another because the allowlist and the parser were written by different
 people at different times.
+
+A distinct mass-assignment target worth checking on its own: 2FA/OTP
+verification endpoints that echo a `success`/`verified` boolean in the
+response. Submit the verification request with a deliberately wrong code
+but add `"success":true` (or `"verified":true`) to the request body --
+some implementations trust a client-suppliable result field instead of
+independently computing it server-side, turning the check into an
+authentication bypass rather than just an information leak.
+
+## Business logic abuse -- review, coupon, cart, and app-logic patterns
+
+Beyond the money-manipulation and race-condition bullets above, these
+narrower business-logic patterns recur often enough to check explicitly:
+
+- **Review/rating fraud**: post a "verified purchaser" review without
+  ever buying the product; push a 1-5 rating scale out of bounds (`0`,
+  `6`, negative); post a review as/impersonating another user; check
+  for CSRF protection on the review-submission endpoint itself (often
+  missing since it's seen as low-value); and check whether a review's
+  file-upload field accepts extensions beyond what the UI offers.
+- **Coupon/discount abuse**: besides reuse and race conditions, try
+  applying a coupon via HTTP Parameter Pollution or mass assignment to
+  stack more than one code when the client only sends one, and try
+  tampering with the request server-side to apply a discount code to
+  products explicitly excluded from the promotion.
+- **Delivery-charge tampering**: set the delivery-charge parameter to a
+  negative value to reduce the order total, or tamper with whatever
+  parameter flags "free delivery" eligibility.
+- **Premium-feature gating via client-visible flags**: check cookies,
+  local storage, and response booleans for a `has_premium`/`is_pro`-style
+  flag that gates feature access -- Burp Match & Replace to flip it to
+  `true` on every response can unlock the feature without ever paying.
+  Also forcefully browse directly to premium-only routes/endpoints as a
+  free-tier account.
+- **Cart/wishlist quantity abuse**: add one line item at a negative
+  quantity alongside others at positive quantity so the total nets down;
+  add a quantity exceeding actual available stock; and check whether
+  moving an item from a wishlist to a cart (or deleting a wishlist item)
+  can target another user's cart/wishlist instead of your own.
+- **Thread/comment abuse**: if a user is meant to comment once per
+  thread, race multiple parallel comment submissions to see if the
+  one-per-user limit holds; and if a "verified"/privileged-user-only
+  comment badge exists, try tampering with the relevant parameter to post
+  under that status, or to impersonate another user's identity on a
+  comment.
+- **App-logic-level abuse**: switching a JSON request's `Content-Type`
+  to XML (and seeing whether the backend actually parses XML on the same
+  endpoint) can reopen XXE on a route that looked JSON-only; converting a
+  CSRF-unprotected `DELETE` to `GET`/`POST` with an added `?method=delete`
+  param, or adding an `X-Method-Override` header, can resurrect a method
+  the app assumed was safe from CSRF; and swapping a UUID for a small
+  sequential integer (`1`, `2`, `3`...) in the same parameter sometimes
+  still resolves, exposing a legacy ID-mapping path the UUID migration
+  never fully closed off. Also try `HEAD` against routes gated by
+  authentication middleware that only inspects the body on other verbs.
 
 ## Named IDOR composition chains -- more disclosed-report precedents
 

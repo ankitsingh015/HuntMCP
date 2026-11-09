@@ -82,6 +82,25 @@ throw one generic bypass at every target:
 in-scope subdomain by design unless you actually control it (see
 `subdomain-takeover`).
 
+**Other CORS-enabled impact scenarios worth checking beyond direct data
+theft**:
+- *Breaking TLS via CORS*: a misconfigured CORS policy that trusts an
+  `http://` origin (not just the wrong domain) lets an active
+  network-position attacker on that plain-HTTP origin reach the
+  HTTPS API's authenticated responses, undermining the transport
+  security the target otherwise relies on.
+- *CORS trust relationships as an XSS amplifier*: if a trusted origin in
+  the allow-list itself has an XSS bug (even a low-severity one on an
+  otherwise unrelated subdomain), the CORS trust relationship turns that
+  XSS into a vector for reading the main target's authenticated API
+  responses -- worth re-checking CORS allow-lists after finding XSS
+  anywhere in the asset inventory, and vice versa.
+- *Intranet/internal CORS without credentials*: even where
+  `Access-Control-Allow-Credentials` is absent or false, a public page
+  making CORS requests into an internal/intranet-only origin can still
+  be used as an SSRF-style pivot to probe or interact with internal
+  services the browser can reach but the attacker can't directly.
+
 ## postMessage
 
 Null origin checks, unvalidated `message` event handling, `window.name`
