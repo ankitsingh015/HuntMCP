@@ -113,6 +113,12 @@ def in_scope_engagement(tmp_path, monkeypatch):
     # "docs: note HUNTMCP_WORK_REGISTRY_PATH for test isolation").
     monkeypatch.setenv("HUNTMCP_WORK_REGISTRY_PATH", str(tmp_path / "work-registry.json"))
     monkeypatch.setenv("HUNTMCP_FANOUT_BACKOFF_PATH", str(tmp_path / "fanout-backoff.json"))
+    # job_runtime.poll_job() calls audit_log._log_call() internally on every
+    # terminal job -- without this, a real batch run here writes real
+    # fixture entries straight into whatever engagement happens to be
+    # active on the machine running the suite (reproduced during review:
+    # 21 real entries landed in a live engagement's own audit.jsonl).
+    monkeypatch.setenv("HUNTMCP_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
     return tmp_path
 
 

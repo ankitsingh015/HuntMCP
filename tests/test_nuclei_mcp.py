@@ -24,6 +24,24 @@ _spec.loader.exec_module(nuclei_server)
 
 
 @pytest.fixture(autouse=True)
+def _reset_module_level_job_state():
+    """nuclei_server._jobs/_batches are plain module-level dicts, shared
+    across every test in this file (the module is imported once for the
+    whole session) -- previously harmless, since fanout's per-tool cap
+    check only ever looked at one batch's own in_flight count. Now that
+    fanout._fill_slots() counts ALL currently-running jobs for a tool
+    across the shared `jobs` dict (P3-FANOUT finding 3: a hard ceiling
+    across every caller, not just one batch), a stale "running" entry
+    left behind by an earlier test's mocked start_job/poll_job (one that
+    never got popped, because that test's own poll stub didn't simulate a
+    real terminal poll) silently eats into a LATER test's cap. Reset both
+    dicts before every test so each one starts from a clean slate."""
+    nuclei_server._jobs.clear()
+    nuclei_server._batches.clear()
+    nuclei_server._batch_no_findings.clear()
+
+
+@pytest.fixture(autouse=True)
 def _no_real_dns(monkeypatch):
     """"target.com" (this whole file's standard test target) is a REAL,
     resolvable domain -- without this, every scan_target()/
@@ -777,7 +795,7 @@ def test_scan_batch_target_starts_a_job_per_target_up_to_the_cap(monkeypatch):
     def fake_start_job(tool, jobs, **kwargs):
         job_id = f"job-{len(started)}"
         started.append(job_id)
-        jobs[job_id] = {"status": "running"}
+        jobs[job_id] = {"status": "running", "tool_name": tool}
         return {"job_id": job_id, "status": "running", "tool": tool}
 
     monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
@@ -807,7 +825,7 @@ def test_scan_batch_target_applies_scope_gate_per_target(monkeypatch):
     def fake_start_job(tool, jobs, **kwargs):
         job_id = f"job-{len(started)}"
         started.append((job_id, kwargs.get("args", [])))
-        jobs[job_id] = {"status": "running"}
+        jobs[job_id] = {"status": "running", "tool_name": tool}
         return {"job_id": job_id, "status": "running", "tool": tool}
 
     monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
@@ -825,7 +843,7 @@ def test_check_batch_formats_findings_same_as_check_scan(monkeypatch):
     _stub_fanout_backoff(monkeypatch)
 
     def fake_start_job(tool, jobs, **kwargs):
-        jobs["job-batch-1"] = {"status": "running"}
+        jobs["job-batch-1"] = {"status": "running", "tool_name": tool}
         return {"job_id": "job-batch-1", "status": "running", "tool": tool}
 
     monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
@@ -856,7 +874,7 @@ def test_check_batch_surfaces_block_prefix_same_as_check_scan(monkeypatch):
     recorded_blocks = _stub_fanout_backoff(monkeypatch)
 
     def fake_start_job(tool, jobs, **kwargs):
-        jobs["job-batch-2"] = {"status": "running"}
+        jobs["job-batch-2"] = {"status": "running", "tool_name": tool}
         return {"job_id": "job-batch-2", "status": "running", "tool": tool}
 
     monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
@@ -956,7 +974,7 @@ def test_scan_batch_target_whitespace_and_blank_entries_do_not_become_targets(mo
     def fake_start_job(tool, jobs, **kwargs):
         job_id = f"job-{len(started_targets)}"
         started_targets.append(kwargs["args"][kwargs["args"].index("-u") + 1])
-        jobs[job_id] = {"status": "running"}
+        jobs[job_id] = {"status": "running", "tool_name": tool}
         return {"job_id": job_id, "status": "running", "tool": tool}
 
     monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
