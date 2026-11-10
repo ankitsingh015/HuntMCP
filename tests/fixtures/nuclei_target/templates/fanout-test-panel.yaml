@@ -1,0 +1,14 @@
+id: fanout-test-panel
+info:
+  name: P3-FANOUT e2e test panel marker (TEST FIXTURE ONLY, never a real finding)
+  author: huntmcp-test
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/panel"
+    matchers:
+      - type: word
+        part: body
+        words:
+          - "FANOUT-PANEL-MARKER"
