@@ -77,6 +77,43 @@ server shows what's still running (and flags anything abandoned for 30+
 minutes) — useful to check at the start of a fresh session before assuming a
 target hasn't been scanned yet.
 
+### Batch nuclei scans across several targets — `scan_batch_target` / `scan_batch_with_templates` / `check_batch`
+
+When nuclei needs to run the same scan across several independently-discovered
+endpoints, prefer the batch tools over calling `scan_target()` (or
+`scan_with_templates()`) once per endpoint in a loop:
+
+- `scan_batch_target(targets, severity="medium,high,critical", timeout=300)` —
+  the batch equivalent of `scan_target()`.
+- `scan_batch_with_templates(targets, templates, timeout=300)` — the batch
+  equivalent of `scan_with_templates()`; the same template(s) run against every
+  target.
+- `check_batch(batch_id)` — poll for results.
+
+`targets` is a single string of one or more hosts, comma- or newline-separated
+(e.g. `"a.example.com,b.example.com"`). It is not a list, the same convention as
+httpx-mcp's `probe_hosts()`. Both start tools return a `batch_id` immediately.
+Poll `check_batch(batch_id)` every ~10-15s until it stops reporting a running
+state. The final output lists each target's findings, formatted the same way
+`check_scan()` formats a single-target result, and a rate-limit/WAF block on any
+target is surfaced there too. Use the WAF escalation section below on any
+target that comes back blocked.
+
+Concurrency is not yours to manage. `fanout.py` enforces the cap internally.
+Only a handful of targets run at once and the rest queue. The cap may shrink
+after a rate-limit or WAF block is detected, and it may also be set per
+environment. You start the batch and poll `check_batch()`. Do not try to
+split the target list into smaller batches or parallelize the calls yourself.
+Each target is still individually scope-gated and deduplicated against other
+in-progress work on the same target.
+
+Do not start a second batch over the same targets while `check_batch()` on the
+first one is still running. That launches duplicate concurrent scans against
+the same live hosts. The single-target warning above about not re-calling the
+start tool while a poll is running still applies to `scan_target()` and
+`scan_with_templates()`. Batch starts count as bulk scanner calls for the scan
+policy check in the section above.
+
 ## Phase 0 — Strategy
 
 1. Identify the tech stack from the recon data.
