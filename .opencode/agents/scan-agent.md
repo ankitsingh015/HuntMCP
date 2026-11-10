@@ -111,8 +111,47 @@ Do not start a second batch over the same targets while `check_batch()` on the
 first one is still running. That launches duplicate concurrent scans against
 the same live hosts. The single-target warning above about not re-calling the
 start tool while a poll is running still applies to `scan_target()` and
-`scan_with_templates()`. Batch starts count as bulk scanner calls for the scan
-policy check in the section above.
+`scan_with_templates()`.
+
+Scan policy: the rule is in the section "Before your first bulk scanner call —
+check the engagement's scan policy" near the top of this file. Each target in a
+batch counts as one bulk scanner call against that policy, not the batch as a
+whole. A 50-target batch counts as 50 calls. This applies to every target in the
+list, including ones that end up scope-blocked or skipped as duplicates, because
+the count is taken from the target list before the batch starts. Under a
+`bounded` policy, add up the batch's target count before calling the start tool.
+If that would exceed `scanner_volume_cap`, do not start the batch. Use the
+hand-picked fallback for the targets you can still afford, and tell HuntBrain why.
+
+Reading the output:
+
+- The start call returns immediately with `Started nuclei batch scan
+  (batch_id="..."): N running, M pending. Poll check_batch("...") until status is
+  done.` Its per-target lines follow.
+- While the batch is incomplete, `check_batch()` returns a line starting with
+  `Still running -- N in flight, M pending. Poll again shortly.` Keep polling
+  until that line is gone.
+- When the batch is finished, `check_batch()` starts with `Batch <batch_id>
+  complete:` and then lists each target. A target line is one of: its findings
+  block, `skipped -- already in progress elsewhere` (a dedupe hit), or an error
+  string such as a scope block or a timeout.
+- If the start output itself says `Batch complete (batch_id="...") -- every target
+  resolved immediately.`, no polling is needed. The results are already in the
+  start output. Do not call `check_batch()` for that batch.
+- If `targets` is empty, or contains only commas and whitespace, the start call
+  returns `Error: '<targets>' contains no usable targets`. No batch is created, no
+  `batch_id` is returned, and nothing is counted against the scan policy.
+- If `check_batch()` gets a `batch_id` it does not know, it returns `no batch
+  with batch_id='<id>'`. That also happens for a batch you already read to
+  completion, because finished batches are removed once they are reported. Batch
+  state is also held in the nuclei-mcp server process, so a restarted server
+  forgets its batches. Treat that error as "nothing to poll", not as a scan
+  result, and do not restart the batch unless the targets still need scanning.
+- `check_batch()` output does not include the
+  `Provenance (for case-mcp add_evidence): {...}` line that `check_scan()`
+  appends to a single-target result. This is a known gap in nuclei-mcp, tracked
+  separately. Do not expect provenance from batch output. If case-mcp evidence
+  needs it, take it from a single-target `check_scan()` run instead.
 
 ## Phase 0 — Strategy
 
