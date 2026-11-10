@@ -736,9 +736,40 @@ def _stub_work_registry(monkeypatch, active_hosts=()):
     monkeypatch.setattr(work_registry, "complete_work", fake_complete_work)
 
 
+def _stub_fanout_backoff(monkeypatch, cap=5):
+    """Isolate every nuclei-mcp batch test from fanout's REAL, on-disk,
+    engagement-scoped persistent backoff state (fanout.py's
+    _effective_cap()/_record_block(), which read/write via
+    engagement_paths.resolve("fanout-backoff.json", ...) under whatever
+    engagement happens to be active on this machine).
+
+    Monkeypatching fanout.DEFAULT_CAPS alone is NOT enough:
+    _effective_cap() only falls back to DEFAULT_CAPS when no unexpired
+    backoff entry exists for that tool on disk -- a real active
+    engagement, or a prior test run that wrote one, silently overrides
+    the injected cap otherwise (exactly what happened during review: a
+    real engagement's fanout-backoff.json had {"nuclei": {"cap": 1,
+    ...}} on disk, so a test expecting "2 running" never got it).
+    Likewise letting the real _record_block() run WRITES to that same
+    real, active-engagement-scoped file -- a genuine side effect outside
+    any test's scope.
+
+    So every nuclei-mcp batch test that reaches fanout's cap-check or
+    block-recording logic (anything calling scan_batch_target()/
+    scan_batch_with_templates()/check_batch()) replaces BOTH functions
+    directly, the same pattern tests/test_fanout.py's own
+    test_check_batch_records_a_block_from_a_terminal_job_result uses for
+    _record_block -- never just DEFAULT_CAPS, and never the real path.
+    """
+    recorded_blocks = []
+    monkeypatch.setattr(fanout, "_effective_cap", lambda tool_name, path=None: cap)
+    monkeypatch.setattr(fanout, "_record_block", lambda tool_name, path=None: recorded_blocks.append(tool_name))
+    return recorded_blocks
+
+
 def test_scan_batch_target_starts_a_job_per_target_up_to_the_cap(monkeypatch):
     monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
-    monkeypatch.setattr(fanout, "DEFAULT_CAPS", {"nuclei": 2})
+    _stub_fanout_backoff(monkeypatch, cap=2)
     _stub_work_registry(monkeypatch)
 
     started = []
@@ -761,6 +792,7 @@ def test_scan_batch_target_starts_a_job_per_target_up_to_the_cap(monkeypatch):
 
 def test_scan_batch_target_applies_scope_gate_per_target(monkeypatch):
     _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch)
     monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
 
     def fake_resolve_and_pin(host):
@@ -790,6 +822,7 @@ def test_scan_batch_target_applies_scope_gate_per_target(monkeypatch):
 def test_check_batch_formats_findings_same_as_check_scan(monkeypatch):
     monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
     _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch)
 
     def fake_start_job(tool, jobs, **kwargs):
         jobs["job-batch-1"] = {"status": "running"}
@@ -820,6 +853,7 @@ def test_check_batch_formats_findings_same_as_check_scan(monkeypatch):
 def test_check_batch_surfaces_block_prefix_same_as_check_scan(monkeypatch):
     monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
     _stub_work_registry(monkeypatch)
+    recorded_blocks = _stub_fanout_backoff(monkeypatch)
 
     def fake_start_job(tool, jobs, **kwargs):
         jobs["job-batch-2"] = {"status": "running"}
@@ -842,3 +876,92 @@ def test_check_batch_surfaces_block_prefix_same_as_check_scan(monkeypatch):
     out = nuclei_server.check_batch(batch_id)
     assert "RATE_LIMIT" in out
     assert "BLOCK DETECTED" in out
+    # The block must be recorded via the stubbed _record_block (never the
+    # real one -- see _stub_fanout_backoff's docstring), proving check_batch()
+    # still wires the block through to fanout without ever touching the
+    # real, active-engagement-scoped fanout-backoff.json on disk.
+    assert recorded_blocks == ["nuclei"]
+
+
+def test_scan_batch_target_all_targets_scope_blocked_reports_done_not_running(monkeypatch):
+    """Different branch than the partial-block case above: when every
+    target in the batch is rejected by prepare() (none of them ever
+    becomes a real job), fanout.start_batch()'s snapshot comes back with
+    status="done" immediately -- nothing is ever in-flight, so there's
+    nothing to poll. scan_batch_target() must format this as an
+    immediate "Batch complete" message, not as if a batch were still
+    running."""
+    _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch)
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+
+    def fake_resolve_and_pin(host):
+        return None, f"host {host!r} resolves to a link-local address -- refused (SSRF)"
+    monkeypatch.setattr(nuclei_server.scope_guard, "resolve_and_pin", fake_resolve_and_pin)
+
+    def _unreachable_start_job(*a, **k):
+        raise AssertionError("no target should ever reach start_job() when every target is scope-blocked")
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", _unreachable_start_job)
+
+    out = nuclei_server.scan_batch_target("blocked1.target.com,blocked2.target.com")
+
+    assert "batch_id=" in out
+    assert "Batch complete" in out
+    assert "every target resolved immediately" in out
+    assert "running" not in out.lower()
+    assert "BLOCKED by scope gate" in out
+    assert out.count("BLOCKED by scope gate") == 2
+
+
+def test_scan_batch_target_rejects_an_empty_targets_string(monkeypatch):
+    """Same fail-closed convention as scan_with_templates()'s all-empty
+    templates argument -- an empty/whitespace-only `targets` string must
+    be rejected before fanout.start_batch() (and therefore start_job())
+    is ever reached, with the exact "contains no usable targets" wording
+    _start_batch() builds from repr(targets)."""
+    called = {"start_batch": False}
+    monkeypatch.setattr(
+        fanout, "start_batch",
+        lambda *a, **k: called.__setitem__("start_batch", True),
+    )
+    out = nuclei_server.scan_batch_target("")
+    assert out == "Error: '' contains no usable targets"
+    assert called["start_batch"] is False
+
+    out2 = nuclei_server.scan_batch_target("   \n  ")
+    assert "contains no usable targets" in out2
+    assert called["start_batch"] is False
+
+
+def test_split_targets_strips_whitespace_and_drops_blank_entries():
+    """Same splitting convention as httpx-mcp's _split_domains() --
+    comma- OR newline-separated, blank entries (including ones left by
+    stray whitespace-only segments) dropped, each surviving entry
+    stripped of surrounding whitespace."""
+    assert nuclei_server._split_targets("a.com, , b.com\n\n") == ["a.com", "b.com"]
+    assert nuclei_server._split_targets("  a.com  \n\n b.com \n , ,\n") == ["a.com", "b.com"]
+
+
+def test_scan_batch_target_whitespace_and_blank_entries_do_not_become_targets(monkeypatch):
+    """End-to-end version of the _split_targets() unit test above: a
+    messy `targets` string with leading/trailing whitespace and blank
+    lines/entries mixed in must only ever start jobs for the real,
+    stripped targets -- never for a blank or whitespace-only entry."""
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch)
+
+    started_targets = []
+
+    def fake_start_job(tool, jobs, **kwargs):
+        job_id = f"job-{len(started_targets)}"
+        started_targets.append(kwargs["args"][kwargs["args"].index("-u") + 1])
+        jobs[job_id] = {"status": "running"}
+        return {"job_id": job_id, "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
+
+    out = nuclei_server.scan_batch_target("a.target.com, , b.target.com\n\n")
+
+    assert "batch_id=" in out
+    assert started_targets == ["a.target.com", "b.target.com"]
