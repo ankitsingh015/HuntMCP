@@ -37,6 +37,7 @@ import time
 import uuid
 from typing import Callable, NamedTuple
 
+import budget_guard
 import job_runtime
 import work_registry
 # For test/integration isolation (e.g. a fixture-based e2e test), point the
@@ -137,9 +138,32 @@ def _record_block(tool_name: str, path: str | None = None) -> None:
         _save_backoff(state, path)
 
 
+def _running_for_tool(tool_name: str, jobs: dict) -> int:
+    """How many jobs in the SHARED `jobs` dict are currently running
+    `tool_name` -- across every caller/batch sharing that dict, not just
+    one batch's own `in_flight`. `jobs` only ever holds live (non-terminal)
+    entries: job_runtime.poll_job()/_kill_and_collect() pop a job out the
+    moment it goes terminal, so a plain count here is always "right now,
+    across the whole process" -- the hard per-tool ceiling the module
+    docstring promises, not a per-batch one. Works for both `_Job` and
+    `_ThreadJob` NamedTuple entries (both expose `tool_name`) and for a
+    plain dict entry carrying a "tool_name" key (the shape test doubles
+    in this repo's own test suite use in place of a real `_Job`)."""
+    def _tool_name_of(j):
+        if isinstance(j, dict):
+            return j.get("tool_name")
+        return getattr(j, "tool_name", None)
+
+    return sum(1 for j in jobs.values() if _tool_name_of(j) == tool_name)
+
+
 def _fill_slots(batch: _Batch, jobs: dict) -> None:
     """Launch targets off `batch.pending` into `batch.in_flight` until
-    either the per-tool cap is hit or there's nothing left to start.
+    either the per-tool cap is hit (counting ALL jobs for this tool
+    currently running in the shared `jobs` dict, not just this batch's
+    own `in_flight` -- two concurrent start_batch()/scan_target() callers
+    sharing one `jobs` dict must still never exceed one combined
+    ceiling) or there's nothing left to start.
 
     A prepare() rejection (e.g. scope-blocked) is recorded straight into
     `results` and does NOT consume a slot -- it never became a job, so it
@@ -148,24 +172,55 @@ def _fill_slots(batch: _Batch, jobs: dict) -> None:
     stalling with open capacity and pending work.
 
     A target already showing up as in-progress elsewhere in
-    `work_registry` (another batch, another specialist entirely) is
-    likewise recorded without consuming a slot, as `{"kind":
-    "skipped_in_flight"}` -- it never becomes a job here, so it shouldn't
-    count against this batch's concurrency ceiling either.
+    `work_registry` is only treated as a dedupe hit when that entry was
+    itself registered BY fanout, for this same tool (agent == "fanout"
+    and task == batch.tool_name -- the exact values start_work() is
+    called with below). An entry from any other agent/task (e.g.
+    HuntBrain's own `scripts/check-work.sh start scan-agent <host>`
+    registration before spawning a specialist) is an unrelated layer of
+    the system and must never cause fanout to skip a target.
+
+    A `job_runtime.start_job()` call that raises is recorded into
+    `results` as `{"kind": "start_error", ...}` rather than left to
+    propagate -- letting it propagate would both drop that target out of
+    `results`/`in_flight` entirely (never reported) and abandon every
+    other still-pending target in this call, since the exception would
+    unwind out of this whole loop. `budget_guard.BudgetExceeded`
+    specifically means the budget won't un-exceed itself mid-batch, so
+    once it fires every remaining pending target is drained straight into
+    `results` with the same `start_error` kind instead of retried one at
+    a time.
     """
     cap = _effective_cap(batch.tool_name)
-    while len(batch.in_flight) < cap and batch.pending:
+    slots_available = max(0, cap - _running_for_tool(batch.tool_name, jobs))
+    while slots_available > 0 and batch.pending:
         target = batch.pending.pop(0)
-        if work_registry.list_active_work(host=target):
+        active = [
+            w for w in work_registry.list_active_work(host=target)
+            if w.get("agent") == "fanout" and w.get("task") == batch.tool_name
+        ]
+        if active:
             batch.results[target] = {"kind": "skipped_in_flight"}
             continue
         prepared = batch.prepare(target)
         if "error" in prepared:
             batch.results[target] = {"kind": "prepare_error", "error": prepared["error"]}
             continue
-        started = job_runtime.start_job(batch.tool_name, jobs=jobs, **prepared)
+        try:
+            started = job_runtime.start_job(batch.tool_name, jobs=jobs, **prepared)
+        except budget_guard.BudgetExceeded as e:
+            message = f"budget exceeded: {e}" if str(e) else "budget exceeded"
+            batch.results[target] = {"kind": "start_error", "error": message}
+            while batch.pending:
+                leftover = batch.pending.pop(0)
+                batch.results[leftover] = {"kind": "start_error", "error": message}
+            return
+        except Exception as e:  # noqa: BLE001 -- any launch failure must not drop the target
+            batch.results[target] = {"kind": "start_error", "error": str(e)}
+            continue
         work_id = work_registry.start_work("fanout", target, task=batch.tool_name)
         batch.in_flight[target] = (started["job_id"], work_id)
+        slots_available -= 1
 
 
 def _snapshot(batch_id: str, batch: _Batch) -> dict:

@@ -198,10 +198,11 @@ def _split_targets(targets: str) -> list[str]:
 def _format_batch_entry(target: str, entry: dict, no_findings_message: str) -> str:
     """Format one target's fanout result -- a terminal job_result the
     same way check_scan() formats a single-target result (findings +
-    block_prefix()), a prepare_error by surfacing its error string
-    directly, and a skipped_in_flight dedupe hit by saying so."""
+    block_prefix()), a prepare_error or start_error by surfacing its
+    error string directly, and a skipped_in_flight dedupe hit by saying
+    so."""
     kind = entry.get("kind")
-    if kind == "prepare_error":
+    if kind in ("prepare_error", "start_error"):
         return f"  {target}: {entry['error']}"
     if kind == "skipped_in_flight":
         return f"  {target}: skipped -- already in progress elsewhere"
