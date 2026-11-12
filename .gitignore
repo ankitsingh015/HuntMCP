@@ -175,3 +175,7 @@ reports/
 # Re-downloadable disclosure-report lookup cache (disclosure_lookup.py),
 # same pattern as data/disclosed-reports-cache/ above.
 data/disclosure-lookup-cache/
+
+# schemathesis run output/cache (schemathesis-mcp), regenerated locally per
+# run -- not committed, same as the other local runtime artifacts above.
+.schemathesis/
