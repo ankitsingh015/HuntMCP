@@ -973,6 +973,197 @@ def _bash_basenames(command: str) -> set[str]:
     return {w.rsplit("/", 1)[-1] for w in words}
 
 
+# GitHub issue #129 (recurring false-positive scope block across engagements):
+# the old fallback scanned the WHOLE command string with HOSTNAME_RE and
+# treated any word.word token as a hostname candidate, so dotted code
+# identifiers (json.load, sys.path.insert, subprocess.run, api.hdr), bare
+# filenames (login.php, A.jar) and $-variable strings -- in an UNRELATED part
+# of a command (a piped `python3 -c "..."`, a `for p in ...` loop, a `-o`
+# output filename) -- were mistaken for out-of-scope hosts and blocked. The
+# tables + helpers below replace that with position-aware extraction: a
+# schemeless host is pulled only from a real network-destination argument of
+# the Tier-2 tool actually being invoked, scoped to the sub-command that
+# invokes it. A full scheme URL (https://host) is still matched anywhere via
+# URL_RE above -- that's unambiguous and position-independent.
+#
+# Host-destination flags whose following value (space form) or flag=value
+# form is a single network destination, per Tier-2 tool.
+#
+# IMPORTANT (review finding): the ProjectDiscovery tools (subfinder/httpx/
+# katana/nuclei) take SINGLE-dash long flags (`-domain`/`-target`/`-url`),
+# not GNU double-dash -- an earlier draft listed only `--domain`/`--target`,
+# so a perfectly ordinary `subfinder -domain out-of-scope.com` escaped the
+# scope check entirely (fail-open). Both dash styles are listed here to stay
+# fail-closed. sqlmap/ffuf are not goflags tools -- sqlmap uses `--url`,
+# ffuf `-u`.
+#
+# DELIBERATELY EXCLUDED: list-file flags (`-l`/`-list`/`-dL`/`-iL`) point at
+# a FILE of hosts, not a host, so their VALUE is a path, never a scope
+# candidate -- see _LIST_FILE_FLAGS below. Treating a list filename
+# (targets.lst) as a host re-introduced the exact #129 false-positive
+# over-block for a bread-and-butter recon command. The hook cannot read the
+# file's contents to scope-check them -- that is a documented limit, not
+# something a filename-as-host heuristic ever actually closed.
+#
+# ACKNOWLEDGED, NOT FIXED (same "cheap arg scan, not a full tool-grammar
+# parser" honesty as the rest of this file): a host flag not listed here is
+# not extracted from this schemeless path -- but a full scheme URL is still
+# caught anywhere by URL_RE above.
+_TOOL_HOST_FLAGS: dict[str, frozenset[str]] = {
+    "subfinder": frozenset({"-d", "-domain", "--domain"}),
+    "httpx": frozenset({"-u", "-target", "--target"}),
+    "katana": frozenset({"-u", "-url", "--url"}),
+    "ffuf": frozenset({"-u", "--url"}),
+    "sqlmap": frozenset({"-u", "--url"}),
+    "nuclei": frozenset({"-u", "-target", "--target"}),
+}
+
+# List-file flags: their value is a local file of targets, never a host. The
+# value is consumed (so a flag-based tool's positional scan never mistakes it
+# for anything) but NOT scope-checked. A host wrongly handed to one of these
+# (`httpx -l out-of-scope.com`) is a misuse the tool itself rejects (it tries
+# to open a file by that name), so skipping it is not a real bypass.
+_TOOL_LIST_FILE_FLAGS: dict[str, frozenset[str]] = {
+    "subfinder": frozenset({"-dL", "-list"}),
+    "httpx": frozenset({"-l", "-list"}),
+    "katana": frozenset({"-list"}),
+    "nuclei": frozenset({"-l", "-list"}),
+}
+
+# Tools whose target is a bare positional argument, not behind a flag
+# (`nmap -p 80 host`). nmap value-flags whose value is a FILE or non-host
+# token are skipped so a dotted value (`--script http-enum.nse`, `-oN
+# scan.report`, `-iL list.lst`) is not mistaken for a second host -- WITHOUT
+# skipping every post-flag token (that would swallow the real target after a
+# boolean flag like `-sV`). Only these specific value-flags consume their
+# next token.
+_POSITIONAL_HOST_TOOLS = frozenset({"nmap"})
+_NMAP_SKIP_VALUE_FLAGS = frozenset({
+    "-p", "--top-ports", "--script", "--script-args", "--script-args-file",
+    "-oN", "-oX", "-oG", "-oA", "-oS", "-iL", "--excludefile", "--exclude",
+    "--datadir", "--servicedb", "--versiondb", "--stylesheet",
+})
+
+# curl/wget/curl-rl.sh: the destination is a positional (schemeless hosts
+# like `curl evilcorp.com`; scheme URLs are already handled by URL_RE). Every
+# non-flag argument token is considered EXCEPT the output-file target
+# (`-o A.jar`/`-O file`), identified via the existing _curl_output_target/
+# _wget_output_target helpers -- an output filename is a write destination,
+# not a host. A surviving `Host:` header value is still reached here (it's a
+# non-flag token, and HEADER_VALUE_RE leaves the Host header exposed on
+# purpose -- it's the effective vhost destination), which is why these scan
+# every non-flag token rather than only a single positional.
+_CURL_LIKE_TOOLS = frozenset({"curl", "wget", "curl-rl.sh"})
+
+
+def _bare_host_candidate(token: str) -> str | None:
+    """A schemeless host extracted from a single argument token, or None.
+    Rejects a token containing `$` (an unresolved shell variable, never a
+    literal host to scope-check) or `(` (a function call like `json.load(` --
+    code, never a host); otherwise returns the first HOSTNAME_RE match in the
+    token (so trailing shell punctuation like `host/x)"` still yields the
+    host). Exemption (safe-test/dev-infra/non-TLD-extension) is applied once,
+    centrally, by the caller."""
+    if not token or "$" in token or "(" in token:
+        return None
+    found = HOSTNAME_RE.findall(token)
+    return found[0] if found else None
+
+
+def _hosts_from_tier2_tool_args(tool: str, args: list[str]) -> list[str]:
+    hosts: list[str] = []
+    flags = _TOOL_HOST_FLAGS.get(tool)
+    if flags is not None:
+        list_file_flags = _TOOL_LIST_FILE_FLAGS.get(tool, frozenset())
+        i = 0
+        while i < len(args):
+            w = args[i]
+            value = None
+            if w in flags:
+                if i + 1 < len(args):
+                    value = args[i + 1]
+                    i += 1
+            elif w in list_file_flags:
+                # Consume (skip) the list file's path -- it's a file of
+                # targets, never a host to scope-check.
+                if i + 1 < len(args):
+                    i += 1
+            else:
+                for f in flags:
+                    if w.startswith(f + "="):
+                        value = w[len(f) + 1:]
+                        break
+            if value is not None:
+                c = _bare_host_candidate(value)
+                if c:
+                    hosts.append(c)
+            i += 1
+    elif tool == "dalfox":
+        # dalfox's single-target modes are `dalfox url <target>` and
+        # `dalfox sxss <target>` -- the token after the subcommand is the
+        # destination (a scheme URL is also handled by URL_RE). `dalfox file
+        # <list>`/`pipe` read a file/stdin, so they carry no inline host.
+        for i, w in enumerate(args):
+            if w in ("url", "sxss") and i + 1 < len(args):
+                c = _bare_host_candidate(args[i + 1])
+                if c:
+                    hosts.append(c)
+    elif tool in _POSITIONAL_HOST_TOOLS:
+        skip_next = False
+        for w in args:
+            if skip_next:
+                skip_next = False
+                continue
+            if w in _NMAP_SKIP_VALUE_FLAGS:
+                # A value-flag's following token is a file/port/script, not a
+                # host -- skip it so a dotted value isn't mistaken for a
+                # second target. Attached forms (`-p80`, `--script=...`) are
+                # a single token starting with `-`, handled by the flag skip
+                # below, so no value token follows to skip.
+                skip_next = True
+                continue
+            if w.startswith("-"):
+                continue
+            c = _bare_host_candidate(w)
+            if c:
+                hosts.append(c)
+    elif tool in _CURL_LIKE_TOOLS:
+        out = _wget_output_target(args) if tool == "wget" else _curl_output_target(args)
+        for w in args:
+            if w.startswith("-") or (out is not None and w == out):
+                continue
+            c = _bare_host_candidate(w)
+            if c:
+                hosts.append(c)
+    return hosts
+
+
+def _bare_hosts_from_tier2_args(text: str) -> list[str]:
+    """Position-aware schemeless-host extraction (issue #129). Splits `text`
+    into shell sub-commands (same _CHAIN_SPLIT_RE used by the rm/.env/
+    protected-path checks) and, for each sub-command that actually invokes a
+    Tier-2 binary, extracts hosts only from that tool's own network-
+    destination arguments -- never from arbitrary tokens elsewhere in the
+    command. The tool is located by basename ANYWHERE in the piece (not just
+    first word), so a leading wrapper (`timeout 30 curl ...`) or shell keyword
+    (`do curl ...` inside a loop body) doesn't hide it."""
+    hosts: list[str] = []
+    for piece in _CHAIN_SPLIT_RE.split(text):
+        try:
+            words = shlex.split(piece)
+        except ValueError:
+            words = piece.split()
+        idx = next(
+            (i for i, w in enumerate(words) if w.rsplit("/", 1)[-1] in TIER2_BASH_TOOLS),
+            None,
+        )
+        if idx is None:
+            continue
+        tool = words[idx].rsplit("/", 1)[-1]
+        hosts.extend(_hosts_from_tier2_tool_args(tool, words[idx + 1:]))
+    return hosts
+
+
 def _extract_hosts_from_bash(command: str) -> list[str]:
     # Regression (S-GATE adversarial-regression finding, CONFIRMED, 4
     # independent verification passes, 9/10 confidence each): a bare
@@ -1021,11 +1212,20 @@ def _extract_hosts_from_bash(command: str) -> list[str]:
 
     # Also remove whole email-address spans (see EMAIL_RE's own comment for
     # why this has to be a full-span removal, not a lookbehind on
-    # HOSTNAME_RE itself) before the fallback scan.
+    # HOSTNAME_RE itself) before the schemeless-host extraction below.
     remainder = EMAIL_RE.sub(" ", remainder)
 
-    hosts.extend(HOSTNAME_RE.findall(remainder))
-    return [h for h in hosts if not _is_candidate_exempt(h)]
+    # Issue #129: position-aware schemeless-host extraction replaces the old
+    # `HOSTNAME_RE.findall(remainder)` whole-command scan, which treated any
+    # word.word token (json.load, sys.path.insert, login.php, A.jar, a $var
+    # string) as a host candidate and recurred as a false-positive scope
+    # block across engagements. A schemeless host is now pulled only from a
+    # real network-destination argument of the Tier-2 tool actually being
+    # invoked (see _bare_hosts_from_tier2_args). Full scheme URLs are already
+    # captured above by URL_RE. The final `"$" not in h` guard also drops a
+    # URL whose host portion is itself an unresolved shell variable.
+    hosts.extend(_bare_hosts_from_tier2_args(remainder))
+    return [h for h in hosts if "$" not in h and not _is_candidate_exempt(h)]
 
 
 def _extract_hosts_from_tool_input(tool_input: dict) -> list[str]:
