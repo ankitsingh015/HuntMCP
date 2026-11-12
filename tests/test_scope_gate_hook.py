@@ -212,6 +212,166 @@ def test_extract_hosts_from_bash_still_flags_host_header_value_as_a_target():
     assert "allowed-corp.com" in hosts
 
 
+# GitHub issue #129 (recurring across engagements -- Manatal 2026-11-05,
+# behindthename.com 2026-11-12): the old bare-hostname fallback scanned the
+# ENTIRE command string with HOSTNAME_RE and treated any word.word token as a
+# host candidate, so dotted code identifiers (json.load, sys.path.insert,
+# subprocess.run, api.hdr), bare filenames (login.php, add.php, A.jar) and
+# $-variable strings -- appearing in an UNRELATED part of a command (a piped
+# `python3 -c "..."`, a `for p in ...` loop, a `-o <file>` output arg) -- were
+# mistaken for out-of-scope hostnames and blocked. The fix extracts a
+# schemeless host only from a real network-destination argument of the Tier-2
+# tool actually being invoked. These assert the false positives are NOT
+# extracted while a genuine in-scope host in the SAME command still is, and
+# that a bare out-of-scope host in a real host-arg position STILL blocks.
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # dotted code identifiers in a piped python one-liner (the original
+        # Manatal json.load report) -- the curl target is in scope, the python
+        # attribute/module access must not be read as a second host.
+        'curl -s https://realtarget-corp.com/api | python3 -c "import sys, json; print(json.load(sys.stdin))"',
+        'curl -s https://realtarget-corp.com/api | python3 -c "import subprocess; subprocess.run([1])"',
+        'curl -s https://realtarget-corp.com/api | python3 -c "import sys; sys.path.insert(0, 1)"',
+        # bare filenames enumerated in a shell loop (behindthename login.php/
+        # add.php report) -- the `for` piece has no Tier-2 tool at all.
+        'for p in login.php add.php; do curl "https://realtarget-corp.com/$p"; done',
+        # a $-variable in the request path.
+        'curl "https://realtarget-corp.com/api?u=$USER_ID"',
+    ],
+)
+def test_issue129_does_not_flag_non_host_tokens_but_keeps_real_target(command):
+    hosts = hook._extract_hosts_from_bash(command)
+    assert hosts == ["realtarget-corp.com"], hosts
+
+
+def test_issue129_does_not_flag_output_filename_with_uncommon_extension():
+    """A.jar from the behindthename report: an output filename whose
+    extension is NOT in NON_TLD_FILE_EXTENSIONS (so the existing exemption
+    does not cover it) -- the curl -o/-O destination is never a scope-check
+    candidate."""
+    hosts = hook._extract_hosts_from_bash("curl -o A.jar https://realtarget-corp.com/app")
+    assert hosts == ["realtarget-corp.com"], hosts
+    hosts = hook._extract_hosts_from_bash("wget -O A.jar https://realtarget-corp.com/app")
+    assert hosts == ["realtarget-corp.com"], hosts
+
+
+def test_issue129_does_not_flag_dollar_var_host_token():
+    """A $-containing token is a shell variable this hook cannot resolve --
+    it must never be treated as a literal hostname to scope-check."""
+    assert hook._extract_hosts_from_bash("subfinder -d $TARGET_DOMAIN") == []
+    assert hook._extract_hosts_from_bash("nuclei -u $TARGET.example") == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "subfinder -d evilcorp.com",
+        "httpx -u evilcorp.com",
+        "katana -u evilcorp.com",
+        "nuclei -u evilcorp.com",
+        "sqlmap -u evilcorp.com",
+        "ffuf -u evilcorp.com",
+        "nmap -p 80 evilcorp.com",
+        "curl evilcorp.com/admin",
+        "curl -sL evilcorp.com/admin",
+        "dalfox url evilcorp.com",
+    ],
+)
+def test_issue129_still_extracts_bare_out_of_scope_host_in_a_real_host_arg(command):
+    """The position-aware fix must NOT weaken real enforcement: a bare,
+    schemeless out-of-scope host passed as an actual network-destination
+    argument of any Tier-2 tool must still be extracted (and therefore
+    scope-blocked)."""
+    assert hook._extract_hosts_from_bash(command) == ["evilcorp.com"], command
+
+
+def test_issue129_still_blocks_bare_out_of_scope_host_end_to_end(monkeypatch, tmp_path):
+    """End-to-end companion: a bare out-of-scope host in a host-arg position
+    must still fail closed (exit 2) through main()."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    payload = {"tool_name": "Bash", "tool_input": {"command": "subfinder -d evilcorp.com"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_issue129_allows_in_scope_curl_piped_into_python(monkeypatch, tmp_path):
+    """End-to-end companion to the unit tests above: the exact Manatal shape
+    (an in-scope curl piped into a python one-liner using json.load) must be
+    allowed, not blocked on the dotted identifier."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+    monkeypatch.setattr(hook, "_enforce_budget", lambda name: None)
+    monkeypatch.setattr(hook, "_log_call", lambda *a, **k: None)
+    payload = {"tool_name": "Bash", "tool_input": {
+        "command": 'curl -s https://realtarget-corp.com/api | python3 -c "import sys, json; print(json.load(sys.stdin))"',
+    }}
+    assert _run_main(monkeypatch, payload) == 0
+
+
+# Review follow-ups (code + security review of the #129 fix): the
+# position-aware extractor must not itself fail OPEN on a valid flag form it
+# didn't list, nor fail CLOSED (over-block) on a non-host argument.
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # ProjectDiscovery tools use SINGLE-dash long flags; the first draft
+        # listed only the double-dash form, so `-domain`/`-target`/`-url`
+        # silently escaped the scope check (fail-open regression).
+        "subfinder -domain evilcorp.com",
+        "subfinder --domain evilcorp.com",
+        "nuclei -target evilcorp.com",
+        "httpx -target evilcorp.com",
+        "katana -url evilcorp.com",
+    ],
+)
+def test_issue129_review_single_and_double_dash_long_host_flags_block(command):
+    assert hook._extract_hosts_from_bash(command) == ["evilcorp.com"], command
+
+
+def test_issue129_review_dalfox_sxss_subcommand_blocks():
+    """dalfox's sxss subcommand takes a target just like url -- a bare
+    out-of-scope host there must still be extracted (fail-open otherwise)."""
+    assert hook._extract_hosts_from_bash("dalfox sxss evilcorp.com") == ["evilcorp.com"]
+
+
+def test_issue129_review_nmap_value_flag_values_not_flagged_as_host():
+    """A dotted value of an nmap value-flag (--script http-enum.nse, -oN
+    scan.report) must not be mistaken for a second host (false-positive
+    over-block of a legitimate in-scope scan)."""
+    assert hook._extract_hosts_from_bash(
+        "nmap --script http-enum.nse realtarget-corp.com"
+    ) == ["realtarget-corp.com"]
+    assert hook._extract_hosts_from_bash(
+        "nmap -oN scan.report realtarget-corp.com"
+    ) == ["realtarget-corp.com"]
+
+
+def test_issue129_review_nmap_boolean_flag_before_host_still_extracts():
+    """Guard against the obvious wrong fix for the above (skip every
+    post-flag token): a boolean nmap flag before the target must NOT cause
+    the real host to be skipped (that would be a fail-open regression)."""
+    assert hook._extract_hosts_from_bash("nmap -sV realtarget-corp.com") == ["realtarget-corp.com"]
+    assert hook._extract_hosts_from_bash("nmap -Pn -sV realtarget-corp.com") == ["realtarget-corp.com"]
+
+
+def test_issue129_review_list_file_argument_is_not_a_host():
+    """-l/-list/-dL/-iL point at a FILE of hosts, not a host -- the filename
+    (even one with a non-exempt extension like .lst) must never itself be
+    scope-checked as a host, or the fix re-introduces the #129 over-block
+    class for a bread-and-butter recon command."""
+    assert hook._extract_hosts_from_bash("httpx -l targets.lst") == []
+    assert hook._extract_hosts_from_bash("nuclei -l targets.lst") == []
+    assert hook._extract_hosts_from_bash("subfinder -dL domains.lst") == []
+    assert hook._extract_hosts_from_bash("nmap -iL targets.lst") == []
+
+
 def test_mcp_server_name_parses_correctly():
     assert hook._mcp_server_name("mcp__httpx-mcp__screenshot_hosts") == "httpx-mcp"
     assert hook._mcp_server_name("Bash") == ""
