@@ -162,6 +162,20 @@ Read the applicable scoped rules before modifying files in that area.
 - Future roadmap work is not current implementation authorization.
 - Prefer simple, minimal, verifiable changes over speculative architecture.
 
+## Shortcut phrases
+These are deliberate shorthands the user types so they don't re-type a long instruction. When the user says one (in any wording close to it), expand it to the full behaviour — don't treat it as a casual aside:
+
+- **"review and audit"** (also "audit it", "review it properly") → run BOTH the `/code-review` and `/security-review` skills on the change, not just one. Report findings before anything is merged.
+- **"prove it runs"** (also "runtime check", "verify it runs", "run-verify", "does it actually work") → **RUNTIME VERIFICATION.** Unit tests passing and a clean review are NOT sufficient evidence that a feature works. Actually execute the real code path end-to-end in the real environment and show concrete evidence:
+  - Invoke the actual entry point a user/agent would hit — for an MCP tool, call the real `mcp__<server>__<tool>` (not a mock, not only a unit test). Use a controlled/local or explicitly in-scope target only.
+  - Capture real evidence: actual tool output, exit code, a screenshot, or a captured response — never "it should work".
+  - If it depends on an external binary/service (browser/playwright, a scanner binary, a network endpoint), prove THAT actually launches/connects at runtime.
+  - No live target available? Use a controlled local stand-in that exercises the same code path — a local vulnerable app/container (DVWA, juice-shop), a local or `data:` page for a browser, a mock/echo server for an API/MCP tool. A real production target is only needed for a live engagement, not to verify that the feature works. If even a stand-in is impossible, verify as far as you can and state the limitation explicitly — never claim end-to-end success you did not actually run.
+  - If it cannot run, that IS the finding — report where it fails (config/env/runtime) and do NOT mark the task complete.
+  - State in the summary: `Runtime-verified: <what you ran> → <real result>` (or say explicitly that you could not run it, and why).
+
+A runtime-dependent feature is not `[x]` until it has been run end-to-end this way — consistent with "Evidence before claims" and "don't treat static inspection as sufficient proof of runtime behaviour".
+
 ## Task tracking
 Use:
 - `[ ]` not started
