@@ -256,6 +256,13 @@ def _kill_and_collect(job_id: str, job: _Job, elapsed: float, jobs: dict) -> dic
     }
 
 
+# Reaped-but-not-yet-collected results, keyed by job_id -- see
+# _reap_other_stale_jobs()'s own docstring for why this exists. Module-level
+# and in-process only, same scoping assumption as every `jobs` dict a caller
+# owns (one MCP server process, never shared/persisted across a restart).
+_reaped_results: dict[str, dict] = {}
+
+
 def _reap_other_stale_jobs(jobs: dict, skip_job_id: str) -> None:
     """Piggyback on every real poll_job() call to also kill+collect any
     OTHER job in this same dict that's been running past its own
@@ -272,14 +279,25 @@ def _reap_other_stale_jobs(jobs: dict, skip_job_id: str) -> None:
     job), but it means any ongoing agent activity against this same MCP
     server -- even polling a completely different, unrelated job --
     now also sweeps up abandoned siblings instead of leaving them running
-    forever."""
+    forever.
+
+    The reaped job's real result is stashed in `_reaped_results` rather
+    than discarded: a caller polling several jobs sharing one `jobs` dict
+    in sequence (e.g. fanout.check_batch() over a batch's in_flight
+    targets) would otherwise have an EARLIER poll in the same loop
+    silently kill+collect a LATER target's job as this side effect, and
+    that target's own subsequent poll_job() call would then find nothing
+    in `jobs` and report a generic "no job" error -- destroying a real
+    (possibly finding-bearing) timeout result instead of ever surfacing
+    it. poll_job() checks this stash on a `jobs` miss before falling back
+    to that generic error."""
     now = time.monotonic()
     for other_id, other_job in list(jobs.items()):
         if other_id == skip_job_id:
             continue
         elapsed = now - other_job.started_monotonic
         if elapsed > other_job.max_wall_seconds and other_job.proc.poll() is None:
-            _kill_and_collect(other_id, other_job, elapsed, jobs)
+            _reaped_results[other_id] = _kill_and_collect(other_id, other_job, elapsed, jobs)
 
 
 def poll_job(job_id: str, jobs: dict) -> dict:
@@ -293,6 +311,9 @@ def poll_job(job_id: str, jobs: dict) -> dict:
 
     job = jobs.get(job_id)
     if job is None:
+        reaped = _reaped_results.pop(job_id, None)
+        if reaped is not None:
+            return reaped
         return {"error": f"no job with job_id={job_id!r} -- either it was already "
                           f"collected by an earlier check_scan() call, or this "
                           f"job_id was never started"}

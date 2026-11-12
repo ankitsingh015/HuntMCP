@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from typing import Callable, NamedTuple
@@ -65,6 +66,29 @@ DEFAULT_CAP_FALLBACK: int = int(os.getenv("HUNTMCP_FANOUT_MAX_DEFAULT", "3"))
 # How long a per-tool backoff (set by _record_block()) holds the reduced cap
 # before _effective_cap() lets it ramp back to DEFAULT_CAPS.
 COOLDOWN_SECONDS: int = int(os.getenv("HUNTMCP_FANOUT_COOLDOWN_SECONDS", "300"))
+
+# Hard ceiling on how many targets one start_batch() call may queue at once.
+# Concurrency is already bounded by DEFAULT_CAPS; this bounds queue DEPTH --
+# without it, a single oversized batch (e.g. an entire katana crawl pasted
+# into one `targets` string) could consume a large share of the whole
+# engagement's budget_guard.MAX_CALLS allowance in one tool call, with
+# nothing rejecting it up front (only BudgetExceeded mid-batch would
+# eventually stop it). Review finding, fixed here once so every batch tool
+# built on this module gets it for free.
+MAX_BATCH_SIZE: int = int(os.getenv("HUNTMCP_FANOUT_MAX_BATCH_SIZE", "50"))
+
+# Guards the "check how many slots are free, then launch into them" critical
+# section in _fill_slots() below. Without this, two calls into _fill_slots()
+# for the SAME tool_name (two concurrent start_batch()/check_batch() calls,
+# or a batch plus a direct single-target start_job() elsewhere) could each
+# read the same headroom before either one's job_runtime.start_job() calls
+# land in the shared `jobs` dict, jointly exceeding the per-tool cap --
+# job_runtime.py's own docstring notes concurrent MCP tool dispatch against
+# one shared `jobs` dict is "plausible" in this codebase, not theoretical.
+# This is synchronization for dispatch that may already happen concurrently
+# in the host MCP framework, not new background work -- it does not change
+# this module's "no new worker threads" design.
+_fill_slots_lock = threading.Lock()
 
 # Snapshot only, for introspection -- _resolve_backoff_path() re-resolves
 # fresh on every call instead of trusting this frozen value (same rationale
@@ -123,14 +147,25 @@ def _effective_cap(tool_name: str, path: str | None = None) -> int:
 def _record_block(tool_name: str, path: str | None = None) -> None:
     """Record that `tool_name` just came back blocked (rate-limited/WAF'd):
     halve its current effective cap and start a new COOLDOWN_SECONDS
-    window. A second block before the first cooldown elapses compounds --
-    it halves the ALREADY-reduced cap, rather than resetting from the
-    tool's full DEFAULT_CAPS value -- since repeated blocks are evidence
-    the first backoff wasn't cautious enough yet."""
+    window. A second block within the same still-active cooldown compounds
+    -- it halves the ALREADY-reduced cap, rather than resetting from the
+    tool's full DEFAULT_CAPS value -- since a repeated block before the
+    prior backoff even expired is evidence that backoff wasn't cautious
+    enough yet. But a block that arrives AFTER the prior cooldown already
+    expired starts fresh from DEFAULT_CAPS, same as _effective_cap() itself
+    would report at that point -- otherwise a long-separated, unrelated
+    block would keep halving an already-stale, long-expired reduced value
+    (reviewed/confirmed: this ratchets the cap toward 1 over sparse,
+    time-separated incidents and never lets it recover, defeating the
+    cooldown's whole "ramps back up" point)."""
     path = _resolve_backoff_path(path)
     with file_lock.locked(path):
         state = _load_backoff(path)
-        baseline = state.get(tool_name, {}).get("cap", DEFAULT_CAPS.get(tool_name, DEFAULT_CAP_FALLBACK))
+        entry = state.get(tool_name)
+        if entry and time.time() < entry["blocked_until"]:
+            baseline = entry["cap"]
+        else:
+            baseline = DEFAULT_CAPS.get(tool_name, DEFAULT_CAP_FALLBACK)
         state[tool_name] = {
             "cap": max(1, baseline // 2),
             "blocked_until": time.time() + COOLDOWN_SECONDS,
@@ -190,37 +225,41 @@ def _fill_slots(batch: _Batch, jobs: dict) -> None:
     once it fires every remaining pending target is drained straight into
     `results` with the same `start_error` kind instead of retried one at
     a time.
+
+    The whole check-then-launch body runs under `_fill_slots_lock` -- see
+    that lock's own module-level comment for why.
     """
-    cap = _effective_cap(batch.tool_name)
-    slots_available = max(0, cap - _running_for_tool(batch.tool_name, jobs))
-    while slots_available > 0 and batch.pending:
-        target = batch.pending.pop(0)
-        active = [
-            w for w in work_registry.list_active_work(host=target)
-            if w.get("agent") == "fanout" and w.get("task") == batch.tool_name
-        ]
-        if active:
-            batch.results[target] = {"kind": "skipped_in_flight"}
-            continue
-        prepared = batch.prepare(target)
-        if "error" in prepared:
-            batch.results[target] = {"kind": "prepare_error", "error": prepared["error"]}
-            continue
-        try:
-            started = job_runtime.start_job(batch.tool_name, jobs=jobs, **prepared)
-        except budget_guard.BudgetExceeded as e:
-            message = f"budget exceeded: {e}" if str(e) else "budget exceeded"
-            batch.results[target] = {"kind": "start_error", "error": message}
-            while batch.pending:
-                leftover = batch.pending.pop(0)
-                batch.results[leftover] = {"kind": "start_error", "error": message}
-            return
-        except Exception as e:  # noqa: BLE001 -- any launch failure must not drop the target
-            batch.results[target] = {"kind": "start_error", "error": str(e)}
-            continue
-        work_id = work_registry.start_work("fanout", target, task=batch.tool_name)
-        batch.in_flight[target] = (started["job_id"], work_id)
-        slots_available -= 1
+    with _fill_slots_lock:
+        cap = _effective_cap(batch.tool_name)
+        slots_available = max(0, cap - _running_for_tool(batch.tool_name, jobs))
+        while slots_available > 0 and batch.pending:
+            target = batch.pending.pop(0)
+            active = [
+                w for w in work_registry.list_active_work(host=target)
+                if w.get("agent") == "fanout" and w.get("task") == batch.tool_name
+            ]
+            if active:
+                batch.results[target] = {"kind": "skipped_in_flight"}
+                continue
+            prepared = batch.prepare(target)
+            if "error" in prepared:
+                batch.results[target] = {"kind": "prepare_error", "error": prepared["error"]}
+                continue
+            try:
+                started = job_runtime.start_job(batch.tool_name, jobs=jobs, **prepared)
+            except budget_guard.BudgetExceeded as e:
+                message = f"budget exceeded: {e}" if str(e) else "budget exceeded"
+                batch.results[target] = {"kind": "start_error", "error": message}
+                while batch.pending:
+                    leftover = batch.pending.pop(0)
+                    batch.results[leftover] = {"kind": "start_error", "error": message}
+                return
+            except Exception as e:  # noqa: BLE001 -- any launch failure must not drop the target
+                batch.results[target] = {"kind": "start_error", "error": str(e)}
+                continue
+            work_id = work_registry.start_work("fanout", target, task=batch.tool_name)
+            batch.in_flight[target] = (started["job_id"], work_id)
+            slots_available -= 1
 
 
 def _snapshot(batch_id: str, batch: _Batch) -> dict:
@@ -239,12 +278,27 @@ def start_batch(tool_name: str, targets: list[str], prepare: Callable[[str], dic
     """Start a new batch of `tool_name` runs, one per target in `targets`,
     bounded by DEFAULT_CAPS. Returns the same snapshot shape check_batch()
     does -- callers poll with check_batch() using the returned batch_id
-    until status is "done"."""
+    until status is "done". `targets` is deduplicated (order-preserving)
+    before queuing: a literal duplicate target string would otherwise let
+    the first occurrence start a real job and register it in
+    `work_registry`, and the second occurrence -- popped later in the SAME
+    _fill_slots() call -- would then see that fresh registration and get
+    recorded as `skipped_in_flight`, leaving the target in both
+    `in_flight` and `results` at once until the real job finishes.
+    `len(targets) > MAX_BATCH_SIZE` is rejected up front with a top-level
+    `error` key instead of silently queuing an oversized batch -- the
+    concurrency cap bounds how many run at once, not how many get queued
+    in one call."""
+    deduped = list(dict.fromkeys(targets))
+    if len(deduped) > MAX_BATCH_SIZE:
+        return {"error": f"batch of {len(deduped)} targets exceeds the per-call limit "
+                          f"of {MAX_BATCH_SIZE} (HUNTMCP_FANOUT_MAX_BATCH_SIZE) -- "
+                          f"split into smaller batches"}
     batch_id = _new_batch_id()
     batch = _Batch(
         tool_name=tool_name,
         prepare=prepare,
-        pending=list(targets),
+        pending=deduped,
         in_flight={},
         results={},
     )

@@ -271,6 +271,54 @@ def test_poll_job_reaps_other_stale_sibling_jobs(monkeypatch):
             jobs[other_id].proc.wait()
 
 
+def test_poll_job_preserves_a_sibling_reaped_mid_poll_instead_of_losing_it(monkeypatch):
+    """Review finding: _reap_other_stale_jobs() used to kill+collect a
+    sibling job and discard the result -- a caller polling several jobs
+    sharing one `jobs` dict in sequence (e.g. fanout.check_batch() over a
+    batch's in_flight targets) could have an EARLIER poll in the loop
+    silently reap a LATER target's job as this side effect, and that
+    target's own next poll_job() call would then find nothing in `jobs`
+    and report a generic "no job" error -- destroying a real (possibly
+    finding-bearing) timeout result instead of ever surfacing it. The
+    reaped result must now be retrievable via a later poll_job() call on
+    that exact job_id, not just silently gone."""
+    _no_budget(monkeypatch)
+    _bypass_sandbox(monkeypatch)
+    _no_audit(monkeypatch)
+    jobs = {}
+    sibling = job_runtime.start_job("sleep", ["30"], max_wall_seconds=30, jobs=jobs)
+    sibling_id = sibling["job_id"]
+    job = jobs[sibling_id]
+    jobs[sibling_id] = job._replace(started_monotonic=time.monotonic() - job.max_wall_seconds - 1)
+
+    other = job_runtime.start_job("true", [], max_wall_seconds=9999, jobs=jobs)
+    other_id = other["job_id"]
+    try:
+        deadline = time.monotonic() + 5
+        result = job_runtime.poll_job(other_id, jobs)
+        while result["status"] == "running" and time.monotonic() < deadline:
+            result = job_runtime.poll_job(other_id, jobs)
+
+        # The sibling was reaped as a side effect of polling `other_id` --
+        # its own job_id is gone from `jobs` now.
+        assert sibling_id not in jobs
+
+        # But polling IT directly must return its real timeout result, not
+        # a generic "no job" error.
+        sibling_result = job_runtime.poll_job(sibling_id, jobs)
+        assert sibling_result["status"] == "timeout"
+        assert "error" not in sibling_result or "timed out" in sibling_result["error"]
+
+        # Consumed on read -- a second poll of the same already-collected
+        # job_id behaves like any other collected job: "no job" now.
+        second_poll = job_runtime.poll_job(sibling_id, jobs)
+        assert "error" in second_poll and "status" not in second_poll
+    finally:
+        if other_id in jobs:
+            jobs[other_id].proc.kill()
+            jobs[other_id].proc.wait()
+
+
 def test_budget_is_enforced_exactly_once_per_start_job_not_per_poll(monkeypatch):
     calls = []
     monkeypatch.setattr(job_runtime, "_enforce_budget", lambda name: calls.append(name))

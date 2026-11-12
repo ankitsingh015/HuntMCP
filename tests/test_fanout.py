@@ -598,3 +598,116 @@ def test_fill_slots_caps_across_two_batches_sharing_the_same_jobs_dict(monkeypat
     assert len(result2_check["in_flight"]) == 0
     assert result2_check["pending"] == batch2_targets
     assert len(jobs) == 3
+
+
+def test_concurrent_start_batch_calls_never_jointly_exceed_the_shared_cap(monkeypatch):
+    """Final-review finding: _fill_slots() read the cap/running-count and
+    then launched jobs with no lock held across that span, even though
+    job_runtime.py's own docstring says concurrent MCP tool dispatch
+    against one shared `jobs` dict is "plausible" here. Two real threads
+    each running start_batch() for the same tool, with a deliberate sleep
+    widening the race window inside the fake start_job(), reproduce the
+    overrun without the fix and must not with it."""
+    import threading
+
+    monkeypatch.setattr(fanout, "DEFAULT_CAPS", {"nuclei": 2})
+    _stub_work_registry(monkeypatch)
+
+    counter_lock = threading.Lock()
+    counter = {"n": 0}
+
+    def fake_start_job(tool_name, jobs, **kwargs):
+        time.sleep(0.05)  # widen the window between the cap check and the launch
+        with counter_lock:
+            job_id = f"job-{counter['n']}"
+            counter["n"] += 1
+        jobs[job_id] = {"status": "running", "tool_name": tool_name}
+        return {"job_id": job_id, "status": "running", "tool": tool_name}
+
+    monkeypatch.setattr(job_runtime, "start_job", fake_start_job)
+
+    jobs = {}
+    batches = {}
+
+    def run(targets):
+        fanout.start_batch("nuclei", targets, lambda t: {"args": []}, batches, jobs)
+
+    t1 = threading.Thread(target=run, args=(["a1", "a2"],))
+    t2 = threading.Thread(target=run, args=(["b1", "b2"],))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert len(jobs) <= 2
+
+
+def test_start_batch_dedupes_a_literal_duplicate_target_before_queuing(monkeypatch):
+    """Review finding: a targets list containing the same host twice let
+    the first occurrence start a real job and register it in
+    work_registry, then the SECOND occurrence (popped later in the same
+    _fill_slots() call) saw that fresh registration and got recorded as
+    skipped_in_flight -- leaving the target in both in_flight and results
+    at once. Deduplicating in start_batch() means the duplicate is never
+    queued at all."""
+    monkeypatch.setattr(fanout, "DEFAULT_CAPS", {"nuclei": 5})
+    _stub_work_registry(monkeypatch)
+
+    def fake_start_job(tool_name, jobs, **kwargs):
+        jobs["job-a"] = {"status": "running", "tool_name": tool_name}
+        return {"job_id": "job-a", "status": "running", "tool": tool_name}
+
+    monkeypatch.setattr(job_runtime, "start_job", fake_start_job)
+
+    result = fanout.start_batch("nuclei", ["a.com", "a.com"], lambda t: {"args": []}, {}, {})
+    assert result["in_flight"] == ["a.com"]
+    assert "a.com" not in result["results"]
+    assert result["pending"] == []
+
+
+def test_start_batch_rejects_a_batch_larger_than_the_configured_max(monkeypatch):
+    monkeypatch.setattr(fanout, "MAX_BATCH_SIZE", 3)
+    result = fanout.start_batch("nuclei", ["a", "b", "c", "d"], lambda t: {"args": []}, {}, {})
+    assert "error" in result
+    assert "batch_id" not in result
+
+
+def test_start_batch_within_the_max_size_is_unaffected(monkeypatch):
+    monkeypatch.setattr(fanout, "MAX_BATCH_SIZE", 3)
+    monkeypatch.setattr(fanout, "DEFAULT_CAPS", {"nuclei": 5})
+    _stub_work_registry(monkeypatch)
+
+    def fake_start_job(tool_name, jobs, **kwargs):
+        job_id = f"job-{len(jobs)}"
+        jobs[job_id] = {"status": "running", "tool_name": tool_name}
+        return {"job_id": job_id, "status": "running", "tool": tool_name}
+
+    monkeypatch.setattr(job_runtime, "start_job", fake_start_job)
+    result = fanout.start_batch("nuclei", ["a", "b", "c"], lambda t: {"args": []}, {}, {})
+    assert "error" not in result
+    assert len(result["in_flight"]) == 3
+
+
+def test_record_block_after_cooldown_already_expired_starts_fresh_not_stale(tmp_path, monkeypatch):
+    """Review finding: _record_block() used to take whatever `cap` was
+    already stored as its baseline, even if that entry's own
+    blocked_until had already passed -- so a block long after a prior,
+    unrelated cooldown ended still compounded from the stale, reduced
+    value instead of the fresh full default, ratcheting the cap toward 1
+    over sparse, time-separated incidents and never letting it recover."""
+    path = str(tmp_path / "fanout-backoff.json")
+    full = fanout.DEFAULT_CAPS.get("nuclei", fanout.DEFAULT_CAP_FALLBACK)
+
+    fanout._record_block("nuclei", path=path)  # cap: full -> full//2
+    reduced = fanout._effective_cap("nuclei", path=path)
+    assert reduced < full
+
+    # Simulate the first cooldown having already fully elapsed before the
+    # second, unrelated block arrives.
+    future = time.time() + fanout.COOLDOWN_SECONDS + 1
+    monkeypatch.setattr(fanout.time, "time", lambda: future)
+    fanout._record_block("nuclei", path=path)
+
+    # The second block must halve the FRESH full default, not the stale
+    # already-reduced value from the first (now-expired) block.
+    assert fanout._effective_cap("nuclei", path=path) == max(1, full // 2)

@@ -198,9 +198,10 @@ def _split_targets(targets: str) -> list[str]:
 def _format_batch_entry(target: str, entry: dict, no_findings_message: str) -> str:
     """Format one target's fanout result -- a terminal job_result the
     same way check_scan() formats a single-target result (findings +
-    block_prefix()), a prepare_error or start_error by surfacing its
-    error string directly, and a skipped_in_flight dedupe hit by saying
-    so."""
+    block_prefix() + the same Provenance line, so a batch-sourced finding
+    is just as usable by case-mcp's add_evidence() as a single-target
+    one), a prepare_error or start_error by surfacing its error string
+    directly, and a skipped_in_flight dedupe hit by saying so."""
     kind = entry.get("kind")
     if kind in ("prepare_error", "start_error"):
         return f"  {target}: {entry['error']}"
@@ -213,7 +214,9 @@ def _format_batch_entry(target: str, entry: dict, no_findings_message: str) -> s
             target, no_findings_message, entry.get("stdout", ""),
             entry.get("returncode", -1), entry.get("stderr", ""),
         )
-        return f"  {job_runtime.block_prefix(entry)}{target}: {formatted}"
+        provenance = {"class": "invocation", "tool": "nuclei", "target": target}
+        return (f"  {job_runtime.block_prefix(entry)}{target}: {formatted}\n"
+                f"    Provenance (for case-mcp add_evidence): {json.dumps(provenance)}")
     return f"  {target}: {entry}"
 
 
@@ -249,6 +252,23 @@ def _format_batch_check(batch_id: str, snapshot: dict, no_findings_message: str)
     return "\n".join(lines)
 
 
+def _register_batch_job_targets(batch_id: str, no_findings_message: str) -> None:
+    """So list_scans() -- which looks up each running job_id's target via
+    the module-level `_targets` dict -- shows the real host for a
+    batch-launched job instead of falling back to "?". `_targets` is
+    otherwise only populated by the single-target `_start()` path; batch
+    jobs go through fanout._fill_slots() -> job_runtime.start_job()
+    directly, bypassing `_start()` entirely. `_batches[batch_id]` is the
+    same `_Batch` object fanout.py itself mutates, shared by reference,
+    so reading its `in_flight` here needs no new public API from
+    fanout.py."""
+    batch = _batches.get(batch_id)
+    if batch is None:
+        return
+    for target, (job_id, _work_id) in batch.in_flight.items():
+        _targets.setdefault(job_id, (target, no_findings_message))
+
+
 def _start_batch(targets: str, build_args, no_findings_message: str, timeout: int) -> str:
     target_list = _split_targets(targets)
     if not target_list:
@@ -258,9 +278,12 @@ def _start_batch(targets: str, build_args, no_findings_message: str, timeout: in
         return _prepare(target, build_args(target), no_findings_message, timeout)
 
     snapshot = fanout.start_batch("nuclei", target_list, prepare, _batches, _jobs)
+    if "error" in snapshot:
+        return f"Error: {snapshot['error']}"
     batch_id = snapshot["batch_id"]
     if snapshot["status"] == "running":
         _batch_no_findings[batch_id] = no_findings_message
+        _register_batch_job_targets(batch_id, no_findings_message)
     return _format_batch_start(snapshot, no_findings_message)
 
 
@@ -305,9 +328,12 @@ def scan_batch_target(targets: str, severity: str = "medium,high,critical", time
     -- NOT a list, same convention as httpx-mcp's probe_hosts(domains,
     ...). Runs are bounded and backgrounded via fanout -- only a handful
     of targets scan concurrently at once (the rest queue), and each
-    target is still individually scope-gated and deduped against any
-    other in-progress work on it. Returns immediately with a batch_id;
-    poll check_batch(batch_id) until it reports status=done."""
+    target is still individually scope-gated. Dedupe only catches a
+    target already in progress in ANOTHER fanout-launched nuclei batch --
+    it does not see a concurrent scan_target()/scan_with_templates() call
+    against the same host, which isn't tracked in work_registry at all.
+    Returns immediately with a batch_id; poll check_batch(batch_id) until
+    it reports status=done."""
     def build_args(target: str) -> list[str]:
         return ["-u", target, "-severity", severity, "-silent", "-jsonl",
                 "-t", templates_pin.TEMPLATES_DIR]
@@ -346,6 +372,8 @@ def check_batch(batch_id: str) -> str:
     snapshot = fanout.check_batch(batch_id, _batches, _jobs)
     if "error" in snapshot:
         return snapshot["error"]
+    if snapshot["status"] == "running":
+        _register_batch_job_targets(batch_id, no_findings_message)
     text = _format_batch_check(batch_id, snapshot, no_findings_message)
     if snapshot["status"] == "done":
         _batch_no_findings.pop(batch_id, None)
@@ -373,6 +401,14 @@ def check_scan(job_id: str) -> str:
     target, no_findings_message = _targets.pop(job_id, ("target", "No vulnerabilities found."))
     if result["status"] == "timeout":
         return result["error"]
+    # Feed the SAME adaptive backoff a batch-sourced block would -- this
+    # path and the batch path share one `_jobs` dict and one
+    # fanout._effective_cap("nuclei") ceiling, so a block seen only here
+    # (never via check_batch()) must still count, or scan_batch_target()
+    # keeps running at full, un-throttled concurrency against a target
+    # this exact server just watched get rate-limited/WAF'd.
+    if result.get("block"):
+        fanout._record_block("nuclei")
     formatted = _format_findings(target, no_findings_message, result["stdout"], result["returncode"], result["stderr"])
     # C1a: invocation-level provenance -- "which tool ran, against what"
     # is honestly claimable here even though the real HTTP exchange

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -983,3 +984,120 @@ def test_scan_batch_target_whitespace_and_blank_entries_do_not_become_targets(mo
 
     assert "batch_id=" in out
     assert started_targets == ["a.target.com", "b.target.com"]
+
+
+def test_check_scan_feeds_a_detected_block_into_fanout_backoff(monkeypatch):
+    """Review finding: check_scan() (the single-target poll path) surfaced
+    a block via block_prefix() but never called fanout._record_block(),
+    even though scan_target()/scan_batch_target() share the same `_jobs`
+    dict and the same fanout._effective_cap("nuclei") ceiling -- a block
+    seen only through the single-target path had zero effect on later
+    batch concurrency. check_scan() must now feed the same backoff
+    scan_batch_target()'s check_batch() already does."""
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    recorded_blocks = []
+    monkeypatch.setattr(nuclei_server.fanout, "_record_block",
+                         lambda tool_name, path=None: recorded_blocks.append(tool_name))
+
+    def _fake_start_job(tool, args, timeout, jobs, **kwargs):
+        return {"job_id": "job-single-block", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", _fake_start_job)
+    start_msg = nuclei_server.scan_target("target.com")
+    job_id = _JOB_ID_RE.search(start_msg).group(1)
+
+    def _fake_poll_job(polled_job_id, jobs):
+        return {
+            "status": "done", "job_id": polled_job_id, "returncode": 0,
+            "stdout": "", "stderr": "403 Forbidden - request blocked",
+            "elapsed_s": 2.0, "block": "rate_limit",
+        }
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "poll_job", _fake_poll_job)
+    out = nuclei_server.check_scan(job_id)
+
+    assert "RATE_LIMIT" in out
+    assert recorded_blocks == ["nuclei"]
+
+
+def test_check_scan_does_not_record_a_block_when_there_is_none(monkeypatch):
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    recorded_blocks = []
+    monkeypatch.setattr(nuclei_server.fanout, "_record_block",
+                         lambda tool_name, path=None: recorded_blocks.append(tool_name))
+
+    def _fake_start_job(tool, args, timeout, jobs, **kwargs):
+        return {"job_id": "job-single-clean", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", _fake_start_job)
+    start_msg = nuclei_server.scan_target("target.com")
+    job_id = _JOB_ID_RE.search(start_msg).group(1)
+
+    def _fake_poll_job(polled_job_id, jobs):
+        return {
+            "status": "done", "job_id": polled_job_id, "returncode": 0,
+            "stdout": "", "stderr": "", "elapsed_s": 1.0, "block": None,
+        }
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "poll_job", _fake_poll_job)
+    nuclei_server.check_scan(job_id)
+    assert recorded_blocks == []
+
+
+def test_check_batch_findings_carry_the_same_provenance_line_as_check_scan(monkeypatch):
+    """Review finding: _format_batch_entry()'s job_result branch formatted
+    findings via _format_findings()+block_prefix() but never emitted the
+    Provenance (for case-mcp add_evidence) line check_scan() does for
+    every single-target result -- case_store.py's _validate_provenance()
+    requires a 'tool' field for class="invocation" evidence, so a batch
+    finding had nothing ready to pass into add_evidence()."""
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch)
+
+    def fake_start_job(tool, jobs, **kwargs):
+        jobs["job-batch-prov"] = {"status": "running", "tool_name": tool}
+        return {"job_id": "job-batch-prov", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
+    start_out = nuclei_server.scan_batch_target("target.com")
+    batch_id = re.search(r'batch_id="([^"]+)"', start_out).group(1)
+
+    def fake_poll_job(job_id, jobs):
+        return {
+            "status": "done", "job_id": job_id, "returncode": 0,
+            "stdout": FOUND_OUTPUT, "stderr": "", "elapsed_s": 1.0, "block": None,
+        }
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "poll_job", fake_poll_job)
+    out = nuclei_server.check_batch(batch_id)
+
+    assert "Provenance (for case-mcp add_evidence):" in out
+    provenance_json = out.split("Provenance (for case-mcp add_evidence):", 1)[1].strip().splitlines()[0]
+    provenance = json.loads(provenance_json)
+    assert provenance["class"] == "invocation"
+    assert provenance["tool"] == "nuclei"
+    assert provenance["target"] == "target.com"
+
+
+def test_list_scans_shows_the_real_target_for_a_batch_launched_job(monkeypatch):
+    """Review finding: list_scans() looks up each running job's target via
+    the module-level _targets dict, which was only ever populated by the
+    single-target _start() path -- a batch job launched through
+    fanout._fill_slots() -> job_runtime.start_job() directly never
+    populated it, so list_scans() always showed "?" for a batch job."""
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch, cap=5)
+
+    def fake_start_job(tool, jobs, **kwargs):
+        jobs["job-batch-list"] = {
+            "status": "running", "tool_name": tool,
+            "started_monotonic": __import__("time").monotonic(),
+        }
+        return {"job_id": "job-batch-list", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
+    nuclei_server.scan_batch_target("listed.target.com")
+
+    assert nuclei_server._targets.get("job-batch-list", ("?", ""))[0] == "listed.target.com"
