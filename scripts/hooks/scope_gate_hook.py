@@ -1058,15 +1058,27 @@ _CURL_LIKE_TOOLS = frozenset({"curl", "wget", "curl-rl.sh"})
 
 def _bare_host_candidate(token: str) -> str | None:
     """A schemeless host extracted from a single argument token, or None.
-    Rejects a token containing `$` (an unresolved shell variable, never a
-    literal host to scope-check) or `(` (a function call like `json.load(` --
-    code, never a host); otherwise returns the first HOSTNAME_RE match in the
-    token (so trailing shell punctuation like `host/x)"` still yields the
-    host). Exemption (safe-test/dev-infra/non-TLD-extension) is applied once,
-    centrally, by the caller."""
-    if not token or "$" in token or "(" in token:
+    The token is split at its first `$` and only the literal prefix is kept, so
+    an out-of-scope host carrying an unresolved shell variable
+    (`evilcorp.com$x`, which the shell contacts as `evilcorp.com` when `$x` is
+    empty) still resolves to its literal host and is scope-checked -- while a
+    token that is ITSELF a variable (`$TARGET`, `$BASEURL/path`) has an empty
+    prefix and yields None. A `(` in that prefix (a function call like
+    `json.load(` -- code, never a host) also yields None. Otherwise the first
+    HOSTNAME_RE match is returned (so trailing shell punctuation like `host/x)"`
+    still yields the host). Exemption (safe-test/dev-infra/non-TLD-extension) is
+    applied once, centrally, by the caller."""
+    if not token:
         return None
-    found = HOSTNAME_RE.findall(token)
+    # Issue #129 regression fix: split at the first `$` and scope-check the
+    # literal host prefix rather than dropping the whole token on `$`. Dropping
+    # on `$` let `curl evilcorp.com$x` / `subfinder -d evilcorp.com$x` smuggle
+    # an out-of-scope host past the gate (the pre-#129 base version blocked
+    # both). A pure-variable token (`$TARGET`) strips to "" and is skipped.
+    base = token.split("$", 1)[0]
+    if not base or "(" in base:
+        return None
+    found = HOSTNAME_RE.findall(base)
     return found[0] if found else None
 
 
@@ -1222,10 +1234,19 @@ def _extract_hosts_from_bash(command: str) -> list[str]:
     # block across engagements. A schemeless host is now pulled only from a
     # real network-destination argument of the Tier-2 tool actually being
     # invoked (see _bare_hosts_from_tier2_args). Full scheme URLs are already
-    # captured above by URL_RE. The final `"$" not in h` guard also drops a
-    # URL whose host portion is itself an unresolved shell variable.
+    # captured above by URL_RE. Each extracted host is then normalized to the
+    # literal label a shell actually contacts: an unresolved `$`-variable suffix
+    # is stripped (`evilcorp.com$x` -> `evilcorp.com`, a scheme URL's host
+    # portion included) rather than dropping the whole host, so an out-of-scope
+    # host can't be smuggled past the gate as `curl https://evilcorp.com$x/`; a
+    # host that is purely a variable (`$HOST`) strips to "" and is skipped.
     hosts.extend(_bare_hosts_from_tier2_args(remainder))
-    return [h for h in hosts if "$" not in h and not _is_candidate_exempt(h)]
+    normalized: list[str] = []
+    for h in hosts:
+        literal = h.split("$", 1)[0]
+        if literal and not _is_candidate_exempt(literal):
+            normalized.append(literal)
+    return normalized
 
 
 def _extract_hosts_from_tool_input(tool_input: dict) -> list[str]:

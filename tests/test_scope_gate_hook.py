@@ -1264,3 +1264,31 @@ def test_main_fails_closed_on_malformed_tool_input_for_write(monkeypatch, capsys
     payload = {"tool_name": "Write", "tool_input": "totally-not-a-dict"}
     assert _run_main(monkeypatch, payload) == 2
     assert "BLOCKED" in capsys.readouterr().err
+
+
+def test_129_dollar_suffix_on_network_target_still_scope_checks_literal_host():
+    """Issue #129 regression: appending an unresolved shell variable to a
+    network tool's target must NOT smuggle an out-of-scope host past the gate.
+    `curl out-of-scope-corp.com$x` contacts the literal `out-of-scope-corp.com`
+    at runtime when `$x` is empty/expands, so the literal prefix is extracted
+    and scope-checked. The first #129 fix dropped any host containing `$`,
+    which silently ALLOWED this (the base version blocked it)."""
+    assert hook._extract_hosts_from_bash(
+        "curl out-of-scope-corp.com$x"
+    ) == ["out-of-scope-corp.com"]
+    assert hook._extract_hosts_from_bash(
+        "subfinder -d out-of-scope-corp.com$x"
+    ) == ["out-of-scope-corp.com"]
+    # scheme-URL variant: the host portion itself carries the `$`
+    assert hook._extract_hosts_from_bash(
+        "curl https://out-of-scope-corp.com$x/p"
+    ) == ["out-of-scope-corp.com"]
+
+
+def test_129_pure_shell_variable_target_has_no_literal_host():
+    """The legitimate false-positive case the #129 fix preserves: a target that
+    is ITSELF a variable (`$TARGET`, `$BASEURL/path`) has no statically
+    checkable literal host, so nothing is extracted -- only a `$`-suffix on a
+    real literal host resolves to that literal prefix."""
+    assert hook._extract_hosts_from_bash('curl "$TARGET/path"') == []
+    assert hook._extract_hosts_from_bash("curl $BASEURL") == []
