@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -11,14 +12,34 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.join(ROOT, "mcp-servers"))
 sys.path.insert(0, os.path.join(ROOT, "mcp-servers", "nuclei-mcp"))
+import fanout  # noqa: E402
 import sandbox_runner  # noqa: E402
 import templates_pin  # noqa: E402
+import work_registry  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "nuclei_mcp_server", os.path.join(ROOT, "mcp-servers", "nuclei-mcp", "server.py")
 )
 nuclei_server = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(nuclei_server)
+
+
+@pytest.fixture(autouse=True)
+def _reset_module_level_job_state():
+    """nuclei_server._jobs/_batches are plain module-level dicts, shared
+    across every test in this file (the module is imported once for the
+    whole session) -- previously harmless, since fanout's per-tool cap
+    check only ever looked at one batch's own in_flight count. Now that
+    fanout._fill_slots() counts ALL currently-running jobs for a tool
+    across the shared `jobs` dict (P3-FANOUT finding 3: a hard ceiling
+    across every caller, not just one batch), a stale "running" entry
+    left behind by an earlier test's mocked start_job/poll_job (one that
+    never got popped, because that test's own poll stub didn't simulate a
+    real terminal poll) silently eats into a LATER test's cap. Reset both
+    dicts before every test so each one starts from a clean slate."""
+    nuclei_server._jobs.clear()
+    nuclei_server._batches.clear()
+    nuclei_server._batch_no_findings.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -703,3 +724,380 @@ def test_live_real_scan_does_not_modify_pinned_templates_host_state():
     ).stdout
     assert after_sha == before_sha
     assert after_status == before_status == ""
+
+
+# ---------------------------------------------------------------------------
+# P3-FANOUT Task 5: scan_batch_target()/scan_batch_with_templates()/
+# check_batch() -- wiring fanout.start_batch()/check_batch() into nuclei-mcp
+# for bounded concurrent multi-target scans.
+# ---------------------------------------------------------------------------
+
+def _stub_work_registry(monkeypatch, active_hosts=()):
+    """Same isolation helper as tests/test_fanout.py's own -- fanout's
+    work_registry calls must not touch the real on-disk registry here
+    either, and no target should look like it's already in flight unless
+    a test explicitly asks for that."""
+    active_hosts = set(active_hosts)
+
+    def fake_list_active_work(host=None, path=None):
+        if host in active_hosts:
+            return [{"id": "stub", "agent": "fanout", "host": host}]
+        return []
+
+    def fake_start_work(agent, host, task="", path=None):
+        return f"work-{host}"
+
+    def fake_complete_work(work_id, outcome="", path=None):
+        return True
+
+    monkeypatch.setattr(work_registry, "list_active_work", fake_list_active_work)
+    monkeypatch.setattr(work_registry, "start_work", fake_start_work)
+    monkeypatch.setattr(work_registry, "complete_work", fake_complete_work)
+
+
+def _stub_fanout_backoff(monkeypatch, cap=5):
+    """Isolate every nuclei-mcp batch test from fanout's REAL, on-disk,
+    engagement-scoped persistent backoff state (fanout.py's
+    _effective_cap()/_record_block(), which read/write via
+    engagement_paths.resolve("fanout-backoff.json", ...) under whatever
+    engagement happens to be active on this machine).
+
+    Monkeypatching fanout.DEFAULT_CAPS alone is NOT enough:
+    _effective_cap() only falls back to DEFAULT_CAPS when no unexpired
+    backoff entry exists for that tool on disk -- a real active
+    engagement, or a prior test run that wrote one, silently overrides
+    the injected cap otherwise (exactly what happened during review: a
+    real engagement's fanout-backoff.json had {"nuclei": {"cap": 1,
+    ...}} on disk, so a test expecting "2 running" never got it).
+    Likewise letting the real _record_block() run WRITES to that same
+    real, active-engagement-scoped file -- a genuine side effect outside
+    any test's scope.
+
+    So every nuclei-mcp batch test that reaches fanout's cap-check or
+    block-recording logic (anything calling scan_batch_target()/
+    scan_batch_with_templates()/check_batch()) replaces BOTH functions
+    directly, the same pattern tests/test_fanout.py's own
+    test_check_batch_records_a_block_from_a_terminal_job_result uses for
+    _record_block -- never just DEFAULT_CAPS, and never the real path.
+    """
+    recorded_blocks = []
+    monkeypatch.setattr(fanout, "_effective_cap", lambda tool_name, path=None: cap)
+    monkeypatch.setattr(fanout, "_record_block", lambda tool_name, path=None: recorded_blocks.append(tool_name))
+    return recorded_blocks
+
+
+def test_scan_batch_target_starts_a_job_per_target_up_to_the_cap(monkeypatch):
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    _stub_fanout_backoff(monkeypatch, cap=2)
+    _stub_work_registry(monkeypatch)
+
+    started = []
+
+    def fake_start_job(tool, jobs, **kwargs):
+        job_id = f"job-{len(started)}"
+        started.append(job_id)
+        jobs[job_id] = {"status": "running", "tool_name": tool}
+        return {"job_id": job_id, "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
+
+    out = nuclei_server.scan_batch_target("a.target.com,b.target.com,c.target.com")
+
+    assert "batch_id=" in out
+    assert "2 running" in out
+    assert "1 pending" in out
+    assert len(started) == 2
+
+
+def test_scan_batch_target_applies_scope_gate_per_target(monkeypatch):
+    _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch)
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+
+    def fake_resolve_and_pin(host):
+        if host == "blocked.target.com":
+            return None, f"host {host!r} resolves to a link-local address -- refused (SSRF)"
+        return ("93.184.216.34", None)
+
+    monkeypatch.setattr(nuclei_server.scope_guard, "resolve_and_pin", fake_resolve_and_pin)
+
+    started = []
+
+    def fake_start_job(tool, jobs, **kwargs):
+        job_id = f"job-{len(started)}"
+        started.append((job_id, kwargs.get("args", [])))
+        jobs[job_id] = {"status": "running", "tool_name": tool}
+        return {"job_id": job_id, "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
+
+    out = nuclei_server.scan_batch_target("blocked.target.com,ok.target.com")
+
+    assert "BLOCKED by scope gate" in out
+    assert len(started) == 1
+    assert any("ok.target.com" in a for _, args in started for a in args)
+
+
+def test_check_batch_formats_findings_same_as_check_scan(monkeypatch):
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch)
+
+    def fake_start_job(tool, jobs, **kwargs):
+        jobs["job-batch-1"] = {"status": "running", "tool_name": tool}
+        return {"job_id": "job-batch-1", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
+
+    start_out = nuclei_server.scan_batch_target("target.com")
+    batch_id = re.search(r'batch_id="([^"]+)"', start_out).group(1)
+
+    def fake_poll_job(job_id, jobs):
+        return {
+            "status": "done", "job_id": job_id, "returncode": 0,
+            "stdout": FOUND_OUTPUT, "stderr": "", "elapsed_s": 1.0, "block": None,
+        }
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "poll_job", fake_poll_job)
+
+    out = nuclei_server.check_batch(batch_id)
+
+    expected = nuclei_server._format_findings(
+        "target.com", "No vulnerabilities found (severity: medium,high,critical).",
+        FOUND_OUTPUT, 0, "",
+    )
+    assert expected in out
+
+
+def test_check_batch_surfaces_block_prefix_same_as_check_scan(monkeypatch):
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    _stub_work_registry(monkeypatch)
+    recorded_blocks = _stub_fanout_backoff(monkeypatch)
+
+    def fake_start_job(tool, jobs, **kwargs):
+        jobs["job-batch-2"] = {"status": "running", "tool_name": tool}
+        return {"job_id": "job-batch-2", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
+
+    start_out = nuclei_server.scan_batch_target("target.com")
+    batch_id = re.search(r'batch_id="([^"]+)"', start_out).group(1)
+
+    def fake_poll_job(job_id, jobs):
+        return {
+            "status": "done", "job_id": job_id, "returncode": 0,
+            "stdout": "", "stderr": "403 Forbidden - request blocked",
+            "elapsed_s": 3.0, "block": "rate_limit",
+        }
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "poll_job", fake_poll_job)
+
+    out = nuclei_server.check_batch(batch_id)
+    assert "RATE_LIMIT" in out
+    assert "BLOCK DETECTED" in out
+    # The block must be recorded via the stubbed _record_block (never the
+    # real one -- see _stub_fanout_backoff's docstring), proving check_batch()
+    # still wires the block through to fanout without ever touching the
+    # real, active-engagement-scoped fanout-backoff.json on disk.
+    assert recorded_blocks == ["nuclei"]
+
+
+def test_scan_batch_target_all_targets_scope_blocked_reports_done_not_running(monkeypatch):
+    """Different branch than the partial-block case above: when every
+    target in the batch is rejected by prepare() (none of them ever
+    becomes a real job), fanout.start_batch()'s snapshot comes back with
+    status="done" immediately -- nothing is ever in-flight, so there's
+    nothing to poll. scan_batch_target() must format this as an
+    immediate "Batch complete" message, not as if a batch were still
+    running."""
+    _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch)
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+
+    def fake_resolve_and_pin(host):
+        return None, f"host {host!r} resolves to a link-local address -- refused (SSRF)"
+    monkeypatch.setattr(nuclei_server.scope_guard, "resolve_and_pin", fake_resolve_and_pin)
+
+    def _unreachable_start_job(*a, **k):
+        raise AssertionError("no target should ever reach start_job() when every target is scope-blocked")
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", _unreachable_start_job)
+
+    out = nuclei_server.scan_batch_target("blocked1.target.com,blocked2.target.com")
+
+    assert "batch_id=" in out
+    assert "Batch complete" in out
+    assert "every target resolved immediately" in out
+    assert "running" not in out.lower()
+    assert "BLOCKED by scope gate" in out
+    assert out.count("BLOCKED by scope gate") == 2
+
+
+def test_scan_batch_target_rejects_an_empty_targets_string(monkeypatch):
+    """Same fail-closed convention as scan_with_templates()'s all-empty
+    templates argument -- an empty/whitespace-only `targets` string must
+    be rejected before fanout.start_batch() (and therefore start_job())
+    is ever reached, with the exact "contains no usable targets" wording
+    _start_batch() builds from repr(targets)."""
+    called = {"start_batch": False}
+    monkeypatch.setattr(
+        fanout, "start_batch",
+        lambda *a, **k: called.__setitem__("start_batch", True),
+    )
+    out = nuclei_server.scan_batch_target("")
+    assert out == "Error: '' contains no usable targets"
+    assert called["start_batch"] is False
+
+    out2 = nuclei_server.scan_batch_target("   \n  ")
+    assert "contains no usable targets" in out2
+    assert called["start_batch"] is False
+
+
+def test_split_targets_strips_whitespace_and_drops_blank_entries():
+    """Same splitting convention as httpx-mcp's _split_domains() --
+    comma- OR newline-separated, blank entries (including ones left by
+    stray whitespace-only segments) dropped, each surviving entry
+    stripped of surrounding whitespace."""
+    assert nuclei_server._split_targets("a.com, , b.com\n\n") == ["a.com", "b.com"]
+    assert nuclei_server._split_targets("  a.com  \n\n b.com \n , ,\n") == ["a.com", "b.com"]
+
+
+def test_scan_batch_target_whitespace_and_blank_entries_do_not_become_targets(monkeypatch):
+    """End-to-end version of the _split_targets() unit test above: a
+    messy `targets` string with leading/trailing whitespace and blank
+    lines/entries mixed in must only ever start jobs for the real,
+    stripped targets -- never for a blank or whitespace-only entry."""
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch)
+
+    started_targets = []
+
+    def fake_start_job(tool, jobs, **kwargs):
+        job_id = f"job-{len(started_targets)}"
+        started_targets.append(kwargs["args"][kwargs["args"].index("-u") + 1])
+        jobs[job_id] = {"status": "running", "tool_name": tool}
+        return {"job_id": job_id, "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
+
+    out = nuclei_server.scan_batch_target("a.target.com, , b.target.com\n\n")
+
+    assert "batch_id=" in out
+    assert started_targets == ["a.target.com", "b.target.com"]
+
+
+def test_check_scan_feeds_a_detected_block_into_fanout_backoff(monkeypatch):
+    """Review finding: check_scan() (the single-target poll path) surfaced
+    a block via block_prefix() but never called fanout._record_block(),
+    even though scan_target()/scan_batch_target() share the same `_jobs`
+    dict and the same fanout._effective_cap("nuclei") ceiling -- a block
+    seen only through the single-target path had zero effect on later
+    batch concurrency. check_scan() must now feed the same backoff
+    scan_batch_target()'s check_batch() already does."""
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    recorded_blocks = []
+    monkeypatch.setattr(nuclei_server.fanout, "_record_block",
+                         lambda tool_name, path=None: recorded_blocks.append(tool_name))
+
+    def _fake_start_job(tool, args, timeout, jobs, **kwargs):
+        return {"job_id": "job-single-block", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", _fake_start_job)
+    start_msg = nuclei_server.scan_target("target.com")
+    job_id = _JOB_ID_RE.search(start_msg).group(1)
+
+    def _fake_poll_job(polled_job_id, jobs):
+        return {
+            "status": "done", "job_id": polled_job_id, "returncode": 0,
+            "stdout": "", "stderr": "403 Forbidden - request blocked",
+            "elapsed_s": 2.0, "block": "rate_limit",
+        }
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "poll_job", _fake_poll_job)
+    out = nuclei_server.check_scan(job_id)
+
+    assert "RATE_LIMIT" in out
+    assert recorded_blocks == ["nuclei"]
+
+
+def test_check_scan_does_not_record_a_block_when_there_is_none(monkeypatch):
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    recorded_blocks = []
+    monkeypatch.setattr(nuclei_server.fanout, "_record_block",
+                         lambda tool_name, path=None: recorded_blocks.append(tool_name))
+
+    def _fake_start_job(tool, args, timeout, jobs, **kwargs):
+        return {"job_id": "job-single-clean", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", _fake_start_job)
+    start_msg = nuclei_server.scan_target("target.com")
+    job_id = _JOB_ID_RE.search(start_msg).group(1)
+
+    def _fake_poll_job(polled_job_id, jobs):
+        return {
+            "status": "done", "job_id": polled_job_id, "returncode": 0,
+            "stdout": "", "stderr": "", "elapsed_s": 1.0, "block": None,
+        }
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "poll_job", _fake_poll_job)
+    nuclei_server.check_scan(job_id)
+    assert recorded_blocks == []
+
+
+def test_check_batch_findings_carry_the_same_provenance_line_as_check_scan(monkeypatch):
+    """Review finding: _format_batch_entry()'s job_result branch formatted
+    findings via _format_findings()+block_prefix() but never emitted the
+    Provenance (for case-mcp add_evidence) line check_scan() does for
+    every single-target result -- case_store.py's _validate_provenance()
+    requires a 'tool' field for class="invocation" evidence, so a batch
+    finding had nothing ready to pass into add_evidence()."""
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch)
+
+    def fake_start_job(tool, jobs, **kwargs):
+        jobs["job-batch-prov"] = {"status": "running", "tool_name": tool}
+        return {"job_id": "job-batch-prov", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
+    start_out = nuclei_server.scan_batch_target("target.com")
+    batch_id = re.search(r'batch_id="([^"]+)"', start_out).group(1)
+
+    def fake_poll_job(job_id, jobs):
+        return {
+            "status": "done", "job_id": job_id, "returncode": 0,
+            "stdout": FOUND_OUTPUT, "stderr": "", "elapsed_s": 1.0, "block": None,
+        }
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "poll_job", fake_poll_job)
+    out = nuclei_server.check_batch(batch_id)
+
+    assert "Provenance (for case-mcp add_evidence):" in out
+    provenance_json = out.split("Provenance (for case-mcp add_evidence):", 1)[1].strip().splitlines()[0]
+    provenance = json.loads(provenance_json)
+    assert provenance["class"] == "invocation"
+    assert provenance["tool"] == "nuclei"
+    assert provenance["target"] == "target.com"
+
+
+def test_list_scans_shows_the_real_target_for_a_batch_launched_job(monkeypatch):
+    """Review finding: list_scans() looks up each running job's target via
+    the module-level _targets dict, which was only ever populated by the
+    single-target _start() path -- a batch job launched through
+    fanout._fill_slots() -> job_runtime.start_job() directly never
+    populated it, so list_scans() always showed "?" for a batch job."""
+    monkeypatch.setattr(templates_pin, "templates_available", lambda: True)
+    _stub_work_registry(monkeypatch)
+    _stub_fanout_backoff(monkeypatch, cap=5)
+
+    def fake_start_job(tool, jobs, **kwargs):
+        jobs["job-batch-list"] = {
+            "status": "running", "tool_name": tool,
+            "started_monotonic": __import__("time").monotonic(),
+        }
+        return {"job_id": "job-batch-list", "status": "running", "tool": tool}
+
+    monkeypatch.setattr(nuclei_server.job_runtime, "start_job", fake_start_job)
+    nuclei_server.scan_batch_target("listed.target.com")
+
+    assert nuclei_server._targets.get("job-batch-list", ("?", ""))[0] == "listed.target.com"

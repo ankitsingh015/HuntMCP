@@ -104,6 +104,14 @@ data/oob-sessions/
 work-registry.json
 data/reports/
 
+# P3-FANOUT per-tool backoff state (mcp-servers/fanout.py) — per-engagement,
+# resolved via engagement_paths.resolve() same as work-registry.json/
+# budget.json above; this bare-filename entry covers the no-active-
+# engagement fallback case the same way those two already do (nested
+# copies under data/engagements/<slug>/ are already covered by that
+# directory's own ignore rule below).
+fanout-backoff.json
+
 # Tool-gap capture (mcp-servers/tool_gaps.py) — deliberately global (not
 # per-target) so recurring gaps across engagements are visible; still real
 # engagement data, never for git.

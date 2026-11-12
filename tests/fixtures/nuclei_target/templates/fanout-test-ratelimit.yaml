@@ -1,0 +1,17 @@
+id: fanout-test-ratelimit
+info:
+  name: P3-FANOUT e2e test rate-limit marker (TEST FIXTURE ONLY, never a real finding)
+  author: huntmcp-test
+  severity: info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/limited"
+    matchers:
+      - type: status
+        status:
+          - 429
+    extractors:
+      - type: dsl
+        dsl:
+          - "body"
