@@ -32,9 +32,13 @@ def _load_entry(label: str, slug: str | None = None) -> dict | None:
     path = _identities_path(slug)
     if not os.path.isfile(path):
         return None
-    with open(path) as f:
-        data = json.load(f) or {}
-    entry = data.get(label)
+    try:
+        with open(path) as f:
+            data = json.load(f) or {}
+    except (ValueError, OSError):
+        # a corrupt or mid-write identities.json must not crash a consumer
+        return None
+    entry = data.get(label) if isinstance(data, dict) else None
     return entry if isinstance(entry, dict) else None
 
 

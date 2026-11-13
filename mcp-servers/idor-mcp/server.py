@@ -364,7 +364,9 @@ def replay_authz_matrix(url: str, carried_path: str, step2_url_template: str,
     OWNER's object: e.g. a same-tenant user, an admin, a user of another tenant. READ-ONLY (GET): a
     state-changing step is refused -- use replay_authz_two_step for that. `identities_json` is a JSON
     list (max 5) of {"name": "bobby", "cookie_header": "...", "bearer_token": "...",
-    "should_have_access": false}; name is 1-32 chars [A-Za-z0-9_-]; should_have_access is the access
+    "should_have_access": false}; instead of cookie_header/bearer_token an entry may carry
+    "label": "<captured identity>" to read its creds from identities.json by name (no secret in
+    the transcript, #128), and owner_label does the same for the owner. name is 1-32 chars [A-Za-z0-9_-]; should_have_access is the access
     POLICY you were given (true for an admin or a same-tenant colleague who is SUPPOSED to read the
     object): such an identity gets EXPECTED_ACCESS instead of LEAKED. Do not guess the policy -- take it
     from the program's rules; the default (false) means "must not have access". Per-identity verdicts

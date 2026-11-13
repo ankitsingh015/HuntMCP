@@ -44,6 +44,15 @@ def test_get_headers_absent_returns_empty():
     assert identity_store.get_headers("nobody") == {}
 
 
+def test_get_headers_corrupt_file_returns_empty():
+    path = engagement_paths.resolve("secrets/identities.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("{ this is not valid json")
+    # a corrupt/mid-write file must not crash a consumer -- clean empty, not raise
+    assert identity_store.get_headers("xyz") == {}
+
+
 def test_get_session_file_returns_path_when_exists():
     path = engagement_paths.resolve("secrets/sessions/xyz.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
