@@ -115,6 +115,46 @@ def test_safe_summary_rejects_secret_key():
         session_capture._safe_summary("xyz", cookie_value="x")
 
 
+def test_finish_capture_cleans_up_on_cookie_read_error():
+    import time as _t
+
+    slug = engagement_paths.get_active_target()
+    eng = scope_guard.Engagement(target="target.com", in_scope=["*.target.com"])
+
+    class BadCtx:
+        async def cookies(self):
+            raise RuntimeError("boom")
+
+        async def close(self):
+            pass
+
+    live = session_capture._LiveCapture(
+        FakeP(), BadCtx(), None, "fp", {}, eng,
+        "https://app.target.com/login", slug, "xyz", 0.0,
+    )
+    session_capture._live_captures[(slug, "xyz")] = live
+    tp = capture_confirm.confirmation_token_path(slug, "xyz")
+    os.makedirs(os.path.dirname(tp), exist_ok=True)
+    with open(tp, "w") as f:
+        json.dump({"slug": slug, "label": "xyz", "fingerprint": "fp", "ts": _t.time()}, f)
+    out = asyncio.run(session_capture.finish_capture("xyz"))
+    assert "error" in out
+    # the window/registry entry must not dangle after a read failure
+    assert (slug, "xyz") not in session_capture._live_captures
+
+
+def test_start_capture_no_engagement_friendly_error(monkeypatch, tmp_path):
+    _setup_start(monkeypatch, tmp_path)
+    import scope_guard as sg
+
+    def _raise():
+        raise sg.NoEngagementFile("no engagement.yaml")
+
+    monkeypatch.setattr(session_capture, "_load_engagement", _raise)
+    r = asyncio.run(session_capture.start_capture("xyz", "https://app.target.com/login"))
+    assert "error" in r and "engagement" in r["error"].lower()
+
+
 def test_finish_capture_adds_whoami_and_records_intake(monkeypatch):
     import credential_lifecycle
 

@@ -609,7 +609,10 @@ async def capture_oauth_redirect(identity_label: str, start_url: str,
         _safe_label(identity_label)
     except ValueError as e:
         return {"error": str(e)}
-    engagement = _load_engagement()
+    try:
+        engagement = _load_engagement()
+    except scope_guard.NoEngagementFile as e:
+        return {"error": f"no active engagement -- write engagement.yaml (Phase 0) first: {e}"}
     if not scope_guard.is_in_scope(start_url, engagement):
         return {"error": f"start_url host is out of scope for this engagement: {start_url!r}"}
     enforce("browser-mcp")
@@ -653,7 +656,10 @@ async def start_capture(identity_label: str, login_url: str, slug: str | None = 
         profile_dir = assert_dedicated_profile_dir(entry.get("profile_dir", ""))
     except ValueError as e:
         return {"error": str(e)}
-    engagement = _load_engagement()
+    try:
+        engagement = _load_engagement()
+    except scope_guard.NoEngagementFile as e:
+        return {"error": f"no active engagement -- write engagement.yaml (Phase 0) first: {e}"}
     if not scope_guard.is_in_scope(login_url, engagement):
         return {"error": f"login_url host is out of scope for this engagement: {login_url!r}"}
     enforce("browser-mcp")
@@ -713,6 +719,9 @@ async def finish_capture(identity_label: str, slug: str | None = None,
     try:
         cookies = await live.context.cookies()
     except Exception as e:
+        # don't leave a dangling window/registry entry on a read failure
+        await _close_live(live)
+        _live_captures.pop(key, None)
         return {"error": f"could not read cookies from the capture window: {e}"}
     in_scope = _filter_cookies_in_scope(cookies, live.engagement)
     authorization = _pick_authorization(live.auth_by_host, live.engagement)
