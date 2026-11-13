@@ -1,0 +1,37 @@
+# Session-capture test-identity roster (#128) -- EXAMPLE / template.
+#
+# Copy this to  ~/.config/huntmcp/test-identities.yaml  (or point
+# $HUNTMCP_TEST_IDENTITIES at it) and fill in YOUR designated test accounts.
+# This file holds NO passwords -- only labels, notes, a dedicated per-identity
+# browser-profile directory, and (optionally) a mailbox reference whose password
+# is read from an ENVIRONMENT VARIABLE you set, never stored here.
+#
+# IMPORTANT:
+#  - profile_dir MUST be a dedicated directory, never your real Chrome/Chromium
+#    profile (~/.config/google-chrome, etc). start_capture refuses the OS-default
+#    profile so your personal/company account can never be opened.
+#  - Log in to each profile ONCE via start_capture; the SSO/Google login is then
+#    reused across captures (no re-login every time).
+#  - mailbox is OPTIONAL and READ-ONLY (IMAP). It is only for reading OTP /
+#    verification / magic-link emails for THIS test account. Nothing here ever
+#    sends mail. Report emails stay 100% manual (you send them).
+
+identities:
+  xyz:
+    note: "test account 1"
+    profile_dir: "~/.config/huntmcp/browser-profiles/xyz"
+
+  adminvikram:
+    note: "admin-role test account"
+    profile_dir: "~/.config/huntmcp/browser-profiles/adminvikram"
+
+  22bcs:
+    note: "work-email / 3rd account (use when a 3rd account or a work email is needed)"
+    profile_dir: "~/.config/huntmcp/browser-profiles/22bcs"
+    mailbox:
+      imap_host: "imap.gmail.com"
+      username: "22bcs...@gmail.com"
+      # The password is NOT here. Set it as an env var named below, e.g. in your
+      # shell:  export HUNTMCP_MAIL_22BCS='your-gmail-app-password'
+      # (Gmail needs an App Password with IMAP enabled, not your login password.)
+      password_env: "HUNTMCP_MAIL_22BCS"
