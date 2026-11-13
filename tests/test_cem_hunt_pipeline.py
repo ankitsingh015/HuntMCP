@@ -227,6 +227,9 @@ def test_post_with_a_valid_human_approval_is_allowed_through(monkeypatch):
     assert out["stopped_at"] is None
     assert out["verdicts"]["auth_cookie"] == "necessary"
     assert set(methods) == {"POST"}
+    # #144: a state-changing run with a status-only oracle carries the read-back caution
+    # all the way through the pipeline result, not only the direct define_conditions call.
+    assert "readback_warning" in out and "#144" in out["readback_warning"]
 
 
 def test_malformed_approval_is_rejected_before_anything_is_sent(monkeypatch):
