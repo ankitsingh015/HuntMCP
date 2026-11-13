@@ -15,6 +15,7 @@ import http_probe
 import research_manifest
 import scope_check
 import scope_guard  # noqa: F401 -- kept as an attribute: tests and callers reach srv.scope_guard
+import state_change_oracle
 from audit_log import log_call as _log_call
 from budget_guard import BudgetExceeded
 from budget_guard import enforce as _enforce_budget
@@ -871,9 +872,15 @@ def define_conditions(finding_id: int, base_request: str, success_signature: str
         _, ap_err = cem_engine.validate_nonidempotent_approval(approval)
         if ap_err:
             return json.dumps({"error": f"invalid nonidempotent_approval (UD-4): {ap_err}"})
-    return json.dumps(
-        case_store.cem_define(finding_id, br, sig, conds, k=k, nonidempotent_approval=approval)
-    )
+    result = case_store.cem_define(finding_id, br, sig, conds, k=k, nonidempotent_approval=approval)
+    # #144: a state-changing experiment whose oracle only checks status/redirect cannot prove the
+    # mutation persisted. Advisory only (never a rejection): the signature stays valid under UD-3.
+    if isinstance(result, dict) and "error" not in result:
+        warning = state_change_oracle.readback_signature_advisory(
+            sig, br.get("method") if isinstance(br, dict) else None, approval is not None)
+        if warning:
+            result = {**result, "readback_warning": warning}
+    return json.dumps(result)
 
 
 @app.tool()
@@ -1323,6 +1330,8 @@ def run_cem_pipeline(finding_id: int, url: str, base_request: str, success_signa
     ))
     if "error" in defined:
         return _refuse(defined["error"])
+    if "readback_warning" in defined:   # #144: carry the status-only-oracle caution to the pipeline caller
+        result["readback_warning"] = defined["readback_warning"]
     names = {c["id"]: c["name"] for c in case_store.cem_load_state(finding_id)["conditions"]}
     ordered = [(cid, names[cid]) for cid in defined["condition_ids"]]
 
