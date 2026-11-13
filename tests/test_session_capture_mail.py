@@ -73,6 +73,30 @@ def _seed_live_with_page():
     return page
 
 
+def test_mailbox_password_prefers_cmd():
+    # password fetched from a locker command (e.g. `pass show ...`), never a file/env
+    assert session_capture._mailbox_password({"password_cmd": "printf s3cr3t"}) == "s3cr3t"
+
+
+def test_mailbox_password_cmd_takes_first_line():
+    assert session_capture._mailbox_password({"password_cmd": "printf 'pw-line1\\nnotes'"}) == "pw-line1"
+
+
+def test_mailbox_password_env_fallback(monkeypatch):
+    monkeypatch.setenv("HUNTMCP_MAIL_T2", "envpass")
+    assert session_capture._mailbox_password({"password_env": "HUNTMCP_MAIL_T2"}) == "envpass"
+
+
+def test_mailbox_password_none_raises():
+    with pytest.raises(session_capture.MailError):
+        session_capture._mailbox_password({})
+
+
+def test_mailbox_password_cmd_failure_raises():
+    with pytest.raises(session_capture.MailError):
+        session_capture._mailbox_password({"password_cmd": "false"})
+
+
 def test_module_has_no_send_path():
     src = open(session_capture.__file__).read()
     assert "smtplib" not in src

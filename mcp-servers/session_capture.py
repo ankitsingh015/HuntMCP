@@ -372,6 +372,38 @@ def _message_text(msg) -> str:
         return str(msg.get_payload())
 
 
+def _mailbox_password(mailbox: dict) -> str:
+    """Resolve the mailbox password WITHOUT ever storing it. Prefers a locker
+    command (`password_cmd`, e.g. `pass show huntmcp/mail/xyz`) so the secret
+    lives only in the user's encrypted password manager and is fetched
+    just-in-time; falls back to `password_env`. The roster is the user's own
+    trusted local file, so running its command is safe (same pattern as
+    mbsync PassCmd / git credential helpers). Never logged or returned to the
+    agent. Raises MailError if neither is configured or the command fails."""
+    cmd = mailbox.get("password_cmd")
+    if cmd:
+        import shlex
+        import subprocess
+        try:
+            r = subprocess.run(shlex.split(cmd), capture_output=True, text=True, timeout=30)
+        except Exception as e:
+            raise MailError(f"password_cmd failed to run: {e}") from e
+        if r.returncode != 0:
+            raise MailError(f"password_cmd exited {r.returncode}")
+        lines = [ln for ln in r.stdout.splitlines() if ln.strip()]
+        if not lines:
+            raise MailError("password_cmd produced no output")
+        return lines[0].strip()
+    env = mailbox.get("password_env")
+    password = os.getenv(env) if env else None
+    if not password:
+        raise MailError(
+            f"no mailbox password: set password_cmd (e.g. a `pass show ...`) or the "
+            f"env var named by password_env ({env!r})"
+        )
+    return password
+
+
 def _imap_search_bodies(mailbox: dict, limit: int = 10) -> list[str]:
     """Return the text bodies of the most recent inbox messages (newest first),
     over IMAP-SSL, READ-ONLY. Raises MailError on misconfig/connection failure.
@@ -380,10 +412,7 @@ def _imap_search_bodies(mailbox: dict, limit: int = 10) -> list[str]:
     import imaplib
     import ssl
 
-    env = mailbox.get("password_env")
-    password = os.getenv(env) if env else None
-    if not password:
-        raise MailError(f"mailbox password env {env!r} is not set")
+    password = _mailbox_password(mailbox)
     host = mailbox.get("imap_host")
     user = mailbox.get("username")
     if not host or not user:

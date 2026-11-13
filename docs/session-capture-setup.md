@@ -24,15 +24,25 @@ cp mcp-servers/test-identities.example.yaml ~/.config/huntmcp/test-identities.ya
 ## 2. (Optional) Mailbox for OTP / verification / magic-link — READ-ONLY
 
 Only for an identity that needs email codes. Add a `mailbox:` block (see the
-example) and set the password as an env var — never in the file:
+example). The password is **never** written in the roster — point `password_cmd`
+at your password manager so the secret stays encrypted and is read just-in-time:
 
 ```bash
-# Gmail: create an App Password (IMAP) at https://myaccount.google.com and:
-export HUNTMCP_MAIL_22BCS='your-16-char-app-password'
+# One-time: store each Gmail App Password in `pass` (GPG-encrypted).
+# (Gmail/Google Workspace needs an App Password with IMAP enabled, not the login password.)
+gpg --full-generate-key                 # only if you have no GPG key yet
+pass init "<your-gpg-id-or-email>"       # initialise the store once
+pass insert huntmcp/mail/22bcs           # paste the app password (hidden)
 ```
 
+Then in the roster: `password_cmd: "pass show huntmcp/mail/22bcs"`. Any locker
+works the same way — `secret-tool lookup ...`, `op read ...` (1Password),
+`bw get password ...` (Bitwarden). This beats `.bashrc`/env vars: nothing in
+plaintext on disk, nothing in your shell env or history, unlocked once per login,
+and no re-entry. (A plain `password_env: NAME` is still supported if you prefer.)
+
 This path only ever READS mail (IMAP). It never sends anything; it imports no
-SMTP library. Report emails stay manual — you send them.
+SMTP sending library. Report emails stay manual — you send them.
 
 ## 3. Log in to each profile once (captures the session)
 

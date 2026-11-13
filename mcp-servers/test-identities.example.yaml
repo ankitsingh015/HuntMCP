@@ -31,7 +31,12 @@ identities:
     mailbox:
       imap_host: "imap.gmail.com"
       username: "22bcs...@gmail.com"
-      # The password is NOT here. Set it as an env var named below, e.g. in your
-      # shell:  export HUNTMCP_MAIL_22BCS='your-gmail-app-password'
-      # (Gmail needs an App Password with IMAP enabled, not your login password.)
-      password_env: "HUNTMCP_MAIL_22BCS"
+      # Password is NEVER stored here. Use ONE of:
+      #   password_cmd -- RECOMMENDED: a command that PRINTS the password, so it
+      #     lives only in your encrypted locker and is read just-in-time. Works
+      #     with any manager: `pass show ...`, `secret-tool lookup ...`,
+      #     `op read ...`, `bw get password ...`. First output line is used; run
+      #     without a shell (no pipes). No plaintext on disk, no .bashrc.
+      password_cmd: "pass show huntmcp/mail/22bcs"
+      #   password_env -- simpler, but the value sits in your shell env:
+      # password_env: "HUNTMCP_MAIL_22BCS"
