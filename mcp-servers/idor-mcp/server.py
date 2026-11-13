@@ -34,6 +34,7 @@ import time
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 
 import authz_diff
+import identity_store
 import idor_sweep
 import session_context
 import state_change_confirm
@@ -46,11 +47,26 @@ from redact import redact_text
 app = FastMCP("idor-mcp")
 
 
+def _resolve_headers(label: str, cookie_header: str, bearer_token: str):
+    """Resolve request headers for an identity (#128 N1). If `label` is given,
+    read the captured identity's Cookie/Authorization from identity_store -- so
+    the agent passes a LABEL and the secret never comes back through the
+    transcript. Otherwise build from the inline cookie_header/bearer_token.
+    Returns (headers_dict_or_None, error_message_or_None)."""
+    if label:
+        headers = identity_store.get_headers(label)
+        if not headers:
+            return None, (f"no captured identity for label {label!r} -- run "
+                          "finish_capture(label) first, or pass cookie_header/bearer_token")
+        return headers, None
+    return idor_sweep._build_headers(cookie_header or None, bearer_token or None), None
+
+
 @app.tool()
 def sweep_idor(url: str, object_ids: list[str] | None = None, method: str = "GET",
                owner_cookie_header: str = "", owner_bearer_token: str = "",
                other_cookie_header: str = "", other_bearer_token: str = "",
-               body_template: str = "") -> str:
+               body_template: str = "", owner_label: str = "", other_label: str = "") -> str:
     """Cross-account IDOR/BOLA sweep. `url` must contain a literal `{id}`
     placeholder (e.g. "https://target.com/api/orders/{id}"). object_ids is
     now optional: if omitted (or empty), this looks up ids previously
@@ -80,7 +96,10 @@ def sweep_idor(url: str, object_ids: list[str] | None = None, method: str = "GET
     owner_bearer_token for the account that legitimately owns the object
     ids, and other_cookie_header/other_bearer_token for the account being
     tested -- same "name=value; name2=value2" cookie format and bearer
-    convention browser-mcp's tools use. Requires scope-gate clearance
+    convention browser-mcp's tools use. Alternatively pass owner_label/
+    other_label to use a captured identity by name (from finish_capture): the
+    Cookie/Authorization are read from identities.json on disk, so the secret
+    never passes through the transcript (#128). Requires scope-gate clearance
     first (Tier-2) -- this sends real requests to the live target, one
     pair per object id. Budget is enforced PER OBJECT ID (2 real requests
     each), not once for the whole call -- a large object_ids list stops
@@ -99,8 +118,12 @@ def sweep_idor(url: str, object_ids: list[str] | None = None, method: str = "GET
                 "endpoint first so real ids get recorded automatically."
             )
 
-    owner_headers = idor_sweep._build_headers(owner_cookie_header or None, owner_bearer_token or None)
-    other_headers = idor_sweep._build_headers(other_cookie_header or None, other_bearer_token or None)
+    owner_headers, _err = _resolve_headers(owner_label, owner_cookie_header, owner_bearer_token)
+    if _err:
+        return f"ERROR (owner identity): {_err} -- no request was sent."
+    other_headers, _err = _resolve_headers(other_label, other_cookie_header, other_bearer_token)
+    if _err:
+        return f"ERROR (other identity): {_err} -- no request was sent."
 
     result = idor_sweep.SweepResult(url_template=url)
     budget_exhausted_at = None
@@ -142,7 +165,8 @@ def sweep_idor(url: str, object_ids: list[str] | None = None, method: str = "GET
 
 @app.tool()
 def guess_idor(url: str, known_id: str, method: str = "GET", cookie_header: str = "",
-                bearer_token: str = "", guess_count: int = 10, body_template: str = "") -> str:
+                bearer_token: str = "", guess_count: int = 10, body_template: str = "",
+                label: str = "") -> str:
     """Single-credential IDOR/BOLA guessing -- for when you only have ONE
     account and don't yet have a second identity to diff against (that case
     is sweep_idor()'s job, and gives a stronger LEAKED/PROTECTED verdict when
@@ -166,7 +190,9 @@ def guess_idor(url: str, known_id: str, method: str = "GET", cookie_header: str 
     the baseline check. Budget is enforced per request, same as
     sweep_idor()."""
     start = time.monotonic()
-    headers = idor_sweep._build_headers(cookie_header or None, bearer_token or None)
+    headers, _err = _resolve_headers(label, cookie_header, bearer_token)
+    if _err:
+        return f"ERROR: {_err} -- no request was sent."
 
     try:
         _enforce_budget("idor-mcp")
@@ -240,7 +266,8 @@ def replay_authz_two_step(url: str, carried_path: str, step2_url_template: str,
                           owner_cookie_header: str = "", owner_bearer_token: str = "",
                           other_cookie_header: str = "", other_bearer_token: str = "",
                           step1_method: str = "GET", step2_method: str = "GET",
-                          step1_body: str = "", emit_finding: bool = False) -> str:
+                          step1_body: str = "", emit_finding: bool = False,
+                          owner_label: str = "", other_label: str = "") -> str:
     """P3-VALAUTHZ two-step authorization replay (feature-flagged: set HUNTMCP_VALAUTHZ=1;
     off by default, in which case use sweep_idor). `url` is step 1, fetched as the OWNER;
     `carried_path` is the dotted JSON path in its response that yields an opaque id (e.g.
@@ -279,8 +306,12 @@ def replay_authz_two_step(url: str, carried_path: str, step2_url_template: str,
                              step2_url_template=step2_url_template,
                              step1_method=step1_method, step2_method=step2_method,
                              step1_body=step1_body or None)
-    owner_headers = idor_sweep._build_headers(owner_cookie_header or None, owner_bearer_token or None)
-    other_headers = idor_sweep._build_headers(other_cookie_header or None, other_bearer_token or None)
+    owner_headers, _err = _resolve_headers(owner_label, owner_cookie_header, owner_bearer_token)
+    if _err:
+        return _done(f"ERROR (owner identity): {_err} -- no request was sent.")
+    other_headers, _err = _resolve_headers(other_label, other_cookie_header, other_bearer_token)
+    if _err:
+        return _done(f"ERROR (other identity): {_err} -- no request was sent.")
 
     bad = authz_diff.structural_error(wf, owner_headers, other_headers)
     if bad:  # reject a malformed workflow before it can spend a human-issued approval
@@ -326,7 +357,8 @@ def replay_authz_two_step(url: str, carried_path: str, step2_url_template: str,
 @app.tool()
 def replay_authz_matrix(url: str, carried_path: str, step2_url_template: str,
                         owner_cookie_header: str = "", owner_bearer_token: str = "",
-                        identities_json: str = "", emit_finding: bool = False) -> str:
+                        identities_json: str = "", emit_finding: bool = False,
+                        owner_label: str = "") -> str:
     """P3-VALAUTHZ identity matrix (feature-flagged: HUNTMCP_VALAUTHZ=1; off by default). The same
     owner-fetch-and-compare oracle as replay_authz_two_step, run once per declared identity against the
     OWNER's object: e.g. a same-tenant user, an admin, a user of another tenant. READ-ONLY (GET): a
@@ -360,10 +392,13 @@ def replay_authz_matrix(url: str, carried_path: str, step2_url_template: str,
         for entry in raw:
             if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
                 raise TypeError("each identity must be an object with a string name")
-            headers = idor_sweep._build_headers(entry.get("cookie_header") or None,
-                                                entry.get("bearer_token") or None)
+            headers, herr = _resolve_headers(entry.get("label") or "",
+                                             entry.get("cookie_header") or "",
+                                             entry.get("bearer_token") or "")
+            if herr:
+                raise TypeError(f"identity {entry['name'][:32]!r}: {herr}")
             if not headers:
-                raise TypeError(f"identity {entry['name'][:32]!r} needs a cookie_header or bearer_token")
+                raise TypeError(f"identity {entry['name'][:32]!r} needs a label, cookie_header, or bearer_token")
             allowed = entry.get("should_have_access", False)
             if not isinstance(allowed, bool):
                 raise TypeError(f"should_have_access for {entry['name'][:32]!r} must be true or false")
@@ -372,7 +407,9 @@ def replay_authz_matrix(url: str, carried_path: str, step2_url_template: str,
         return _done(f"ERROR: invalid identities_json ({redact_text(str(e))}) -- no request was sent.")
 
     wf = authz_diff.Workflow(step1_url=url, carried_path=carried_path, step2_url_template=step2_url_template)
-    owner_headers = idor_sweep._build_headers(owner_cookie_header or None, owner_bearer_token or None)
+    owner_headers, _oerr = _resolve_headers(owner_label, owner_cookie_header, owner_bearer_token)
+    if _oerr:
+        return _done(f"ERROR (owner identity): {_oerr} -- no request was sent.")
     try:
         rows = authz_diff.run_matrix(wf, owner_headers, identities,
                                      budget_cb=lambda: _enforce_budget("idor-mcp"))
