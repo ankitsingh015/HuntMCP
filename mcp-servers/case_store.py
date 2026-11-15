@@ -408,6 +408,82 @@ def update_hypothesis(hypothesis_id: int, status: str, note: str = "",
         conn.close()
 
 
+RESURRECTABLE_HYPOTHESIS_STATUSES = ("INCONCLUSIVE", "REFUTED")
+_RESURRECTING_FINDING_STATUSES = ("CONFIRMED", "IMPACT_PROVEN", "REPORTED")
+_DISMISSED_FINDING_STATUSES = ("FALSE_POSITIVE", "DUPLICATE")
+
+
+def find_resurrectable_hypotheses(db_path: str | None = None) -> list[dict]:
+    """P4-RESURRECT (MASTER-ROADMAP-FINAL-v3.md §5(P4)): dormant hypotheses
+    that have gained new positive evidence since they were parked. Purely
+    read-only and advisory (§11-A) -- it only reports; nothing here
+    re-opens, closes, blocks, or skips anything, and it adds no table.
+
+    Machine-checkable predicate: a hypothesis is returned iff its status is
+    INCONCLUSIVE or REFUTED AND at least one trigger is strictly newer
+    than its `updated_at` (the moment it was last parked):
+      new_evidence         -- an evidence row linked directly to it
+      new_finding_evidence -- an evidence row linked to a finding whose
+                              hypothesis_id is this one, unless that finding
+                              is FALSE_POSITIVE/DUPLICATE
+      finding_advanced     -- a finding pointing at it that reached
+                              CONFIRMED/IMPACT_PROVEN/REPORTED
+    Strictly newer, so same-second activity counts as part of the original
+    investigation. Re-saving the hypothesis via update_hypothesis()
+    bumps `updated_at` and thereby acknowledges the current triggers.
+    Timestamps are the schema's own datetime('now') strings (UTC,
+    lexicographically ordered). Returns [] when no case.db exists yet
+    (without creating one). Ordered by hypothesis id.
+
+    Each item: {hypothesis_id, hypothesis, observation, status, note,
+    parked_at, reasons: [{kind, id, at}]}. `hypothesis`/`observation`/
+    `note` are raw agent-written text -- redact before surfacing to an
+    external reader (the case-mcp wrapper does)."""
+    if not os.path.isfile(resolve_db_path(db_path)):
+        return []
+    conn = _get_conn(db_path)
+    try:
+        placeholders = ",".join("?" * len(RESURRECTABLE_HYPOTHESIS_STATUSES))
+        hyps = conn.execute(
+            f"SELECT id, observation, hypothesis, status, note, updated_at FROM hypotheses "
+            f"WHERE status IN ({placeholders}) ORDER BY id", RESURRECTABLE_HYPOTHESIS_STATUSES,
+        ).fetchall()
+        dismissed = ",".join("?" * len(_DISMISSED_FINDING_STATUSES))
+        advanced = ",".join("?" * len(_RESURRECTING_FINDING_STATUSES))
+        out: list[dict] = []
+        for h in hyps:
+            parked_at = h["updated_at"]
+            reasons = [
+                {"kind": "new_evidence", "id": r["id"], "at": r["created_at"]}
+                for r in conn.execute(
+                    "SELECT id, created_at FROM evidence WHERE hypothesis_id = ? AND created_at > ? "
+                    "ORDER BY id", (h["id"], parked_at))
+            ]
+            reasons += [
+                {"kind": "new_finding_evidence", "id": r["id"], "at": r["created_at"]}
+                for r in conn.execute(
+                    "SELECT e.id, e.created_at FROM evidence e JOIN findings f ON e.finding_id = f.id "
+                    f"WHERE f.hypothesis_id = ? AND f.status NOT IN ({dismissed}) AND e.created_at > ? "
+                    "AND (e.hypothesis_id IS NULL OR e.hypothesis_id != ?) ORDER BY e.id",
+                    (h["id"], *_DISMISSED_FINDING_STATUSES, parked_at, h["id"]))
+            ]
+            reasons += [
+                {"kind": "finding_advanced", "id": r["id"], "at": r["updated_at"]}
+                for r in conn.execute(
+                    f"SELECT id, updated_at FROM findings WHERE hypothesis_id = ? AND status IN ({advanced}) "
+                    "AND updated_at > ? ORDER BY id", (h["id"], *_RESURRECTING_FINDING_STATUSES, parked_at))
+            ]
+            if reasons:
+                out.append({
+                    "hypothesis_id": h["id"], "hypothesis": h["hypothesis"],
+                    "observation": h["observation"], "status": h["status"], "note": h["note"],
+                    "parked_at": parked_at, "reasons": reasons,
+                })
+        return out
+    finally:
+        conn.close()
+
+
 # ---- Evidence -------------------------------------------------------------
 
 def add_evidence(type: str, content: str, hypothesis_id: int | None = None,
