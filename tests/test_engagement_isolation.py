@@ -1,7 +1,7 @@
 """Regression for #130: a local test run must NEVER resolve engagement state
 against the developer's REAL active engagement.
 
-Observed live (Manatal engagement, 2026-11-05): localhost pytest runs left
+Observed live (a past engagement, 2026-11-05): localhost pytest runs left
 15 `state-change-pending-*.json` files and matching audit entries inside a
 real engagement directory, because `state_change_confirm` resolved paths
 through `engagement_paths` globals that still pointed at the live

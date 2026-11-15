@@ -117,7 +117,7 @@ State, in one line, what the planned tests actually need:
 
 Derive it from the VDP text first, then refine it against the app's real role
 model as recon reveals it (roles, org/tenant boundaries, invite flows). Getting
-this wrong costs a full round trip of account setup -- observed live (Manatal,
+this wrong costs a full round trip of account setup -- observed live (a past engagement,
 #136): two admins in the *same* company were set up first (useless for either
 test), then one had to be demoted mid-engagement to make the vertical check
 possible at all.

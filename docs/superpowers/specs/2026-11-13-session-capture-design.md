@@ -12,7 +12,7 @@
 
 Every authenticated engagement (IDOR, vertical/horizontal authz, session testing) needs a
 human-owned login turned into usable identity data for the agent. Today that handoff is a
-manual DevTools copy/paste into the chat transcript, which (observed live, Manatal VDP,
+manual DevTools copy/paste into the chat transcript, which (observed live, an authenticated VDP,
 2026-11-05) caused three concrete problems:
 
 1. Repeated manual token extraction on every refresh — real time cost, context-switch away
