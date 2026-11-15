@@ -269,8 +269,9 @@ def capture_research_manifest(target: str, agent_role: str = "") -> str:
     """C1b: captures and persists a research-run manifest for `target` --
     resolved scanner tool versions, the model/provider currently selected
     for `agent_role` (if given), a hash of scope_gate_hook.py (which
-    safety policy was active), and a hash of this engagement's current
-    case-export state. Call once near the start of a research run (e.g.
+    safety policy was active), a hash + scan-policy summary of the in-force
+    engagement.yaml, a `config_fingerprint` for cheap run-to-run comparison,
+    and a hash of this engagement's current case-export state. Call once near the start of a research run (e.g.
     from huntbrain/report-agent) so later runs against the same target
     can be compared for reproducibility. Not wired into assemble_bundle
     itself (CEM Phase 1 is frozen) -- report-agent attaches this tool's
