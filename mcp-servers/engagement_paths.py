@@ -26,17 +26,26 @@ dedupe_check.py/audit_log.py.
 
 CLI usage (what HuntBrain runs via Bash at Phase 0):
     python3 mcp-servers/engagement_paths.py check <target>
-        -> run BEFORE `set`, in the SAME chat session. If a different
-           target is currently active and hasn't been marked complete,
-           prints a warning and exits 3 -- the conversational signal that
-           this chat is already mid-hunt on another target, so HuntBrain
-           should ask the user whether to continue here anyway or start a
-           fresh chat session for the new target (state isolation via
-           per-target directories doesn't by itself stop one CHAT from
-           narrating two targets at once; this check is what does).
-           Exits 0 ("ok") when there's no conflict -- no active target yet,
-           the active target IS this target (a resume), or the active
-           target is already marked complete.
+        -> run BEFORE `set`, in the SAME chat session. Prints a warning and
+           exits 3 on EITHER of two conditions (the stderr message says
+           which, and both are printed if both apply):
+             (1) a different target is currently active and hasn't been
+                 marked complete -- the conversational signal that this chat
+                 is already mid-hunt on another target, so HuntBrain should
+                 ask the user whether to continue here anyway or start a
+                 fresh chat session for the new target (state isolation via
+                 per-target directories doesn't by itself stop one CHAT from
+                 narrating two targets at once; this check is what does); and
+             (2) the engagement.yaml scope_guard would actually LOAD right
+                 now is for a DIFFERENT target than <target> -- a stale,
+                 left-over config (a repo-root engagement.yaml, or a
+                 completed-but-still-pointed engagement) that would make
+                 scope checks and audit reference the wrong engagement until
+                 `set` + a fresh engagement.yaml replace it (issue #145).
+           Exits 0 ("ok") only when NEITHER fires -- no active target yet, or
+           the active target IS this target with a matching in-force config
+           (a resume) -- so a completed-but-stale previous config still
+           exits 3 under (2), not 0.
     python3 mcp-servers/engagement_paths.py set <target>
         -> creates data/engagements/<slug>/ if needed, points the active
            pointer at it, prints the slug. Idempotent -- calling this again
@@ -100,6 +109,18 @@ import file_lock
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ACTIVE_POINTER = os.getenv("HUNTMCP_ACTIVE_POINTER", os.path.join(_REPO_ROOT, "data/.active-engagement"))
 ENGAGEMENTS_ROOT = os.getenv("HUNTMCP_ENGAGEMENTS_ROOT", os.path.join(_REPO_ROOT, "data/engagements"))
+
+# Legacy single-target engagement.yaml location -- the repo-root file that
+# scope_guard.load_engagement() falls back to when NO per-target pointer is
+# active (resolve()'s bare-filename fallback). HuntBrain is told never to
+# write here, but a left-over one from a prior single-target workflow is
+# exactly the stale config issue #145 is about, so the engagement-start
+# `check` consults it explicitly to warn. Env-overridable (like the two
+# above) purely so tests can point it at an isolated path instead of the
+# real repo-root file.
+LEGACY_ENGAGEMENT_CONFIG = os.getenv(
+    "HUNTMCP_LEGACY_ENGAGEMENT_CONFIG", os.path.join(_REPO_ROOT, "engagement.yaml")
+)
 
 
 class ActiveEngagementConflict(Exception):
@@ -299,6 +320,75 @@ def check_conflict(target: str, pointer_path: str | None = None,
     )
 
 
+def active_config_target(pointer_path: str | None = None,
+                          engagements_root: str | None = None,
+                          legacy_config: str | None = None) -> str | None:
+    """Return the `target:` field of the engagement.yaml that
+    scope_guard.load_engagement() would CURRENTLY load -- i.e. the config
+    actually in force for scope checks and audit right now -- or None if no
+    such file exists, it can't be parsed, or it has no target.
+
+    Resolution mirrors scope_guard exactly (same resolve() call, same
+    HUNTMCP_ENGAGEMENT_PATH override, same pointer->per-target-dir mapping)
+    so this reflects the real enforced file, not a guess. The one addition:
+    when nothing else resolves (no override, no active pointer), it falls
+    back to `legacy_config` -- the repo-root engagement.yaml -- rather than
+    resolve()'s bare cwd-relative filename, so a caller (the `check` CLI)
+    can point it at the real left-over file deterministically while tests
+    isolate it. legacy_config=None means "don't consult any legacy fallback"
+    (returns None when nothing is actively pointed), which keeps in-process
+    callers from accidentally reading the real repo-root file.
+
+    Never raises -- this is a diagnostic for the engagement-start staleness
+    warning, not an enforcement path; load_engagement() remains the thing
+    that actually parses and enforces the file."""
+    legacy_default = legacy_config if legacy_config is not None else os.devnull
+    path = resolve("engagement.yaml", override_env="HUNTMCP_ENGAGEMENT_PATH",
+                   pointer_path=pointer_path, engagements_root=engagements_root,
+                   legacy_default=legacy_default)
+    if not os.path.isfile(path):
+        return None
+    try:
+        import yaml
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return None
+    target = data.get("target") if isinstance(data, dict) else None
+    return target or None
+
+
+def check_stale_config(target: str, pointer_path: str | None = None,
+                       engagements_root: str | None = None,
+                       legacy_config: str | None = None) -> str | None:
+    """Returns a warning if the engagement config CURRENTLY IN FORCE belongs
+    to a DIFFERENT target than `target` -- None when there's no in-force
+    config (a genuinely fresh start) or it already matches `target`.
+
+    This closes the gap behind issue #145: check_conflict() above only
+    compares the active POINTER slug, so an engagement could start while the
+    file scope_guard would actually load still belonged to a previous target
+    (a left-over root engagement.yaml, or a completed-but-still-pointed
+    engagement) with no warning at all -- scope checks and audit silently
+    referencing the wrong engagement. Comparing against the in-force config's
+    own `target` field catches exactly that, by slug so URL/scheme/www
+    variants of the same target don't false-positive."""
+    cfg_target = active_config_target(pointer_path, engagements_root, legacy_config)
+    if cfg_target is None:
+        return None
+    if slugify(cfg_target) == slugify(target):
+        return None
+    return (
+        f"The engagement config currently in force is for {cfg_target!r} "
+        f"(slug {slugify(cfg_target)!r}), NOT {target!r} -- scope checks and "
+        "audit would reference the WRONG engagement until it is replaced. "
+        "This looks like a stale/left-over config from a different target. "
+        f"Before testing {target!r}, write {target!r}'s own engagement.yaml "
+        "and `set` it (switch-engagement.sh set), so the in-force config "
+        "matches the target you intend to hunt."
+    )
+
+
 def list_engagements(engagements_root: str | None = None) -> list[dict]:
     engagements_root = ENGAGEMENTS_ROOT if engagements_root is None else engagements_root
     if not os.path.isdir(engagements_root):
@@ -371,9 +461,16 @@ def _cli() -> None:
         if len(sys.argv) < 3:
             print("usage: engagement_paths.py check <target>", file=sys.stderr)
             sys.exit(2)
-        warning = check_conflict(sys.argv[2])
-        if warning:
-            print(warning, file=sys.stderr)
+        warnings = []
+        conflict = check_conflict(sys.argv[2])
+        if conflict:
+            warnings.append(conflict)
+        stale = check_stale_config(sys.argv[2], legacy_config=LEGACY_ENGAGEMENT_CONFIG)
+        if stale:
+            warnings.append(stale)
+        if warnings:
+            for w in warnings:
+                print(w, file=sys.stderr)
             sys.exit(3)
         print("ok")
     elif cmd == "set":

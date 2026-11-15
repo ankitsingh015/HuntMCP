@@ -75,16 +75,26 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    further input, unless something is genuinely ambiguous (e.g. conflicting
    in-scope/out-of-scope entries) or authorization is missing entirely.
 2. Run `scripts/switch-engagement.sh check <target>` FIRST, before `set`
-   or anything else — exit 3 means this chat is already mid-hunt on a
-   DIFFERENT target that isn't marked complete yet. When that happens,
-   stop and ask the user: continue this target in THIS chat (mixing two
-   targets' narration in one conversation, even though their on-disk
-   state stays isolated either way), or open a brand-new chat session for
-   the new target instead — one company per chat is the point, and
-   per-target directories alone don't enforce that at the conversation
-   level. Proceed only once they've chosen. Exit 0 means no conflict
-   (nothing active yet, this IS the active target — a resume, or the
-   active target is already marked complete) — proceed straight through.
+   or anything else — exit 3 flags one of two conditions the stderr
+   message spells out:
+   - **chat already mid-hunt on a DIFFERENT target** that isn't marked
+     complete yet. Stop and ask the user: continue this target in THIS
+     chat (mixing two targets' narration in one conversation, even though
+     their on-disk state stays isolated either way), or open a brand-new
+     chat session for the new target instead — one company per chat is
+     the point, and per-target directories alone don't enforce that at
+     the conversation level. Proceed only once they've chosen.
+   - **stale in-force config**: the `engagement.yaml` that `scope_guard`
+     would actually LOAD right now belongs to a *different* target than
+     the one you're starting (a left-over root `engagement.yaml`, or a
+     completed-but-still-pointed engagement). Until you `set` this target
+     and write its own `engagement.yaml`, every scope check and audit
+     entry would reference the WRONG engagement. This is the issue #145
+     hazard — do NOT proceed on the stale config; continue to step 3
+     (`set` + write this target's `engagement.yaml`), which replaces it.
+   Exit 0 means no conflict and no stale config (nothing active yet, this
+   IS the active target — a resume, or the active target is already
+   marked complete and its config matches) — proceed straight through.
 3. Run `scripts/switch-engagement.sh set <target>` — this points every
    guard module (`scope_guard.py`,
    `budget_guard.py`, `work_registry.py`, `dedupe_check.py`,

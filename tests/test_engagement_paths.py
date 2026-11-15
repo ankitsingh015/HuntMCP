@@ -269,6 +269,159 @@ def test_check_conflict_none_when_active_target_marked_complete(tmp_path):
     assert warning is None
 
 
+# ---- stale in-force engagement.yaml detection (issue #145) --------------------
+# Regression: the pointer-level check_conflict() only compares the active
+# POINTER slug; it never reads the engagement.yaml that scope_guard would
+# actually LOAD. So an engagement could start while the in-force config still
+# belonged to a PREVIOUS target (a left-over root engagement.yaml, or a
+# completed-but-still-pointed engagement) with no warning -- scope checks and
+# audit silently referencing the wrong engagement. check_stale_config()
+# compares the requested target against the in-force config's own `target`.
+
+def _write_config(root, slug, target):
+    d = os.path.join(root, slug)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "engagement.yaml"), "w") as f:
+        f.write(f"target: {target}\nin_scope:\n  - {target}\n")
+
+
+def test_active_config_target_none_when_no_config(tmp_path, monkeypatch):
+    monkeypatch.delenv("HUNTMCP_ENGAGEMENT_PATH", raising=False)
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    # No pointer, no legacy config supplied -> nothing in force.
+    assert engagement_paths.active_config_target(
+        pointer_path=pointer, engagements_root=root
+    ) is None
+
+
+def test_active_config_target_reads_pointed_dir_config(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    _write_config(root, "target-a-com", "target-a.com")
+    assert engagement_paths.active_config_target(
+        pointer_path=pointer, engagements_root=root
+    ) == "target-a.com"
+
+
+def test_active_config_target_reads_legacy_config_when_no_pointer(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    legacy = tmp_path / "root-engagement.yaml"
+    legacy.write_text("target: old-target.com\nin_scope:\n  - old-target.com\n")
+    assert engagement_paths.active_config_target(
+        pointer_path=pointer, engagements_root=root, legacy_config=str(legacy)
+    ) == "old-target.com"
+
+
+def test_active_config_target_none_on_unparseable_or_targetless_config(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    legacy = tmp_path / "root-engagement.yaml"
+    legacy.write_text("in_scope:\n  - x.com\n")  # no target field
+    assert engagement_paths.active_config_target(
+        pointer_path=pointer, engagements_root=root, legacy_config=str(legacy)
+    ) is None
+
+
+def test_check_stale_config_none_on_fresh_start(tmp_path, monkeypatch):
+    monkeypatch.delenv("HUNTMCP_ENGAGEMENT_PATH", raising=False)
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    # Nothing in force -> starting any target is a clean start, no warning.
+    assert engagement_paths.check_stale_config(
+        "new-target.com", pointer_path=pointer, engagements_root=root
+    ) is None
+
+
+def test_check_stale_config_none_when_config_matches_requested(tmp_path):
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    _write_config(root, "target-a-com", "https://target-a.com/")  # URL variant
+    assert engagement_paths.check_stale_config(
+        "target-a.com", pointer_path=pointer, engagements_root=root
+    ) is None
+
+
+def test_check_stale_config_warns_when_in_force_config_is_a_different_target(tmp_path):
+    # The #145 incident: a prior engagement's config is still what would be
+    # loaded, but the operator is now starting a different target.
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    engagement_paths.set_active_target("target-a.com", pointer, root)
+    engagement_paths.mark_complete(pointer, root)  # a is done but still pointed
+    _write_config(root, "target-a-com", "target-a.com")
+    warning = engagement_paths.check_stale_config(
+        "target-b.com", pointer_path=pointer, engagements_root=root
+    )
+    assert warning is not None
+    assert "target-a.com" in warning
+    assert "target-b.com" in warning
+
+
+def test_check_stale_config_warns_on_stale_legacy_root_config(tmp_path):
+    # No active pointer at all, but a left-over root engagement.yaml for a
+    # previous target would silently be the in-force config.
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    legacy = tmp_path / "root-engagement.yaml"
+    legacy.write_text("target: old-target.com\nin_scope:\n  - old-target.com\n")
+    warning = engagement_paths.check_stale_config(
+        "new-target.com", pointer_path=pointer, engagements_root=root,
+        legacy_config=str(legacy),
+    )
+    assert warning is not None
+    assert "old-target.com" in warning
+    assert "new-target.com" in warning
+
+
+def test_cli_check_exits_3_on_stale_in_force_config(tmp_path):
+    pointer = "data/.active-engagement"
+    root = str(tmp_path / "engagements")
+    legacy = tmp_path / "root-engagement.yaml"
+    legacy.write_text("target: old-target.com\nin_scope:\n  - old-target.com\n")
+    env = {
+        "HUNTMCP_ACTIVE_POINTER": pointer,
+        "HUNTMCP_ENGAGEMENTS_ROOT": root,
+        "HUNTMCP_LEGACY_ENGAGEMENT_CONFIG": str(legacy),
+    }
+    result = subprocess.run(
+        [sys.executable, _ENGAGEMENT_PATHS_CLI, "check", "new-target.com"],
+        cwd=tmp_path, env={**os.environ, **env}, capture_output=True, text=True,
+    )
+    assert result.returncode == 3
+    assert "old-target.com" in result.stderr
+    assert "new-target.com" in result.stderr
+
+
+def test_cli_check_ok_when_in_force_config_matches_requested(tmp_path):
+    pointer = "data/.active-engagement"
+    root = str(tmp_path / "engagements")
+    env = {"HUNTMCP_ACTIVE_POINTER": pointer, "HUNTMCP_ENGAGEMENTS_ROOT": root,
+           "HUNTMCP_LEGACY_ENGAGEMENT_CONFIG": str(tmp_path / "nonexistent.yaml")}
+    _run_cli(["set", "target-a.com"], env, cwd=tmp_path)
+    _write_config(root, "target-a-com", "target-a.com")
+    result = _run_cli(["check", "target-a.com"], env, cwd=tmp_path)
+    assert "ok" in result.stdout
+
+
+def test_cli_check_still_exits_3_on_pointer_conflict(tmp_path):
+    # The existing pointer-level conflict must still be reported.
+    pointer = "data/.active-engagement"
+    root = str(tmp_path / "engagements")
+    env = {"HUNTMCP_ACTIVE_POINTER": pointer, "HUNTMCP_ENGAGEMENTS_ROOT": root,
+           "HUNTMCP_LEGACY_ENGAGEMENT_CONFIG": str(tmp_path / "nonexistent.yaml")}
+    _run_cli(["set", "target-a.com"], env, cwd=tmp_path)
+    result = subprocess.run(
+        [sys.executable, _ENGAGEMENT_PATHS_CLI, "check", "target-b.com"],
+        cwd=tmp_path, env={**os.environ, **env}, capture_output=True, text=True,
+    )
+    assert result.returncode == 3
+    assert "target-a-com" in result.stderr
+
+
 def test_mark_complete_returns_none_when_nothing_active(tmp_path):
     pointer = str(tmp_path / ".active-engagement")
     root = str(tmp_path / "engagements")
