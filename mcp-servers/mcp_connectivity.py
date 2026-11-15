@@ -27,9 +27,51 @@ Uses only the standard library -- no new dependency.
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import subprocess
+from datetime import datetime, timezone
+
+try:
+    import engagement_paths
+except ImportError:  # pragma: no cover - path shim for direct execution
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import engagement_paths
+
+import file_lock
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+HEALTH_FILENAME = "mcp-health.json"
+
+# Per-capability fallback chain (issue #134 part 3): when a server is down,
+# degrade to these, predictably, instead of ad hoc per session. Keyed by the
+# server name as it appears in opencode.jsonc / `opencode mcp list`. Recorded
+# into the health snapshot for every down server so a finding can cite not
+# just "primary path unavailable" but exactly what it fell back to.
+CAPABILITY_FALLBACKS: dict[str, str] = {
+    "burp": (
+        "Repeater -> raw curl with manually-set headers; "
+        "Collaborator -> oob-mcp (interactsh) for OOB callback confirmation"
+    ),
+    "oob-mcp": "manual interactsh-client against a controlled collaborator URL",
+    "browser-mcp": "obscura-mcp (same headless-browser role), else playwright-mcp",
+    "obscura-mcp": "browser-mcp (same headless-browser role), else playwright-mcp",
+    "playwright-mcp": "browser-mcp / obscura-mcp for JS/DOM execution confirmation",
+    "second-opinion-mcp": (
+        "no automated cross-model review -- disclose the gap on the finding "
+        "(pre-submission-validation, issue #135)"
+    ),
+}
+
+
+def fallback_for(server_name: str) -> str | None:
+    """The documented fallback for a down server (issue #134 part 3), or
+    None if no specific fallback is recorded for it."""
+    return CAPABILITY_FALLBACKS.get(server_name)
 
 # A server status line, after ANSI stripping, has the real, distinctive
 # shape "<bullet><single-char-checkmark> <name> <status>" (e.g.
@@ -85,3 +127,87 @@ def summarize_for_agent_context(statuses: dict[str, str]) -> str:
         f"⚠️ MCP connectivity: {len(disconnected)} of {len(statuses)} registered server(s) "
         f"NOT connected: {problems}. Any tool on these servers is silently unavailable this session."
     )
+
+
+def collect_live_statuses(timeout: int = 30) -> dict[str, str]:
+    """Run `opencode mcp list` (opencode's own read-only introspection -- no
+    live target contact, no engagement state touched) and return the parsed
+    {server: status}. Returns {} if the opencode binary isn't installed, the
+    command fails, or it times out -- the caller treats {} as "could not
+    check," which is distinct from "all connected" (a non-empty dict with no
+    disconnected entries)."""
+    if not shutil.which("opencode"):
+        return {}
+    try:
+        result = subprocess.run(
+            ["opencode", "mcp", "list"], capture_output=True, text=True, timeout=timeout
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    return parse_mcp_list_output(result.stdout)
+
+
+def _resolve_health_path(path: str | None) -> str:
+    if path is not None:
+        return path
+    return engagement_paths.resolve(HEALTH_FILENAME, override_env="HUNTMCP_MCP_HEALTH_PATH")
+
+
+def save_health_snapshot(statuses: dict[str, str], path: str | None = None) -> dict:
+    """Persist the engagement-start connectivity result into the active
+    engagement's own state (issue #134 part 2), so a finding whose primary
+    validation path was down can cite it from the case store rather than
+    only a transient agent report. Records ONLY the problem servers (plus a
+    total and timestamp), with each down server's documented fallback, and
+    returns the written snapshot.
+
+    Path resolves per-target via engagement_paths (same as budget.json /
+    work-registry.json) when not given explicitly -- so it lands under
+    data/engagements/<slug>/ once the engagement is set."""
+    disconnected = find_disconnected(statuses)
+    # `checked` distinguishes a real result from collect_live_statuses()'s {}
+    # "could not check" sentinel -- without it, "the check never ran" would
+    # read back identically to "all servers healthy" (both: disconnected={}),
+    # letting a finding cite "nothing was down" when nothing was actually
+    # checked. Callers should also avoid OVERWRITING a good prior snapshot
+    # with a could-not-check one (see the huntbrain Phase 0 guard).
+    snapshot = {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checked": bool(statuses),
+        "total": len(statuses),
+        "disconnected": disconnected,
+        "fallbacks": {
+            name: fallback_for(name) for name in disconnected if fallback_for(name)
+        },
+    }
+    path = _resolve_health_path(path)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with file_lock.locked(path):
+        with open(path, "w") as f:
+            json.dump(snapshot, f, indent=2)
+    return snapshot
+
+
+def load_health_snapshot(path: str | None = None) -> dict:
+    """Read back the persisted health snapshot (or {} if none was recorded /
+    it's unreadable). Never raises -- a missing or corrupt snapshot just
+    means "no recorded health info," not an error."""
+    path = _resolve_health_path(path)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def unavailable_servers(path: str | None = None) -> dict[str, str]:
+    """{server: status} for every declared MCP server that was NOT connected
+    at the engagement-start health-check -- for case/report code to cite a
+    'primary validation path unavailable' note on a finding (issue #134 part
+    2). {} when all were healthy or no snapshot was recorded."""
+    return load_health_snapshot(path).get("disconnected", {})

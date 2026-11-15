@@ -85,6 +85,13 @@ data/disclosed-reports-cache/
 # Finding-level dedup registry — per-engagement, reset alongside engagement.yaml.
 findings-seen.json
 
+# MCP-server health snapshot (mcp-servers/mcp_connectivity.py) — per-engagement
+# record of which declared MCP servers were NOT connected at engagement start,
+# resolved via engagement_paths.resolve() same as budget.json/work-registry.json
+# above; this bare-filename entry covers the no-active-engagement fallback case,
+# nested copies under data/engagements/<slug>/ are covered by data/engagements/.
+mcp-health.json
+
 # Structured audit log — per-engagement Tier-2 call log, real target data.
 data/audit.jsonl
 

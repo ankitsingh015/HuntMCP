@@ -1,3 +1,5 @@
+import json
+import os
 import shutil
 import subprocess
 
@@ -102,6 +104,107 @@ def test_summarize_for_agent_context_all_healthy():
     summary = mcp_connectivity.summarize_for_agent_context(statuses)
     assert "all" in summary.lower()
     assert "connected" in summary.lower()
+
+
+# --------------------------------------- persistence + fallback (issue #134)
+# The smoke check above already surfaces a down server in the agent's own
+# context. #134 part 2 asks that the result also be PERSISTED into the
+# engagement's state so a finding whose primary validation path was down can
+# cite that from the case store, not just a transient agent report; part 3
+# asks for a documented per-capability fallback so a missing server degrades
+# predictably.
+
+def test_fallback_for_known_server_returns_documented_chain():
+    fb = mcp_connectivity.fallback_for("burp")
+    assert fb is not None
+    assert "oob-mcp" in fb  # Collaborator -> oob-mcp is the documented path
+
+
+def test_fallback_for_unknown_server_is_none():
+    assert mcp_connectivity.fallback_for("totally-unknown-mcp") is None
+
+
+def test_save_and_load_health_snapshot_roundtrip(tmp_path):
+    path = str(tmp_path / "mcp-health.json")
+    statuses = {"writeup-mcp": "connected", "burp": "failed", "case-mcp": "connected"}
+    snap = mcp_connectivity.save_health_snapshot(statuses, path=path)
+    assert os.path.isfile(path)
+    # Returned snapshot records only the problem servers + total + a timestamp.
+    assert snap["disconnected"] == {"burp": "failed"}
+    assert snap["total"] == 3
+    assert snap["checked_at"]
+    # A documented fallback is recorded for the down server.
+    assert "burp" in snap["fallbacks"]
+    # Reloads identically from disk.
+    loaded = mcp_connectivity.load_health_snapshot(path=path)
+    assert loaded["disconnected"] == {"burp": "failed"}
+
+
+def test_unavailable_servers_reads_snapshot(tmp_path):
+    path = str(tmp_path / "mcp-health.json")
+    mcp_connectivity.save_health_snapshot(
+        {"a-mcp": "connected", "burp": "failed"}, path=path
+    )
+    assert mcp_connectivity.unavailable_servers(path=path) == {"burp": "failed"}
+
+
+def test_unavailable_servers_empty_when_all_connected(tmp_path):
+    path = str(tmp_path / "mcp-health.json")
+    mcp_connectivity.save_health_snapshot(
+        {"a-mcp": "connected", "b-mcp": "connected"}, path=path
+    )
+    assert mcp_connectivity.unavailable_servers(path=path) == {}
+
+
+def test_unavailable_servers_empty_when_no_snapshot(tmp_path):
+    # No health snapshot recorded (check never ran / file absent) -> {}.
+    assert mcp_connectivity.unavailable_servers(path=str(tmp_path / "nope.json")) == {}
+
+
+def test_snapshot_checked_flag_distinguishes_could_not_check_from_all_healthy(tmp_path):
+    # {} statuses means collect_live_statuses() could not check (opencode
+    # missing / command failed) -- that must NOT read back the same as a real
+    # "all connected" result, or a finding could cite 'nothing was down' when
+    # the check never actually ran.
+    could_not = mcp_connectivity.save_health_snapshot({}, path=str(tmp_path / "a.json"))
+    all_healthy = mcp_connectivity.save_health_snapshot(
+        {"x-mcp": "connected"}, path=str(tmp_path / "b.json")
+    )
+    assert could_not["checked"] is False
+    assert all_healthy["checked"] is True
+
+
+def test_save_health_snapshot_resolves_per_engagement_when_no_path(tmp_path, monkeypatch):
+    # With no explicit path it must land under the ACTIVE engagement's dir,
+    # same per-target resolution budget.json/work-registry.json use.
+    pointer = str(tmp_path / ".active-engagement")
+    root = str(tmp_path / "engagements")
+    monkeypatch.setattr("engagement_paths.ACTIVE_POINTER", pointer)
+    monkeypatch.setattr("engagement_paths.ENGAGEMENTS_ROOT", root)
+    import engagement_paths
+    engagement_paths.set_active_target("target-x.com", pointer, root)
+    mcp_connectivity.save_health_snapshot({"burp": "failed"})
+    expected = os.path.join(root, "target-x-com", "mcp-health.json")
+    assert os.path.isfile(expected)
+    with open(expected) as f:
+        assert json.load(f)["disconnected"] == {"burp": "failed"}
+
+
+def test_collect_live_statuses_empty_when_opencode_missing(monkeypatch):
+    monkeypatch.setattr(mcp_connectivity.shutil, "which", lambda _: None)
+    assert mcp_connectivity.collect_live_statuses() == {}
+
+
+def test_collect_live_statuses_parses_subprocess_output(monkeypatch):
+    monkeypatch.setattr(mcp_connectivity.shutil, "which", lambda _: "/usr/bin/opencode")
+
+    class _R:
+        returncode = 0
+        stdout = "●  ✓ writeup-mcp \x1b[90mconnected\n●  ✗ burp \x1b[91mfailed\n"
+
+    monkeypatch.setattr(mcp_connectivity.subprocess, "run", lambda *a, **k: _R())
+    statuses = mcp_connectivity.collect_live_statuses()
+    assert statuses == {"writeup-mcp": "connected", "burp": "failed"}
 
 
 # ------------------------------------------------- live integration (gated)

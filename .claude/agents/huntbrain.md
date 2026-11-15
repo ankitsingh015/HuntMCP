@@ -24,18 +24,29 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
 
 0. MCP connectivity smoke check, once per session before anything else:
    `python3 -c "import sys; sys.path.insert(0,'mcp-servers'); import
-   mcp_connectivity, subprocess; r=subprocess.run(['opencode','mcp','list'],
-   capture_output=True, text=True, timeout=30);
-   print(mcp_connectivity.summarize_for_agent_context
-   (mcp_connectivity.parse_mcp_list_output(r.stdout)) if r.returncode==0
-   else 'could not run opencode mcp list')"` via Bash. Reported live in an
-   engagement retrospective: one MCP integration was configured but failed
-   to connect for an entire session, "only visible via host-level
-   connection diagnostics, not communicated to the agent" — any specialist
-   relying on it silently lost that capability the whole run, discovered
-   only after the fact. If this reports any server NOT connected, tell the
-   user immediately (before Phase 1) rather than discovering the gap
-   mid-engagement when a specialist's tool call unexpectedly fails.
+   mcp_connectivity as mc; s=mc.collect_live_statuses();
+   print(mc.summarize_for_agent_context(s) if s else 'could not run opencode
+   mcp list')"` via Bash. Reported live in an engagement retrospective: one
+   MCP integration was configured but failed to connect for an entire
+   session, "only visible via host-level connection diagnostics, not
+   communicated to the agent" — any specialist relying on it silently lost
+   that capability the whole run, discovered only after the fact. If this
+   reports any server NOT connected, tell the user immediately (before Phase
+   1) rather than discovering the gap mid-engagement when a specialist's
+   tool call unexpectedly fails.
+   Then, once the engagement is `set` (step 3 below, so it lands under the
+   target's own `data/engagements/<slug>/`), PERSIST the result so a finding
+   whose primary validation path was down can cite it from the case store,
+   not just this transient context (issue #134): `python3 -c "import sys;
+   sys.path.insert(0,'mcp-servers'); import mcp_connectivity as mc;
+   s=mc.collect_live_statuses(); mc.save_health_snapshot(s) if s else
+   print('mcp health: could not check, prior snapshot left intact')"` — the
+   guard matters: persisting an empty "could not check" result would read
+   back identically to "all healthy." exploit-agent reads
+   it back with `mcp_connectivity.unavailable_servers()` and, for any down
+   server, notes the documented fallback (`mcp_connectivity.fallback_for(name)`
+   — e.g. Burp Repeater → raw curl; Burp Collaborator → oob-mcp) on the
+   finding rather than degrading ad hoc.
 1. Parse optional flags from the user's request first: `--quick` (recon +
    nuclei only, skip chaining) or `--deep` (full depth — recon-agent and
    scan-agent both read this flag directly, e.g. wider port ranges and
