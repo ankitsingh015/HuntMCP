@@ -24,18 +24,29 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
 
 0. MCP connectivity smoke check, once per session before anything else:
    `python3 -c "import sys; sys.path.insert(0,'mcp-servers'); import
-   mcp_connectivity, subprocess; r=subprocess.run(['opencode','mcp','list'],
-   capture_output=True, text=True, timeout=30);
-   print(mcp_connectivity.summarize_for_agent_context
-   (mcp_connectivity.parse_mcp_list_output(r.stdout)) if r.returncode==0
-   else 'could not run opencode mcp list')"` via Bash. Reported live in an
-   engagement retrospective: one MCP integration was configured but failed
-   to connect for an entire session, "only visible via host-level
-   connection diagnostics, not communicated to the agent" — any specialist
-   relying on it silently lost that capability the whole run, discovered
-   only after the fact. If this reports any server NOT connected, tell the
-   user immediately (before Phase 1) rather than discovering the gap
-   mid-engagement when a specialist's tool call unexpectedly fails.
+   mcp_connectivity as mc; s=mc.collect_live_statuses();
+   print(mc.summarize_for_agent_context(s) if s else 'could not run opencode
+   mcp list')"` via Bash. Reported live in an engagement retrospective: one
+   MCP integration was configured but failed to connect for an entire
+   session, "only visible via host-level connection diagnostics, not
+   communicated to the agent" — any specialist relying on it silently lost
+   that capability the whole run, discovered only after the fact. If this
+   reports any server NOT connected, tell the user immediately (before Phase
+   1) rather than discovering the gap mid-engagement when a specialist's
+   tool call unexpectedly fails.
+   Then, once the engagement is `set` (step 3 below, so it lands under the
+   target's own `data/engagements/<slug>/`), PERSIST the result so a finding
+   whose primary validation path was down can cite it from the case store,
+   not just this transient context (issue #134): `python3 -c "import sys;
+   sys.path.insert(0,'mcp-servers'); import mcp_connectivity as mc;
+   s=mc.collect_live_statuses(); mc.save_health_snapshot(s) if s else
+   print('mcp health: could not check, prior snapshot left intact')"` — the
+   guard matters: persisting an empty "could not check" result would read
+   back identically to "all healthy." exploit-agent reads
+   it back with `mcp_connectivity.unavailable_servers()` and, for any down
+   server, notes the documented fallback (`mcp_connectivity.fallback_for(name)`
+   — e.g. Burp Repeater → raw curl; Burp Collaborator → oob-mcp) on the
+   finding rather than degrading ad hoc.
 1. Parse optional flags from the user's request first: `--quick` (recon +
    nuclei only, skip chaining) or `--deep` (full depth — recon-agent and
    scan-agent both read this flag directly, e.g. wider port ranges and
@@ -75,16 +86,26 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
    further input, unless something is genuinely ambiguous (e.g. conflicting
    in-scope/out-of-scope entries) or authorization is missing entirely.
 2. Run `scripts/switch-engagement.sh check <target>` FIRST, before `set`
-   or anything else — exit 3 means this chat is already mid-hunt on a
-   DIFFERENT target that isn't marked complete yet. When that happens,
-   stop and ask the user: continue this target in THIS chat (mixing two
-   targets' narration in one conversation, even though their on-disk
-   state stays isolated either way), or open a brand-new chat session for
-   the new target instead — one company per chat is the point, and
-   per-target directories alone don't enforce that at the conversation
-   level. Proceed only once they've chosen. Exit 0 means no conflict
-   (nothing active yet, this IS the active target — a resume, or the
-   active target is already marked complete) — proceed straight through.
+   or anything else — exit 3 flags one of two conditions the stderr
+   message spells out:
+   - **chat already mid-hunt on a DIFFERENT target** that isn't marked
+     complete yet. Stop and ask the user: continue this target in THIS
+     chat (mixing two targets' narration in one conversation, even though
+     their on-disk state stays isolated either way), or open a brand-new
+     chat session for the new target instead — one company per chat is
+     the point, and per-target directories alone don't enforce that at
+     the conversation level. Proceed only once they've chosen.
+   - **stale in-force config**: the `engagement.yaml` that `scope_guard`
+     would actually LOAD right now belongs to a *different* target than
+     the one you're starting (a left-over root `engagement.yaml`, or a
+     completed-but-still-pointed engagement). Until you `set` this target
+     and write its own `engagement.yaml`, every scope check and audit
+     entry would reference the WRONG engagement. This is the issue #145
+     hazard — do NOT proceed on the stale config; continue to step 3
+     (`set` + write this target's `engagement.yaml`), which replaces it.
+   Exit 0 means no conflict and no stale config (nothing active yet, this
+   IS the active target — a resume, or the active target is already
+   marked complete and its config matches) — proceed straight through.
 3. Run `scripts/switch-engagement.sh set <target>` — this points every
    guard module (`scope_guard.py`,
    `budget_guard.py`, `work_registry.py`, `dedupe_check.py`,

@@ -323,21 +323,39 @@ def replay_authz_two_step(url: str, carried_path: str, step2_url_template: str,
         if refusal:
             return _done(f"BLOCKED: {redact_text(refusal)} -- no request was sent.")
         host = authz_diff.approval_host(url)
-        fingerprint = authz_diff.workflow_fingerprint(wf, owner_headers, other_headers)
-        summary = authz_diff.workflow_summary(wf, owner_headers, other_headers)
-        if len(summary) > state_change_confirm.PROMPT_SUMMARY_LIMIT:  # the human could not read all of it
-            return _done("ERROR: this workflow's description is too long for a human to confirm in full "
-                         "(shorten the URLs) -- no request was sent.")
-        # what the human's confirm prompt will show, built here from the real workflow
-        state_change_confirm.write_pending(host, needed, fingerprint, summary)
-        approval = state_change_confirm.consume_approval(host, needed, fingerprint)
-        if approval is None:
-            return _done(
-                f"BLOCKED: this workflow sends state-changing method(s) {needed}, which need a human's "
-                f"single-use confirmation bound to exactly what will be sent: {summary}. "
-                "Ask the user to read that, then run in their own "
-                f"terminal: scripts/confirm-state-change.sh {shlex.quote(host)} {','.join(needed)} {fingerprint} "
-                "-- no request was sent.")
+        # #132 fast path: when BOTH identities are captured (researcher-owned,
+        # on-file) labels and the engagement pre-authorized the own-account
+        # credential-replay class, a single TTY confirmation is enough -- the
+        # fingerprint register round trip (which can outlast a short-lived
+        # external credential) is skipped. Raw cookie/token identities do NOT
+        # qualify; they keep the full fingerprint gate below. The human
+        # keystroke, single-use token and audit entry are unchanged.
+        _FAST_CLASS = "own-account-credential-replay"
+        if owner_label and other_label and state_change_confirm.fast_path_allowed(_FAST_CLASS):
+            approval = state_change_confirm.consume_approval(host, needed, preauth_class=_FAST_CLASS)
+            if approval is None:
+                return _done(
+                    f"BLOCKED: this workflow sends state-changing method(s) {needed}. Both identities are "
+                    f"researcher-owned captured identities and the engagement pre-authorized {_FAST_CLASS!r}, "
+                    "so one fast-path confirmation is enough (no fingerprint). Ask the user to run in their "
+                    f"own terminal: scripts/confirm-state-change.sh {shlex.quote(host)} {','.join(needed)} "
+                    f"--class {_FAST_CLASS} -- no request was sent.")
+        else:
+            fingerprint = authz_diff.workflow_fingerprint(wf, owner_headers, other_headers)
+            summary = authz_diff.workflow_summary(wf, owner_headers, other_headers)
+            if len(summary) > state_change_confirm.PROMPT_SUMMARY_LIMIT:  # the human could not read all of it
+                return _done("ERROR: this workflow's description is too long for a human to confirm in full "
+                             "(shorten the URLs) -- no request was sent.")
+            # what the human's confirm prompt will show, built here from the real workflow
+            state_change_confirm.write_pending(host, needed, fingerprint, summary)
+            approval = state_change_confirm.consume_approval(host, needed, fingerprint)
+            if approval is None:
+                return _done(
+                    f"BLOCKED: this workflow sends state-changing method(s) {needed}, which need a human's "
+                    f"single-use confirmation bound to exactly what will be sent: {summary}. "
+                    "Ask the user to read that, then run in their own "
+                    f"terminal: scripts/confirm-state-change.sh {shlex.quote(host)} {','.join(needed)} {fingerprint} "
+                    "-- no request was sent.")
     result = authz_diff.run_two_step(wf, owner_headers, other_headers,
                                      budget_cb=lambda: _enforce_budget("idor-mcp"), approval=approval)
     lines = [f"Workflow: {redact_text(url)} -> {redact_text(step2_url_template)}",

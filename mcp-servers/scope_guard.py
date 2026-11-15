@@ -128,10 +128,30 @@ class Engagement:
     out_of_scope: list[str] = field(default_factory=list)
     program_url: str = ""
     authorized_on: str = ""
+    # #132: fast-path authorization classes the human pre-approved at
+    # engagement start (see state_change_confirm.PREAUTHORIZABLE_CLASSES).
+    # Optional; absent/empty means every state change keeps the full
+    # fingerprint confirmation gate.
+    preauthorized_classes: list[str] = field(default_factory=list)
+    # #131: minimum seconds between ad-hoc research_http requests, enforced by
+    # research_http.py so one-off probe scripts can't hammer the target. Optional;
+    # 0.0 (default) means no forced delay (scope + budget still apply).
+    min_request_interval_s: float = 0.0
 
 
 class NoEngagementFile(Exception):
     pass
+
+
+def _coerce_interval(value) -> float:
+    """engagement.yaml's min_request_interval_s -> a non-negative float.
+    Never raises: load_engagement() runs on every scope check, so a missing,
+    null, or malformed value must degrade to 0.0 (no forced delay), not crash
+    the gate. A negative value is clamped to 0.0."""
+    try:
+        return max(0.0, float(value)) if value is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def load_engagement(path: str | None = None) -> Engagement:
@@ -164,6 +184,8 @@ def load_engagement(path: str | None = None) -> Engagement:
         out_of_scope=data.get("out_of_scope", []) or [],
         program_url=data.get("program_url", ""),
         authorized_on=data.get("authorized_on", ""),
+        preauthorized_classes=data.get("preauthorized_classes", []) or [],
+        min_request_interval_s=_coerce_interval(data.get("min_request_interval_s")),
     )
 
 
