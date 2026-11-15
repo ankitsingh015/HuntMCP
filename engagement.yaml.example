@@ -12,6 +12,13 @@ out_of_scope:
 program_url: https://hackerone.com/example-program
 authorized_on: "2026-08-22"
 notes: "1 req/s per host default; no DoS; no social engineering"
+# Optional (#131). Minimum seconds between ad-hoc research_http requests. Any
+# one-off probe script MUST make HTTP calls via `from research_http import get,
+# post` (never raw urllib), which enforces scope + budget + this delay + audit
+# on every call. Set this to the program's rate limit (e.g. 1.0 for ~1 req/s)
+# so a hand-written script cannot hammer the target; omit it (default 0.0) for
+# no forced delay -- scope and budget counting still apply either way.
+# min_request_interval_s: 1.0
 # Optional (#132). Fast-path authorization classes YOU (the human) pre-approve
 # ONCE here at engagement start, for a bounded, lower-blast-radius state-change
 # pattern. A matching replay then needs only a single terminal confirmation
