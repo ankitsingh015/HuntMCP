@@ -212,7 +212,7 @@ def test_extract_hosts_from_bash_still_flags_host_header_value_as_a_target():
     assert "allowed-corp.com" in hosts
 
 
-# GitHub issue #129 (recurring across engagements -- Manatal 2026-11-05,
+# GitHub issue #129 (recurring across engagements -- a past engagement 2026-11-05,
 # behindthename.com 2026-11-12): the old bare-hostname fallback scanned the
 # ENTIRE command string with HOSTNAME_RE and treated any word.word token as a
 # host candidate, so dotted code identifiers (json.load, sys.path.insert,
@@ -229,7 +229,7 @@ def test_extract_hosts_from_bash_still_flags_host_header_value_as_a_target():
     "command",
     [
         # dotted code identifiers in a piped python one-liner (the original
-        # Manatal json.load report) -- the curl target is in scope, the python
+        # an engagement json.load report) -- the curl target is in scope, the python
         # attribute/module access must not be read as a second host.
         'curl -s https://realtarget-corp.com/api | python3 -c "import sys, json; print(json.load(sys.stdin))"',
         'curl -s https://realtarget-corp.com/api | python3 -c "import subprocess; subprocess.run([1])"',
@@ -299,7 +299,7 @@ def test_issue129_still_blocks_bare_out_of_scope_host_end_to_end(monkeypatch, tm
 
 
 def test_issue129_allows_in_scope_curl_piped_into_python(monkeypatch, tmp_path):
-    """End-to-end companion to the unit tests above: the exact Manatal shape
+    """End-to-end companion to the unit tests above: the exact observed shape
     (an in-scope curl piped into a python one-liner using json.load) must be
     allowed, not blocked on the dotted identifier."""
     monkeypatch.chdir(tmp_path)

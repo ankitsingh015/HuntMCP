@@ -54,6 +54,7 @@ import sys
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 
 import browser_confirm
+import session_capture
 from injection_boundary import quarantine as _quarantine
 from mcp.server.fastmcp import FastMCP
 
@@ -332,6 +333,77 @@ async def list_open_interventions() -> str:
         marker = " [LIKELY ABANDONED]" if it["likely_abandoned"] else ""
         lines.append(f"  {it['session_file']} -- open {it['open_seconds']:.0f}s{marker}")
     return "\n".join(lines)
+
+
+# ----------------------------------------- session capture (#128, #133, #137)
+# Human-driven identity/session capture: the human logs in by hand in a real
+# window; these tools automate only the EXTRACTION afterwards, and NO secret
+# (cookie value, bearer, storage_state, OTP, mailbox password) is ever returned
+# to the agent -- see mcp-servers/session_capture.py. Tier-2: run
+# scripts/check-scope.sh <host> first (start_capture / capture_oauth_redirect
+# also enforce scope in-code via scope_guard, the definitive boundary, since
+# their login_url/start_url params are not HOST_ARG_KEYS-extracted by the hook).
+
+
+@app.tool()
+def list_test_identities() -> str:
+    """List the configured test-identity labels (the capture allowlist) with
+    their human notes and whether a mailbox is configured. Secret-free: never
+    includes profile paths or any mailbox credentials. Use this to pick which
+    designated test account to capture -- NEVER your personal/company account."""
+    return json.dumps(session_capture.list_identities(), indent=2)
+
+
+@app.tool()
+async def start_capture(identity_label: str, login_url: str) -> str:
+    """Open a REAL, VISIBLE, DEDICATED-profile browser window at login_url for
+    the human to log in BY HAND (captcha/2FA/SSO) -- never automated. Returns a
+    non-secret status plus the exact scripts/confirm-capture.sh command the
+    HUMAN must run in their own terminal; then call finish_capture. The
+    per-identity persistent profile reuses an SSO login across captures.
+    Requires scope-gate clearance first (Tier-2)."""
+    return json.dumps(await session_capture.start_capture(identity_label, login_url), indent=2)
+
+
+@app.tool()
+async def finish_capture(identity_label: str, whoami_url: str = "") -> str:
+    """After the human logged in and confirmed via confirm-capture.sh, extract
+    the in-scope cookies (full attributes) + sniffed Authorization header, write
+    them to a 0600 identities.json + domain-scoped session file, and return ONLY
+    a non-secret summary ({identity, captured, cookie_count, has_bearer,
+    whoami}). Pass whoami_url (an in-scope endpoint) to auto-label user_id/role/
+    org. Downstream browser-mcp tools consume the capture via session_file path."""
+    return json.dumps(await session_capture.finish_capture(identity_label, whoami_url=whoami_url), indent=2)
+
+
+@app.tool()
+async def apply_pending_otp(identity_label: str) -> str:
+    """Read the latest OTP/verification code from identity_label's OWN test
+    mailbox (IMAP, read-only) and TYPE it into the open capture window -- removes
+    the mailbox copy/paste round trip. Returns {otp_applied: bool} only, never
+    the code. Requires an open start_capture window and a roster mailbox."""
+    return json.dumps(await session_capture.apply_pending_otp(identity_label), indent=2)
+
+
+@app.tool()
+async def open_pending_magic_link(identity_label: str, link_host: str) -> str:
+    """Read the latest magic-link for identity_label's OWN test mailbox (IMAP,
+    read-only) whose host is link_host, and navigate the open capture window to
+    it. Returns {magic_link_opened: bool} only. link_host is host-validated and
+    must be in scope. Requires an open start_capture window and a roster mailbox."""
+    return json.dumps(await session_capture.open_pending_magic_link(identity_label, link_host), indent=2)
+
+
+@app.tool()
+async def capture_oauth_redirect(identity_label: str, start_url: str, callback_host: str) -> str:
+    """Capture an OAuth provider's redirect parameters (e.g. ?code=...) before
+    the application consumes them (#133). Opens a fresh, cookie-less window; the
+    human completes consent by hand; the tool extracts the callback query params
+    to a 0600 file under secrets/oauth/. Returns ONLY {captured_params,
+    callback_host} -- never the code. Requires scope-gate clearance first (Tier-2)."""
+    return json.dumps(
+        await session_capture.capture_oauth_redirect(identity_label, start_url, callback_host), indent=2
+    )
 
 
 if __name__ == "__main__":

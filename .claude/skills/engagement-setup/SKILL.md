@@ -102,6 +102,33 @@ testing it. For every discovered subdomain/endpoint/version string:
 research public CVEs/exploits (writeup-mcp's `fetch_cves`), then actually
 attempt exploitation, not just note it.
 
+## Account/identity topology (before authenticated testing)
+
+When the VDP/scope implies authenticated or multi-account testing (IDOR,
+vertical/horizontal privilege checks, session testing), decide the account
+**topology** up front -- BEFORE the human creates accounts -- not mid-hunt.
+State, in one line, what the planned tests actually need:
+
+- **Cross-tenant / cross-org IDOR** -> **two SEPARATE organizations** (two
+  accounts, each in its own tenant).
+- **Vertical privilege escalation** -> **ONE organization with at least two
+  different role levels** (e.g. an admin AND a low-privilege member).
+- **Horizontal same-tenant IDOR** -> **two users in the SAME organization**.
+
+Derive it from the VDP text first, then refine it against the app's real role
+model as recon reveals it (roles, org/tenant boundaries, invite flows). Getting
+this wrong costs a full round trip of account setup -- observed live (a past engagement,
+#136): two admins in the *same* company were set up first (useless for either
+test), then one had to be demoted mid-engagement to make the vertical check
+possible at all.
+
+Tie-in: once the human has the right accounts, register them in the
+test-identity roster and capture each with `start_capture`/`finish_capture`
+(see the session-capture setup). Authenticated tools then consume each identity
+by **label** (e.g. idor-mcp's `owner_label`/`other_label`), so no credential is
+pasted into the transcript. The two-account owner-vs-other procedure itself is
+in the `access-control-and-idor` skill.
+
 ## ROI priority order
 
 This is an ORDERING rule -- every phase/skill still runs in full on

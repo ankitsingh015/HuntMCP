@@ -17,7 +17,7 @@ def _isolate_engagement_paths(monkeypatch, tmp_path):
     path (engagement_paths.resolve()/get_active_target() with no explicit
     pointer and no HUNTMCP_*_PATH override) reads the live
     data/.active-engagement pointer and writes into the live
-    data/engagements/<slug>/ directory -- observed live (#130, Manatal
+    data/engagements/<slug>/ directory -- observed live (#130, a past engagement
     2026-11-05): 15 state-change-pending-*.json files and matching audit
     entries left inside a real engagement's evidence/audit trail by localhost
     test runs. That previously depended on every test author remembering to

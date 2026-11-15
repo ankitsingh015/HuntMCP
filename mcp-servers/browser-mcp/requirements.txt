@@ -1,2 +1,5 @@
 mcp>=1.0.0,<2.0.0
-playwright>=1.40.0
+# Pinned (#137): a drift between the playwright pip package and the installed
+# browser revision fails with a cryptic mid-launch error. Re-run
+# `playwright install chromium` whenever this pin is bumped.
+playwright>=1.40.0,<1.63.0
