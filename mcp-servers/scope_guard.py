@@ -128,6 +128,11 @@ class Engagement:
     out_of_scope: list[str] = field(default_factory=list)
     program_url: str = ""
     authorized_on: str = ""
+    # #132: fast-path authorization classes the human pre-approved at
+    # engagement start (see state_change_confirm.PREAUTHORIZABLE_CLASSES).
+    # Optional; absent/empty means every state change keeps the full
+    # fingerprint confirmation gate.
+    preauthorized_classes: list[str] = field(default_factory=list)
 
 
 class NoEngagementFile(Exception):
@@ -164,6 +169,7 @@ def load_engagement(path: str | None = None) -> Engagement:
         out_of_scope=data.get("out_of_scope", []) or [],
         program_url=data.get("program_url", ""),
         authorized_on=data.get("authorized_on", ""),
+        preauthorized_classes=data.get("preauthorized_classes", []) or [],
     )
 
 

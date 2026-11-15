@@ -220,3 +220,100 @@ def test_a_summary_within_the_limit_is_shown_in_full_without_a_warning(token):
     phrase = scc.target_string("t.example.com", ["POST"], FP)
     scc.request_confirmation("t.example.com", ["POST"], FP, stdin=_FakeTTY(phrase + "\n"), stdout=out)
     assert text in out.getvalue() and "DO NOT CONFIRM" not in out.getvalue()
+
+
+# --- #132: pre-authorized-class fast path -----------------------------------------
+# A narrower authorization class the human grants ONCE per engagement (via
+# engagement.yaml preauthorized_classes) for a bounded pattern: replaying a
+# short-lived external credential against another researcher-owned account.
+# A matching request skips only the fingerprint register round trip -- it STILL
+# needs a human TTY keystroke and is STILL single-use and audited. Anything NOT
+# pre-authorized keeps the full fingerprint gate unchanged.
+
+CLASS = "own-account-credential-replay"
+
+
+@pytest.fixture
+def preauthorized(monkeypatch):
+    """Make the engagement list CLASS in preauthorized_classes."""
+    class _Eng:
+        preauthorized_classes = [CLASS]
+    monkeypatch.setattr(scc, "load_engagement", lambda *a, **k: _Eng())
+
+
+@pytest.fixture
+def not_preauthorized(monkeypatch):
+    class _Eng:
+        preauthorized_classes = []
+    monkeypatch.setattr(scc, "load_engagement", lambda *a, **k: _Eng())
+
+
+def _confirm_fast(host, methods, class_id):
+    phrase = scc.target_string(host, methods, preauth_class=class_id)
+    return scc.request_confirmation(host, methods, preauth_class=class_id,
+                                    stdin=_FakeTTY(phrase + "\n"), stdout=io.StringIO())
+
+
+def test_fast_path_target_is_class_bound(preauthorized):
+    assert scc.target_string("T.example.com", ["post"], preauth_class=CLASS) == \
+        "t.example.com|POST|preauth:" + CLASS
+
+
+def test_fast_path_allowed_only_when_engagement_lists_the_class(preauthorized):
+    assert scc.fast_path_allowed(CLASS) is True
+
+
+def test_fast_path_not_allowed_when_engagement_omits_the_class(not_preauthorized):
+    assert scc.fast_path_allowed(CLASS) is False
+
+
+def test_fast_path_unknown_class_never_allowed(monkeypatch):
+    class _Eng:
+        preauthorized_classes = ["totally-made-up-class"]
+    monkeypatch.setattr(scc, "load_engagement", lambda *a, **k: _Eng())
+    assert scc.fast_path_allowed("totally-made-up-class") is False
+
+
+def test_fast_path_single_tty_confirmation_yields_single_use_approval(token, preauthorized):
+    assert _confirm_fast("t.example.com", ["POST"], CLASS) is True
+    approval = scc.consume_approval("t.example.com", ["POST"], preauth_class=CLASS)
+    assert approval and approval["methods"] == ["POST"]
+    assert approval.get("preauth_class") == CLASS
+    # single-use
+    assert scc.consume_approval("t.example.com", ["POST"], preauth_class=CLASS) is None
+
+
+def test_fast_path_still_requires_a_tty(token, preauthorized):
+    phrase = scc.target_string("t.example.com", ["POST"], preauth_class=CLASS)
+    ok = scc.request_confirmation("t.example.com", ["POST"], preauth_class=CLASS,
+                                  stdin=io.StringIO(phrase + "\n"), stdout=io.StringIO())
+    assert ok is False
+    assert not os.path.exists(token)
+
+
+def test_fast_path_refused_when_class_not_preauthorized(token, not_preauthorized):
+    # Even a real human TTY keystroke must not open the fast path if the
+    # engagement never pre-authorized the class.
+    assert _confirm_fast("t.example.com", ["POST"], CLASS) is False
+    assert not os.path.exists(token)
+    assert scc.consume_approval("t.example.com", ["POST"], preauth_class=CLASS) is None
+
+
+def test_fast_path_token_does_not_satisfy_the_fingerprint_gate(token, preauthorized):
+    assert _confirm_fast("t.example.com", ["POST"], CLASS) is True
+    # A class-bound confirmation must NOT authorize a fingerprint-bound consume,
+    # a plain host+methods consume, or a different class.
+    assert scc.consume_approval("t.example.com", ["POST"], FP) is None
+    assert scc.consume_approval("t.example.com", ["POST"]) is None
+    # still redeemable by its own class
+    assert scc.consume_approval("t.example.com", ["POST"], preauth_class=CLASS) is not None
+
+
+def test_fast_path_consume_writes_an_audit_entry(token, preauthorized, tmp_path, monkeypatch):
+    audit = str(tmp_path / "audit.jsonl")
+    monkeypatch.setenv("HUNTMCP_AUDIT_LOG", audit)
+    assert _confirm_fast("t.example.com", ["POST"], CLASS) is True
+    assert scc.consume_approval("t.example.com", ["POST"], preauth_class=CLASS) is not None
+    assert os.path.isfile(audit)
+    body = open(audit).read()
+    assert CLASS in body

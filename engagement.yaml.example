@@ -12,6 +12,22 @@ out_of_scope:
 program_url: https://hackerone.com/example-program
 authorized_on: "2026-08-22"
 notes: "1 req/s per host default; no DoS; no social engineering"
+# Optional (#132). Fast-path authorization classes YOU (the human) pre-approve
+# ONCE here at engagement start, for a bounded, lower-blast-radius state-change
+# pattern. A matching replay then needs only a single terminal confirmation
+# (scripts/confirm-state-change.sh ... --class <id>) instead of the two-step
+# register-then-confirm fingerprint flow -- useful when a short-lived external
+# credential would expire during the round trip. It STILL requires your
+# interactive keystroke, is STILL single-use, and is STILL audited; only the
+# register round trip is removed. Anything not matching a listed class keeps
+# the full fingerprint gate. Omit this (the default) to require the full gate
+# for every state change. Only classes the build defines are honored:
+#   own-account-credential-replay -- replay a short-lived, externally-issued
+#     credential against ANOTHER account you already own (both identities
+#     captured/on file as researcher-owned), reversible by its own
+#     disconnect/revoke, creating no new resource in another tenant's data.
+# preauthorized_classes:
+#   - own-account-credential-replay
 # Optional. Machine-readable scan policy, consumed by scan-agent before
 # bulk/template-based scanner calls (mcp-servers/scan_policy.py) -- a
 # program that prohibits or caps automated scanning should set this

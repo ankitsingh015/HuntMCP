@@ -23,11 +23,31 @@ import sys
 import tempfile
 import time
 
+import audit_log
 import engagement_paths
 import rce_confirm
+from scope_guard import NoEngagementFile, load_engagement
 
 CONFIRM_FILENAME = "state-change-confirm.json"
 APPROVABLE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# #132: a narrower authorization class the human grants ONCE per engagement
+# (engagement.yaml `preauthorized_classes`) for a bounded, lower-blast-radius
+# pattern. A request matching a pre-authorized class may fire with a SINGLE
+# terminal confirmation instead of the two-step register-then-confirm flow --
+# only the fingerprint register round trip is removed, never the human TTY
+# keystroke, the single-use token, or the audit entry. The dict key is the
+# class id; its value is the human-readable scope the confirm prompt shows so
+# the human knows exactly what they pre-authorized. Only ids defined HERE can
+# ever be fast-pathed, even if engagement.yaml lists an unknown one.
+PREAUTHORIZABLE_CLASSES: dict[str, str] = {
+    "own-account-credential-replay": (
+        "Replay a short-lived, externally-issued credential against ANOTHER "
+        "account the researcher already owns (both identities captured/on file "
+        "as researcher-owned), reversible by its own disconnect/revoke call, "
+        "creating no new resource in another tenant's data."
+    ),
+}
 
 
 # Used only when no engagement is active: a per-user directory that must be private to this user
@@ -68,12 +88,44 @@ def _methods(methods) -> list[str]:
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{32}")  # 128 bits: a birthday collision is out of reach
 
 
-def target_string(host: str, methods, fingerprint: str = "") -> str:
-    """host|METHODS or host|METHODS|fingerprint. The fingerprint (authz_diff.workflow_fingerprint) pins
-    the confirmation to the exact step URLs, methods and body hash the tool printed, so the agent
-    cannot reuse a confirmation for a different path or body on the same host."""
+def target_string(host: str, methods, fingerprint: str = "", preauth_class: str = "") -> str:
+    """host|METHODS, host|METHODS|fingerprint, or host|METHODS|preauth:<class>.
+
+    The fingerprint (authz_diff.workflow_fingerprint) pins the confirmation to
+    the exact step URLs, methods and body hash the tool printed, so the agent
+    cannot reuse a confirmation for a different path or body on the same host.
+
+    preauth_class (#132) binds a fast-path confirmation to a specific
+    pre-authorized class instead -- a class-bound token can never satisfy a
+    fingerprint consume, a plain host+methods consume, or a different class.
+    fingerprint and preauth_class are mutually exclusive; preauth_class wins
+    if both are somehow passed (the caller passes exactly one)."""
     base = f"{host.strip().lower()}|{','.join(_methods(methods))}"
+    if preauth_class:
+        return f"{base}|preauth:{preauth_class}"
     return f"{base}|{fingerprint}" if fingerprint else base
+
+
+def preauthorized_classes() -> set[str]:
+    """The set of fast-path classes the human listed in engagement.yaml's
+    `preauthorized_classes` AND that this module actually defines -- an
+    engagement.yaml entry for an unknown class id is ignored, never honored.
+    Empty when there is no engagement, it can't be read, or none are listed."""
+    try:
+        eng = load_engagement()
+    except (NoEngagementFile, RuntimeError):
+        return set()
+    listed = getattr(eng, "preauthorized_classes", None) or []
+    return {str(c).strip() for c in listed} & set(PREAUTHORIZABLE_CLASSES)
+
+
+def fast_path_allowed(class_id: str) -> bool:
+    """True iff `class_id` is a known preauthorizable class AND the active
+    engagement pre-authorized it. This is the ONLY switch that lets the
+    single-confirmation fast path exist for a request; everything else keeps
+    the full fingerprint gate. It does NOT remove the human TTY keystroke --
+    see request_confirmation()/consume_approval()."""
+    return class_id in PREAUTHORIZABLE_CLASSES and class_id in preauthorized_classes()
 
 
 def _pending_path(fingerprint: str) -> str:
@@ -153,50 +205,98 @@ def _show_pending(host: str, wanted: list[str], fingerprint: str, out) -> None:
               f"{_printable(summary)}", file=out)
 
 
-def request_confirmation(host: str, methods, fingerprint: str = "", stdin=None, stdout=None) -> bool:
-    """Human-only: writes a token iff stdin is a real TTY and the exact target string is typed back."""
+def request_confirmation(host: str, methods, fingerprint: str = "", preauth_class: str = "",
+                         stdin=None, stdout=None) -> bool:
+    """Human-only: writes a token iff stdin is a real TTY and the exact target string is typed back.
+
+    With preauth_class set (#132), this is the fast path: it is REFUSED unless
+    the engagement pre-authorized that class (fast_path_allowed), and it skips
+    the fingerprint register round trip -- but it still requires the human TTY
+    keystroke and still writes a single-use token, class-bound."""
+    out = stdout or sys.stdout
     wanted = _methods(methods)
     if not wanted or not set(wanted) <= APPROVABLE_METHODS:
-        print(f"Refusing: methods must be a non-empty subset of {sorted(APPROVABLE_METHODS)}.",
-              file=stdout or sys.stdout)
+        print(f"Refusing: methods must be a non-empty subset of {sorted(APPROVABLE_METHODS)}.", file=out)
         return False
-    if fingerprint and not _FINGERPRINT_RE.fullmatch(fingerprint):
+    if preauth_class:
+        if not fast_path_allowed(preauth_class):
+            print(f"Refusing fast path: class {preauth_class!r} is not pre-authorized for this engagement. "
+                  "The human must list it in engagement.yaml `preauthorized_classes` at engagement start, "
+                  "and it must be a class this build defines "
+                  f"({sorted(PREAUTHORIZABLE_CLASSES)}). Use the full fingerprint confirmation instead.",
+                  file=out)
+            return False
+    elif fingerprint and not _FINGERPRINT_RE.fullmatch(fingerprint):
         print("Refusing: the fingerprint must be 32 lowercase hex characters (copy it from the tool's message).",
-              file=stdout or sys.stdout)
+              file=out)
         return False
     try:
         path = token_path()
     except RuntimeError as e:
-        print(f"Refusing: {e}", file=stdout or sys.stdout)
+        print(f"Refusing: {e}", file=out)
         return False
-    if fingerprint:
-        _show_pending(host, wanted, fingerprint, stdout or sys.stdout)
-    return rce_confirm.request_confirmation(target_string(host, wanted, fingerprint), stdin=stdin,
-                                            stdout=stdout, path=path)
+    if preauth_class:
+        print(f"Fast path for pre-authorized class {preauth_class!r} -- this covers EXACTLY:\n  "
+              f"{_printable(PREAUTHORIZABLE_CLASSES[preauth_class])}\nConfirm only if this specific "
+              "replay stays within that class (own accounts, reversible).", file=out)
+    elif fingerprint:
+        _show_pending(host, wanted, fingerprint, out)
+    return rce_confirm.request_confirmation(target_string(host, wanted, fingerprint, preauth_class),
+                                            stdin=stdin, stdout=stdout, path=path)
 
 
-def consume_approval(host: str, methods, fingerprint: str = "") -> dict | None:
+def consume_approval(host: str, methods, fingerprint: str = "", preauth_class: str = "") -> dict | None:
     """The approval object authz_diff/cem_engine expect, iff a fresh token for exactly this
-    host+methods(+workflow fingerprint) exists (and consumes it); else None."""
+    host+methods(+workflow fingerprint, or +preauth class) exists (and consumes it); else None.
+
+    A preauth_class consume (#132) is refused outright unless the class is
+    still pre-authorized for this engagement -- defense in depth even if a
+    class-bound token somehow existed -- and writes a full audit entry so the
+    fast path is never off the engagement's own audit trail."""
     wanted = _methods(methods)
+    if preauth_class and not fast_path_allowed(preauth_class):
+        return None
     try:
         path = token_path()
     except RuntimeError:
         return None  # an unsafe token directory never yields an approval
-    if not wanted or not rce_confirm.check_and_consume(target_string(host, wanted, fingerprint), path=path):
+    if not wanted or not rce_confirm.check_and_consume(target_string(host, wanted, fingerprint, preauth_class), path=path):
         return None
     if fingerprint and _FINGERPRINT_RE.fullmatch(fingerprint):
         _drop_pending(fingerprint)  # the confirmation is spent; its summary has no further use
-    return {"methods": wanted, "reason": "human-confirmed via scripts/confirm-state-change.sh",
-            "authorized_by": "human (interactive TTY confirmation)"}
+    approval = {"methods": wanted, "reason": "human-confirmed via scripts/confirm-state-change.sh",
+                "authorized_by": "human (interactive TTY confirmation)"}
+    if preauth_class:
+        approval["preauth_class"] = preauth_class
+        # Still on the engagement's audit trail -- the whole point of #132 is
+        # that the fast path is faster, not quieter.
+        try:
+            audit_log.log_call("state-change-confirm:fast-path",
+                               [host.strip().lower(), ",".join(wanted), f"preauth:{preauth_class}"],
+                               returncode=0, duration_ms=0.0, block=None)
+        except (OSError, RuntimeError):
+            pass
+    return approval
 
 
 def _cli() -> bool:
-    if len(sys.argv) < 3:
-        print("Usage: scripts/confirm-state-change.sh <host[:port]> <METHOD[,METHOD...]> [fingerprint]",
-              file=sys.stderr)
+    argv = sys.argv[1:]
+    preauth_class = ""
+    if "--class" in argv:
+        i = argv.index("--class")
+        if i + 1 >= len(argv):
+            print("Usage: --class needs a value, e.g. --class own-account-credential-replay",
+                  file=sys.stderr)
+            return False
+        preauth_class = argv[i + 1]
+        argv = argv[:i] + argv[i + 2:]
+    if len(argv) < 2:
+        print("Usage: scripts/confirm-state-change.sh <host[:port]> <METHOD[,METHOD...]> "
+              "[fingerprint | --class <id>]", file=sys.stderr)
         return False
-    return request_confirmation(sys.argv[1], sys.argv[2].split(","), sys.argv[3] if len(sys.argv) > 3 else "")
+    fingerprint = argv[2] if len(argv) > 2 and not preauth_class else ""
+    return request_confirmation(argv[0], argv[1].split(","), fingerprint=fingerprint,
+                                preauth_class=preauth_class)
 
 
 if __name__ == "__main__":
