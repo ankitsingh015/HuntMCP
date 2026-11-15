@@ -127,6 +127,19 @@ share your motivated reasoning about whether it's worth reporting. Not
 required for every finding; treat the verdict as another input, not an
 override.
 
+**If the second opinion is unavailable, disclose it -- don't omit it.**
+`get_second_opinion(...)` now *fails loudly* (raises) when no cross-model
+provider is configured for the engagement, rather than returning a soft
+"unavailable" string (issue #135). If you reach for it on a close Q2/Q5
+call and it is unavailable, that is a real gap in rigor: note "cross-model
+review unavailable this engagement" explicitly on the finding. Submitting
+a borderline finding with the escalation silently skipped lets its absence
+imply more independent scrutiny than was actually applied -- the exact
+failure mode #135 was filed for. The disclosure is required on any finding
+whose acceptance/severity was close enough that you *would* have escalated
+had a second model been available; it is not needed on findings that never
+warranted escalation in the first place.
+
 ## Part 2 -- Evidence hygiene before it reaches a report
 
 Exploit-agent attaches evidence to a finding via `case-mcp add_evidence`

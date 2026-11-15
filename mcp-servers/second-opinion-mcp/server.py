@@ -61,6 +61,19 @@ _OPENAI_COMPAT_BASE_URLS = {
 }
 
 
+class SecondOpinionUnavailable(RuntimeError):
+    """Raised by get_second_opinion() when NO genuine cross-model review is
+    possible this session -- no provider key at all, or only the primary's.
+
+    Issue #135: this used to be a soft string returned from inside a normal
+    tool response ("No model provider available"), which looked like any
+    other successful result and got buried in one finding's draft notes --
+    discovered only by chance while drafting that report. Raising instead
+    surfaces it as a protocol-level tool ERROR the caller cannot mistake for
+    a CONFIRMED / LIKELY FALSE POSITIVE verdict, so a finding is never
+    silently treated as cross-model-reviewed when it wasn't."""
+
+
 def _pick_second_opinion_provider(exclude: str):
     """First provider in the chain, other than `exclude`, that has a key
     (or for ollama, OLLAMA_HOST) actually set -- same availability check
@@ -117,6 +130,62 @@ def _call_ollama(model: str, host: str, prompt: str) -> str:
     return data.get("message", {}).get("content", "")
 
 
+def cross_model_status(primary_role: str = "exploit") -> tuple[bool, str]:
+    """(available, human_reason). available=True iff a DIFFERENT provider
+    than the one that would run `primary_role` has a key configured -- i.e.
+    a genuine cross-model second opinion is actually possible this session.
+    Shared by get_second_opinion() (which raises when False) and
+    startup_warning() (which prints a loud banner when False), so the
+    availability decision is made in exactly one place. Never raises."""
+    try:
+        primary = select_provider(primary_role)
+    except (RuntimeError, ValueError) as e:
+        return False, (
+            f"No model provider is configured at all ({e}). A cross-model "
+            "second opinion is impossible this session -- any finding is "
+            "reviewed by only the model running the engagement, with no "
+            "independent check."
+        )
+    entry = _pick_second_opinion_provider(exclude=primary.name)
+    if entry is None:
+        return False, (
+            f"Only one provider has a key configured ({primary.name}); a "
+            "cross-model second opinion needs a DIFFERENT provider so the "
+            "reviewer has no stake in the first model's reasoning. Set at "
+            "least one more of: "
+            + ", ".join(e[1] for e in PROVIDER_CHAIN if e[0] != primary.name)
+        )
+    return True, (
+        f"available -- primary {primary.name!r}, second opinion via {entry[0]!r}"
+    )
+
+
+def startup_warning(primary_role: str = "exploit") -> str | None:
+    """The loud banner __main__ prints to stderr when cross-model review is
+    NOT available, so the gap is a visible engagement-start fact (issue
+    #135) instead of something discovered by chance mid-report. Returns None
+    when a second opinion IS available (nothing to warn about).
+
+    The engagement-level MCP health-check (issue #134) is intended to also
+    surface this; until that lands, this startup banner is the visible
+    signal, alongside get_second_opinion() raising on use."""
+    available, reason = cross_model_status(primary_role)
+    if available:
+        return None
+    bar = "!" * 72
+    return (
+        f"\n{bar}\n"
+        "second-opinion-mcp: CROSS-MODEL REVIEW UNAVAILABLE THIS SESSION.\n"
+        f"  {reason}\n"
+        "  Every get_second_opinion() call will FAIL (raise), not return a\n"
+        "  verdict. Any finding you would have cross-checked has NO independent\n"
+        "  review this session -- disclose that on the finding rather than\n"
+        "  letting its absence imply more rigor than was applied (see the\n"
+        "  pre-submission-validation skill).\n"
+        f"{bar}\n"
+    )
+
+
 @app.tool()
 def get_second_opinion(finding_summary: str, primary_role: str = "exploit") -> str:
     """Ask a DIFFERENT model provider than the one currently running this
@@ -126,20 +195,23 @@ def get_second_opinion(finding_summary: str, primary_role: str = "exploit") -> s
     exploit-agent's Phase 1.5 check already has). Returns the second
     model's verdict as text (CONFIRMED / LIKELY FALSE POSITIVE / NEEDS
     MORE EVIDENCE + its reasoning), for the human or exploit-agent to
-    weigh alongside the original confidence tag."""
-    try:
-        primary = select_provider(primary_role)
-    except (RuntimeError, ValueError) as e:
-        return f"Error: could not determine the primary provider to exclude: {e}"
+    weigh alongside the original confidence tag.
 
+    RAISES SecondOpinionUnavailable (a protocol-level tool error, not a
+    returned string) when no genuine cross-model review is possible this
+    session -- no provider key at all, or only the primary role's. That
+    error means "this finding got NO independent cross-model check"; treat
+    it as a disclosable gap in rigor (see the pre-submission-validation
+    skill), never as a transient failure to silently ignore (issue #135)."""
+    # Fail LOUDLY (raise -> protocol-level tool error) when no genuine
+    # cross-model review is possible, instead of returning a soft string the
+    # caller could mistake for a verdict and paste into a report (issue #135).
+    available, reason = cross_model_status(primary_role)
+    if not available:
+        raise SecondOpinionUnavailable(reason)
+
+    primary = select_provider(primary_role)
     entry = _pick_second_opinion_provider(exclude=primary.name)
-    if entry is None:
-        return (
-            "No second provider available -- only one provider has a key configured "
-            f"({primary.name}). Set at least one more of: "
-            + ", ".join(e[1] for e in PROVIDER_CHAIN if e[0] != primary.name)
-        )
-
     provider, key_env, default_model, base_url_env = entry
     prompt = REVIEW_PROMPT_TEMPLATE.format(finding_summary=finding_summary)
 
@@ -162,4 +234,7 @@ def get_second_opinion(finding_summary: str, primary_role: str = "exploit") -> s
 
 if __name__ == "__main__":
     print("second-opinion-mcp starting...", file=sys.stderr)
+    _banner = startup_warning()
+    if _banner:
+        print(_banner, file=sys.stderr)
     app.run(transport="stdio")
