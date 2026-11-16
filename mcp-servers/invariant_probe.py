@@ -68,7 +68,7 @@ Two shallow heuristic invariant templates:
 """
 from __future__ import annotations
 
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 READ_ACTIONS = frozenset({"read", "access", "get", "view", "show", "fetch"})
 _HOST = "invariant.local"  # placeholder authority for synthesized base requests
@@ -388,6 +388,71 @@ def _mine_vertical_privilege(resource, rows):
 
 
 # --------------------------------------------------------------------------- #
+# T4 -- state-gated parameter                                                 #
+#   A query param present on a 2xx request and ABSENT on a denied one is a     #
+#   candidate authorization/ownership gate. CEM then drops it and checks       #
+#   whether the request still succeeds (gate not enforced).                    #
+# --------------------------------------------------------------------------- #
+def _query_params(row) -> dict:
+    """Query params carried by a row's real captured request (preferred) or its
+    args dict -- the CEM-droppable surface for T4."""
+    br = row.get("base_request")
+    if br and br.get("url"):
+        return dict(parse_qsl(urlsplit(br["url"]).query, keep_blank_values=True))
+    args = row.get("args")
+    return {k: v for k, v in args.items()} if isinstance(args, dict) else {}
+
+
+def _mine_state_gated_param(resource, rows):
+    successes = [(r, _query_params(r)) for r in rows if _is_success(r["status"])]
+    denials = [(r, _query_params(r)) for r in rows if _is_denial(r["status"])]
+    if not successes or not denials:
+        return []
+
+    candidates, emitted = [], set()
+    for srow, sparams in successes:
+        br = srow.get("base_request")
+        if not br or not br.get("url"):
+            continue  # need a real request carrying the param for CEM to drop
+        present_in_url = dict(parse_qsl(urlsplit(br["url"]).query, keep_blank_values=True))
+        for pname, pval in sparams.items():
+            if not str(pval) or pname in emitted or pname not in present_in_url:
+                continue
+            # the param distinguishes success from denial: some denied request
+            # on this resource lacks it (or has it empty).
+            if not any(pname not in dparams or not str(dparams.get(pname, ""))
+                       for _, dparams in denials):
+                continue
+            emitted.add(pname)
+            body = srow.get("body") or ""
+            sig = {"status_in": [200]}
+            if body.strip():
+                sig["body_contains"] = _trim(body)
+            candidates.append({
+                "invariant": "state_gated_param",
+                "resource": resource,
+                "confidence": "high",  # present-on-success / absent-on-denial differential
+                "negative_control": {"denial_seen": True, "gate_param": pname},
+                "observation": (
+                    f"on '{resource}', a 2xx request carried query param '{pname}' that is "
+                    f"absent on a denied (401/403) request -- '{pname}' looks like the "
+                    f"authorization/ownership gate."),
+                "hypothesis": (
+                    f"state-gated-parameter invariant may be violated on '{resource}': the "
+                    f"gate param '{pname}' may not actually be enforced (candidate -- to be "
+                    f"falsified by CEM, not asserted)."),
+                "evidence_idx": sorted([srow["_idx"]] + [r["_idx"] for r, _ in denials]),
+                "cem_spec": {
+                    "base_request": br,
+                    "success_signature": sig,
+                    "conditions": [{"name": pname, "category": "state",
+                                    "baseline_value": pval, "perturbation": {"drop": True}}],
+                },
+            })
+    return candidates
+
+
+# --------------------------------------------------------------------------- #
 # Public API                                                                  #
 # --------------------------------------------------------------------------- #
 def mine_invariants(exchanges: list[dict]) -> list[dict]:
@@ -404,6 +469,7 @@ def mine_invariants(exchanges: list[dict]) -> list[dict]:
             candidates.append(own)
         candidates.extend(_mine_one_time_use(resource, rows))
         candidates.extend(_mine_vertical_privilege(resource, rows))
+        candidates.extend(_mine_state_gated_param(resource, rows))
     return candidates
 
 
