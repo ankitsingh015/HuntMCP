@@ -404,46 +404,67 @@ def _query_params(row) -> dict:
 
 
 def _mine_state_gated_param(resource, rows):
-    successes = [(r, _query_params(r)) for r in rows if _is_success(r["status"])]
-    denials = [(r, _query_params(r)) for r in rows if _is_denial(r["status"])]
-    if not successes or not denials:
+    """HIGH RECALL (CEM is precision): flag any query param that looks like an
+    access/privilege gate -- (A) present on a 2xx request and absent on a denied
+    one, OR (B) present on >=2 distinct identities' 2xx requests with DIFFERING
+    values (an identity/privilege-scoped param). Emit one candidate per
+    (param, identity) carrying it, so CEM can confirm the one whose drop removes
+    a leak (a real violation, e.g. a client-settable `role=admin`) and reject an
+    inert param (drop changes nothing). The denial trigger does NOT by itself
+    assert the param is necessary -- only CEM does."""
+    successes = [r for r in rows
+                 if _is_success(r["status"]) and (r.get("base_request") or {}).get("url")]
+    denial_params = [_query_params(r) for r in rows if _is_denial(r["status"])]
+    if not successes:
+        return []
+
+    seen: dict[str, set] = {}
+    for r in successes:
+        for k, v in _query_params(r).items():
+            if str(v):
+                seen.setdefault(k, set()).add((r.get("identity"), str(v)))
+
+    gate_params = set()
+    for pname, iv in seen.items():
+        absent_in_denial = any(pname not in dp or not str(dp.get(pname, ""))
+                               for dp in denial_params)
+        varies = len({i for i, _ in iv}) >= 2 and len({val for _, val in iv}) >= 2
+        if absent_in_denial or varies:
+            gate_params.add(pname)
+    if not gate_params:
         return []
 
     candidates, emitted = [], set()
-    for srow, sparams in successes:
-        br = srow.get("base_request")
-        if not br or not br.get("url"):
-            continue  # need a real request carrying the param for CEM to drop
-        present_in_url = dict(parse_qsl(urlsplit(br["url"]).query, keep_blank_values=True))
-        for pname, pval in sparams.items():
-            if not str(pval) or pname in emitted or pname not in present_in_url:
+    for r in successes:
+        params = _query_params(r)
+        for pname in sorted(gate_params):
+            pval = params.get(pname)
+            if not str(pval) if pval is not None else True:
                 continue
-            # the param distinguishes success from denial: some denied request
-            # on this resource lacks it (or has it empty).
-            if not any(pname not in dparams or not str(dparams.get(pname, ""))
-                       for _, dparams in denials):
+            key = (pname, r.get("identity"))
+            if key in emitted:
                 continue
-            emitted.add(pname)
-            body = srow.get("body") or ""
+            emitted.add(key)
+            body = r.get("body") or ""
             sig = {"status_in": [200]}
             if body.strip():
                 sig["body_contains"] = _trim(body)
             candidates.append({
                 "invariant": "state_gated_param",
                 "resource": resource,
-                "confidence": "high",  # present-on-success / absent-on-denial differential
-                "negative_control": {"denial_seen": True, "gate_param": pname},
+                "confidence": "medium",  # high recall; CEM decides enforcement
+                "negative_control": {"denial_seen": bool(denial_params), "gate_param": pname},
                 "observation": (
-                    f"on '{resource}', a 2xx request carried query param '{pname}' that is "
-                    f"absent on a denied (401/403) request -- '{pname}' looks like the "
-                    f"authorization/ownership gate."),
+                    f"on '{resource}', identity '{r.get('identity')}' carried query param "
+                    f"'{pname}' on a 2xx request -- a candidate access/privilege gate."),
                 "hypothesis": (
                     f"state-gated-parameter invariant may be violated on '{resource}': the "
-                    f"gate param '{pname}' may not actually be enforced (candidate -- to be "
-                    f"falsified by CEM, not asserted)."),
-                "evidence_idx": sorted([srow["_idx"]] + [r["_idx"] for r, _ in denials]),
+                    f"gate param '{pname}' may control access it should not, or not be "
+                    f"enforced (candidate -- to be falsified by CEM, not asserted)."),
+                "evidence_idx": sorted([r["_idx"]]
+                                       + [x["_idx"] for x in rows if _is_denial(x["status"])]),
                 "cem_spec": {
-                    "base_request": br,
+                    "base_request": r["base_request"],
                     "success_signature": sig,
                     "conditions": [{"name": pname, "category": "state",
                                     "baseline_value": pval, "perturbation": {"drop": True}}],

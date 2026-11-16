@@ -65,9 +65,23 @@ def test_no_candidate_when_no_param_distinguishes_gate():
     assert _gated(corpus) == []
 
 
-def test_no_candidate_without_a_denial():
+def test_param_varying_across_identities_is_flagged_without_a_denial():
+    """High recall (CEM is precision): a param whose value varies across >=2
+    identities' 2xx requests looks like an identity/privilege gate and is
+    flagged even with no denial present -- CEM then decides enforcement."""
     corpus = [
-        _row("alice", 200, "https://app.example.com/report?token=a", idx=0),
-        _row("bob", 200, "https://app.example.com/report?token=b", idx=1),
+        _row("alice", 200, "https://app.example.com/report?role=user", idx=0),
+        _row("bob", 200, "https://app.example.com/report?role=admin", idx=1),
+    ]
+    cands = _gated(corpus)
+    assert {c["cem_spec"]["conditions"][0]["name"] for c in cands} == {"role"}
+    # one candidate per (param, identity) so CEM can test each real request
+    assert len(cands) == 2
+
+
+def test_param_constant_across_identities_without_denial_is_not_flagged():
+    corpus = [
+        _row("alice", 200, "https://app.example.com/report?lang=en", idx=0),
+        _row("bob", 200, "https://app.example.com/report?lang=en", idx=1),
     ]
     assert _gated(corpus) == []
