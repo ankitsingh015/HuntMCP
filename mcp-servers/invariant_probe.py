@@ -336,8 +336,8 @@ def _sequence_by_object_session(exchanges):
         seqs.setdefault(key, []).append({
             "actor": ex["identity"], "action": ex["action"], "status": ex["status"],
             "state_class": _state_class(ex["status"]), "_idx": ex.get("_idx", i)})
-    for key in seqs:
-        seqs[key].sort(key=lambda s: s["_idx"])
+    for steps in seqs.values():
+        steps.sort(key=lambda s: s["_idx"])
     return seqs
 
 
