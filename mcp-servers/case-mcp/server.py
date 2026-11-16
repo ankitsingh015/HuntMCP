@@ -266,6 +266,37 @@ def find_resurrectable_hypotheses() -> str:
 
 
 @app.tool()
+def mine_invariants(target: str = "", limit: int = 100) -> str:
+    """P4-M1: passively mine candidate broken invariants from ALREADY-CAPTURED
+    hunt traffic (Burp-import endpoints) and STAGE each as a DISCOVERED finding
+    + hypothesis for later CEM falsification. Read-only: no `url`, no target
+    request, no CEM counterfactual run, no status change -- the normal
+    independent-validation -> CONFIRMED -> run_cem_pipeline flow still owns
+    confirmation. Each staged entry carries its invariant kind, resource,
+    advisory confidence, and the CEM condition names the hypothesis will drop.
+    Candidates are HYPOTHESES TO FALSIFY, never asserted findings."""
+    import invariant_corpus
+    import invariant_probe
+
+    corpus = invariant_corpus.build_corpus(target)
+    candidates = invariant_probe.mine_invariants(corpus)[: max(0, int(limit))]
+    staged = []
+    for cand in candidates:
+        res = invariant_probe.to_cem_hypothesis(cand)
+        if "error" in res:
+            continue
+        staged.append({
+            "finding_id": res["finding_id"],
+            "hypothesis_id": res["hypothesis_id"],
+            "invariant": cand["invariant"],
+            "resource": redact_text(str(cand["resource"])),
+            "confidence": cand.get("confidence"),
+            "condition_names": [c["name"] for c in cand["cem_spec"]["conditions"]],
+        })
+    return json.dumps({"staged": staged, "count": len(staged)})
+
+
+@app.tool()
 def case_summary() -> str:
     """Current case state: hypothesis/finding counts by status, evidence
     and experiment counts, root causes grouped. Call this to orient before
