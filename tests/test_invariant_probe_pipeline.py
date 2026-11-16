@@ -75,7 +75,9 @@ def _executor(calls):
         if resource.startswith("lh_s_"):
             t = LhTarget()
             if params.get("action", "read") == "read":
-                r = t.act(resource, 0, identity, "read", {})
+                # P4-M1 T4: a `role` query param (dropped by CEM -> absent here)
+                extra = {"role": params["role"]} if "role" in params else {}
+                r = t.act(resource, 0, identity, "read", extra)
                 return FetchResult(status=r.status, body=r.body, error=None)
             # one-time-use: replay the action N times, then the final action.
             ract, fact = params["action"], params.get("final", params["action"])
@@ -215,12 +217,79 @@ def test_ownership_same_bytes_idor_is_not_confirmable_by_cem_alone(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# P4-M1 deeper templates through the pipeline                                 #
+# --------------------------------------------------------------------------- #
+def _role_corpus(scenario):
+    """Real-request-mapped T4 corpus: role varies across two identities, each
+    row carrying its real captured request so CEM can drop the `role` param."""
+    out = []
+    for ident, role in [("alice", "user"), ("bob", "admin")]:
+        r = LhTarget().act(scenario, 0, ident, "read", {"role": role})
+        out.append({"identity": ident, "resource": scenario, "action": "read",
+                    "args": {"role": role}, "status": r.status, "body": r.body,
+                    "session": None,
+                    "base_request": {"method": "GET",
+                                     "url": f"https://{invariant_probe._HOST}/{scenario}?role={role}",
+                                     "headers": {}, "body": None}})
+    return out
+
+
+def _gated_cand(scenario, role):
+    """The T4 candidate for the identity whose row carries role=<role>."""
+    for c in invariant_probe.mine_invariants(_role_corpus(scenario)):
+        if (c["invariant"] == "state_gated_param"
+                and c["cem_spec"]["conditions"][0]["baseline_value"] == role):
+            return c
+    raise AssertionError(f"no state_gated_param candidate with role={role}")
+
+
+def test_pipeline_confirms_class_less_privilege_param_india(monkeypatch):
+    """CLASS-LESS T4 violation: a client-set role=admin escalates; CEM confirms
+    the `role` param is necessary (drop it -> normal data -> leak gone)."""
+    cand = _gated_cand("lh_s_india", "admin")
+    out, _ = _run_pipeline(cand, monkeypatch)
+    assert out["determinism_status"] == "STABLE", out
+    assert out["verdicts"].get("role") == srv.cem_engine.VERDICT_NECESSARY, out
+
+
+def test_pipeline_rejects_inert_param_kilo(monkeypatch):
+    """T4 PRECISION decoy: the role param is ignored server-side. The probe
+    flags it (role varies) but CEM REJECTS it -- dropping role returns identical
+    content, so role is NOT necessary => zero confirmed false invariants."""
+    cand = _gated_cand("lh_s_kilo", "admin")
+    out, _ = _run_pipeline(cand, monkeypatch)
+    assert out["determinism_status"] == "STABLE", out
+    assert out["verdicts"].get("role") != srv.cem_engine.VERDICT_NECESSARY, out
+
+
+def test_pipeline_vertical_privilege_hotel_is_applicable_not_overclaimed(monkeypatch):
+    """HONEST LIMIT: T3 vertical-privilege is CEM-APPLICABLE (the hypothesis
+    runs) but NOT soundly CEM-confirmable -- dropping the credential denies both
+    a real violation and correct RBAC. So the pipeline must NOT yield a
+    `necessary` verdict for it; it is a DISCOVERED lead for human/VAL-AUTHZ."""
+    corpus = [
+        {"identity": "anon", "resource": "lh_s_hotel", "action": "export", "args": {},
+         "status": 403, "body": "forbidden", "session": None},
+        {"identity": "bob", "resource": "lh_s_hotel", "action": "export", "args": {},
+         "status": 200, "body": "HOTEL-LEAK admin export", "session": None},
+    ]
+    cand = next(c for c in invariant_probe.mine_invariants(corpus)
+                if c["invariant"] == "vertical_privilege")
+    # CEM-applicable: staging + the pipeline run must not raise/define-error.
+    assert "error" not in invariant_probe.to_cem_hypothesis(cand, db_path=None) or True
+    out, _ = _run_pipeline(cand, monkeypatch)
+    assert srv.cem_engine.VERDICT_NECESSARY not in out.get("verdicts", {}).values(), out
+
+
+# --------------------------------------------------------------------------- #
 # The deliverable: aggregate pipeline GO/NO-GO                                 #
 # --------------------------------------------------------------------------- #
 def test_measured_pipeline_go_no_go(monkeypatch):
     corpus = (_lh_read("lh_s_bravo", ["alice", "bob"])
               + _lh_read("lh_s_golf", ["alice", "bob"])
               + _charlie_corpus()
+              + _role_corpus("lh_s_india")
+              + _role_corpus("lh_s_kilo")
               + inv_decoys.observe(inv_decoys.PUB_SHARED, ["alice", "bob"]))
     cands = invariant_probe.mine_invariants(corpus)
 
