@@ -21,6 +21,7 @@ from budget_guard import BudgetExceeded
 from budget_guard import enforce as _enforce_budget
 from budget_guard import enforce_cem_finding as _enforce_cem_finding
 from mcp.server.fastmcp import FastMCP
+from redact import redact_text
 
 app = FastMCP("case-mcp")
 
@@ -248,6 +249,23 @@ def suggest_next_action() -> str:
 
 
 @app.tool()
+def find_resurrectable_hypotheses() -> str:
+    """Dormant hypotheses worth a second look: status INCONCLUSIVE or
+    REFUTED, but new evidence (on the hypothesis itself, or on a finding
+    linked to it) or a linked finding that reached CONFIRMED/IMPACT_PROVEN/
+    REPORTED has appeared since it was parked. Each candidate lists its
+    `reasons` (kind, id, timestamp). ADVISORY ONLY: nothing is re-opened,
+    closed or blocked -- decide yourself, then call update_hypothesis() (to
+    TESTING to re-open it, or re-save its current status to acknowledge and
+    clear it). Read-only; makes no target request."""
+    candidates = case_store.find_resurrectable_hypotheses()
+    for c in candidates:
+        for key in ("hypothesis", "observation", "note"):
+            c[key] = redact_text(c[key])
+    return json.dumps({"advisory": True, "candidates": candidates})
+
+
+@app.tool()
 def case_summary() -> str:
     """Current case state: hypothesis/finding counts by status, evidence
     and experiment counts, root causes grouped. Call this to orient before
@@ -269,8 +287,9 @@ def capture_research_manifest(target: str, agent_role: str = "") -> str:
     """C1b: captures and persists a research-run manifest for `target` --
     resolved scanner tool versions, the model/provider currently selected
     for `agent_role` (if given), a hash of scope_gate_hook.py (which
-    safety policy was active), and a hash of this engagement's current
-    case-export state. Call once near the start of a research run (e.g.
+    safety policy was active), a hash + scan-policy summary of the in-force
+    engagement.yaml, a `config_fingerprint` for cheap run-to-run comparison,
+    and a hash of this engagement's current case-export state. Call once near the start of a research run (e.g.
     from huntbrain/report-agent) so later runs against the same target
     can be compared for reproducibility. Not wired into assemble_bundle
     itself (CEM Phase 1 is frozen) -- report-agent attaches this tool's

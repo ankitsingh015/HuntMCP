@@ -29,13 +29,16 @@ it's attached to.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import subprocess
 import time
 
 import case_store
+import engagement_paths
 import model_gateway
+import scan_policy
 import tool_resolver
 
 # Per-tool version flag, empirically confirmed against the actual
@@ -197,10 +200,87 @@ def hash_target_snapshot(db_path: str | None = None) -> dict:
     return {"available": True, "hash": hashlib.sha256(export_text.encode("utf-8")).hexdigest()}
 
 
-def capture_manifest(target: str, agent_role: str | None = None, db_path: str | None = None) -> dict:
+def capture_engagement_config(path: str | None = None) -> dict:
+    """The in-force engagement configuration (scope + scan policy live in
+    engagement.yaml): a SHA-256 of the file's bytes plus the two
+    non-sensitive scan-policy fields, read via scan_policy.load_scan_policy
+    (reused, not re-parsed). Hash-only for the file itself -- its free-text
+    `notes`/scope lists can hold program-confidential detail, and a hash is
+    enough to answer "was the same config in force". An invalid scan_policy
+    is surfaced as `scan_policy_error`, never defaulted to "full". Never
+    raises."""
+    try:
+        if path is None:
+            path = engagement_paths.resolve("engagement.yaml", override_env="HUNTMCP_ENGAGEMENT_PATH")
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        return {"available": False, "hash": None, "scan_policy": None,
+                "scanner_volume_cap": None, "error": str(e)}
+    result: dict = {"available": True, "hash": hashlib.sha256(data).hexdigest(),
+                    "scan_policy": None, "scanner_volume_cap": None}
+    try:
+        policy = scan_policy.load_scan_policy(path)
+    except Exception as e:  # noqa: BLE001 -- see module docstring: never abort manifest capture
+        result["scan_policy_error"] = str(e)
+        return result
+    if "error" in policy:
+        result["scan_policy_error"] = policy["error"]
+    else:
+        result["scan_policy"] = policy.get("scan_policy")
+        result["scanner_volume_cap"] = policy.get("scanner_volume_cap")
+    return result
+
+
+def compute_config_fingerprint(manifest: dict) -> str:
+    """One SHA-256 answering "did the tooling/model/policy differ between
+    two runs": covers per-tool resolved version, model identity, the
+    scope-gate policy hash and the engagement-config hash + scan policy.
+    Deliberately excludes captured_at, the target label, raw banner text,
+    binary paths and target_snapshot_hash -- the snapshot is *expected* to
+    change as a run finds things, so it is compared separately via
+    manifest_diff(), not folded in here."""
+    model = manifest.get("model") or {}
+    eng = manifest.get("engagement_config") or {}
+    canonical = {
+        "tools": {n: (i or {}).get("version") for n, i in sorted((manifest.get("tool_versions") or {}).items())},
+        "model": [model.get("provider"), model.get("model")],
+        "policy": (manifest.get("policy_version") or {}).get("hash"),
+        "engagement": [eng.get("hash"), eng.get("scan_policy"), eng.get("scanner_volume_cap")],
+    }
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def manifest_diff(a: dict, b: dict) -> list[str]:
+    """Names of the reproducibility sections that differ between two
+    manifests (`tool_versions.<tool>` per tool, then `model`,
+    `policy_version`, `engagement_config`, `target_snapshot_hash`), for the
+    acceptance A/B and "why did this run differ" questions. Compares the
+    stable fields only (versions/hashes), not timestamps, labels or raw
+    banner text."""
+    diffs: list[str] = []
+    ta, tb = a.get("tool_versions") or {}, b.get("tool_versions") or {}
+    for name in sorted(set(ta) | set(tb)):
+        if (ta.get(name) or {}).get("version") != (tb.get(name) or {}).get("version"):
+            diffs.append(f"tool_versions.{name}")
+    stable = {
+        "model": ("provider", "model"),
+        "policy_version": ("hash",),
+        "engagement_config": ("hash", "scan_policy", "scanner_volume_cap"),
+        "target_snapshot_hash": ("hash",),
+    }
+    for section, keys in stable.items():
+        sa, sb = a.get(section) or {}, b.get(section) or {}
+        if any(sa.get(k) != sb.get(k) for k in keys):
+            diffs.append(section)
+    return diffs
+
+
+def capture_manifest(target: str, agent_role: str | None = None, db_path: str | None = None,
+                     engagement_path: str | None = None) -> dict:
     """Captures the full C1b manifest for one research run against
-    `target`. Pure aggregation of the four sub-captures above; never
-    raises (each sub-capture already degrades gracefully on its own).
+    `target`. Pure aggregation of the sub-captures above; never raises
+    (each sub-capture already degrades gracefully on its own).
 
     `target` is a caller-supplied label, not cross-checked against which
     engagement's case.db is actually active -- the same convention
@@ -209,11 +289,14 @@ def capture_manifest(target: str, agent_role: str | None = None, db_path: str | 
     see resolve_db_path()). Callers are responsible for passing the
     target that matches their current active engagement, same as every
     other case_store call that takes a `target` string."""
-    return {
+    manifest = {
         "target": target,
         "captured_at": time.time(),
         "tool_versions": capture_tool_versions(),
         "model": capture_model_info(agent_role),
         "policy_version": capture_policy_version(),
+        "engagement_config": capture_engagement_config(engagement_path),
         "target_snapshot_hash": hash_target_snapshot(db_path),
     }
+    manifest["config_fingerprint"] = compute_config_fingerprint(manifest)
+    return manifest

@@ -233,3 +233,156 @@ def test_capture_manifest_never_raises_even_if_everything_fails(tmp_path, monkey
     for info in manifest["tool_versions"].values():
         assert info["resolved"] is False
         assert info["version"] is None
+
+
+# --- C1b remaining half: in-force engagement config + comparable fingerprint ---
+
+def _write_engagement(tmp_path, body: str) -> str:
+    path = tmp_path / "engagement.yaml"
+    path.write_text(body)
+    return str(path)
+
+
+def test_capture_engagement_config_hashes_file_and_reports_scan_policy(tmp_path):
+    path = _write_engagement(
+        tmp_path,
+        "target: example.com\nin_scope: [example.com]\nscan_policy: bounded\n"
+        "scanner_volume_cap: 25\nnotes: SECRET-INTERNAL-NOTE\n",
+    )
+    cfg = research_manifest.capture_engagement_config(path)
+    assert cfg["available"] is True
+    assert len(cfg["hash"]) == 64
+    assert cfg["scan_policy"] == "bounded"
+    assert cfg["scanner_volume_cap"] == 25
+    # hash-only: free-text notes (may hold sensitive program details) are never copied in
+    assert "SECRET-INTERNAL-NOTE" not in str(cfg)
+
+
+def test_capture_engagement_config_hash_changes_when_scope_changes(tmp_path):
+    path = _write_engagement(tmp_path, "target: example.com\nin_scope: [example.com]\n")
+    before = research_manifest.capture_engagement_config(path)
+    _write_engagement(tmp_path, "target: example.com\nin_scope: [example.com, api.example.com]\n")
+    after = research_manifest.capture_engagement_config(path)
+    assert before["hash"] != after["hash"]
+    # unspecified scan_policy reports the historical "full" default, not None
+    assert after["scan_policy"] == "full"
+
+
+def test_capture_engagement_config_degrades_when_no_engagement_file(tmp_path):
+    cfg = research_manifest.capture_engagement_config(str(tmp_path / "missing.yaml"))
+    assert cfg["available"] is False
+    assert cfg["hash"] is None
+
+
+def test_capture_engagement_config_surfaces_invalid_scan_policy_not_default(tmp_path):
+    path = _write_engagement(tmp_path, "target: example.com\nscan_policy: yolo\n")
+    cfg = research_manifest.capture_engagement_config(path)
+    assert cfg["available"] is True
+    assert cfg["hash"] is not None
+    assert cfg["scan_policy"] is None
+    assert "invalid scan_policy" in cfg["scan_policy_error"]
+
+
+def test_capture_engagement_config_never_raises(tmp_path, monkeypatch):
+    import scan_policy
+
+    path = _write_engagement(tmp_path, "target: example.com\n")
+
+    def _boom(p=None):
+        raise RuntimeError("simulated scan_policy failure")
+
+    monkeypatch.setattr(scan_policy, "load_scan_policy", _boom)
+    cfg = research_manifest.capture_engagement_config(path)
+    assert cfg["available"] is True
+    assert cfg["scan_policy"] is None
+    assert "simulated scan_policy failure" in cfg["scan_policy_error"]
+
+
+def test_capture_engagement_config_resolves_default_path_via_env(tmp_path, monkeypatch):
+    # Covers the production path=None branch: with no explicit path, it must
+    # resolve via engagement_paths.resolve(override_env="HUNTMCP_ENGAGEMENT_PATH").
+    path = _write_engagement(tmp_path, "target: example.com\nscan_policy: manual\n")
+    monkeypatch.setenv("HUNTMCP_ENGAGEMENT_PATH", path)
+    cfg = research_manifest.capture_engagement_config()  # path=None -> resolve()
+    assert cfg["available"] is True
+    assert cfg["scan_policy"] == "manual"
+    assert len(cfg["hash"]) == 64
+
+
+def _stub_manifest(**overrides) -> dict:
+    base = {
+        "target": "example.com",
+        "captured_at": 1.0,
+        "tool_versions": {"nuclei": {"resolved": True, "path": "/p/nuclei", "version": "3.11.0", "version_raw": "x"}},
+        "model": {"provider": "anthropic", "model": "m1", "source": "chain"},
+        "policy_version": {"available": True, "hash": "a" * 64},
+        "engagement_config": {"available": True, "hash": "b" * 64, "scan_policy": "full", "scanner_volume_cap": None},
+        "target_snapshot_hash": {"available": True, "hash": "c" * 64},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_config_fingerprint_ignores_timestamp_label_and_raw_banner_noise():
+    a = _stub_manifest()
+    b = _stub_manifest(target="other-label", captured_at=999.0)
+    b["tool_versions"]["nuclei"]["version_raw"] = "different banner text"
+    b["tool_versions"]["nuclei"]["path"] = "/elsewhere/nuclei"
+    assert research_manifest.compute_config_fingerprint(a) == research_manifest.compute_config_fingerprint(b)
+
+
+def test_config_fingerprint_ignores_target_snapshot_hash():
+    """The snapshot hash is expected to change as a run finds things; the
+    fingerprint answers 'same tooling/model/policy?', not 'same findings?'."""
+    a = _stub_manifest()
+    b = _stub_manifest(target_snapshot_hash={"available": True, "hash": "d" * 64})
+    assert research_manifest.compute_config_fingerprint(a) == research_manifest.compute_config_fingerprint(b)
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda m: m["tool_versions"]["nuclei"].update(version="3.12.0"),
+    lambda m: m["model"].update(model="m2"),
+    lambda m: m["policy_version"].update(hash="e" * 64),
+    lambda m: m["engagement_config"].update(hash="f" * 64),
+    lambda m: m["engagement_config"].update(scan_policy="manual"),
+])
+def test_config_fingerprint_changes_when_a_reproducibility_input_changes(mutate):
+    a = _stub_manifest()
+    b = _stub_manifest()
+    mutate(b)
+    assert research_manifest.compute_config_fingerprint(a) != research_manifest.compute_config_fingerprint(b)
+
+
+def test_manifest_diff_lists_only_the_sections_that_differ():
+    a = _stub_manifest()
+    b = _stub_manifest(
+        model={"provider": "anthropic", "model": "m2", "source": "chain"},
+        target_snapshot_hash={"available": True, "hash": "d" * 64},
+    )
+    assert research_manifest.manifest_diff(a, a) == []
+    assert research_manifest.manifest_diff(a, b) == ["model", "target_snapshot_hash"]
+
+
+def test_manifest_diff_reports_tool_version_changes_per_tool():
+    a = _stub_manifest()
+    b = _stub_manifest()
+    b["tool_versions"]["nuclei"]["version"] = "3.12.0"
+    assert research_manifest.manifest_diff(a, b) == ["tool_versions.nuclei"]
+
+
+def test_capture_manifest_includes_engagement_config_and_fingerprint(tmp_path):
+    path = _write_engagement(tmp_path, "target: example.com\nscan_policy: manual\n")
+    manifest = research_manifest.capture_manifest(
+        "example.com", db_path=str(tmp_path / "case.db"), engagement_path=path)
+    assert manifest["engagement_config"]["scan_policy"] == "manual"
+    assert manifest["config_fingerprint"] == research_manifest.compute_config_fingerprint(manifest)
+    assert len(manifest["config_fingerprint"]) == 64
+
+
+def test_capture_manifest_fingerprint_stable_across_two_captures(tmp_path):
+    path = _write_engagement(tmp_path, "target: example.com\n")
+    kwargs = {"db_path": str(tmp_path / "case.db"), "engagement_path": path}
+    first = research_manifest.capture_manifest("example.com", **kwargs)
+    second = research_manifest.capture_manifest("example.com", **kwargs)
+    assert first["config_fingerprint"] == second["config_fingerprint"]
+    assert research_manifest.manifest_diff(first, second) == []
