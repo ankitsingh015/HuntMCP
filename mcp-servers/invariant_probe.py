@@ -314,6 +314,80 @@ def _mine_one_time_use(resource, rows):
 
 
 # --------------------------------------------------------------------------- #
+# State-transition view (P4-M1): per (object-instance, session) ordered action #
+# sequence -- the "state machine" is observable status/content deltas, not an  #
+# inferred automaton. Used to FORM candidates; every emitted hypothesis still  #
+# reduces to a frozen-CEM droppable-condition test.                            #
+# --------------------------------------------------------------------------- #
+def _state_class(status) -> str:
+    if _is_denial(status):
+        return "denied"
+    if _is_success(status):
+        return "ok"
+    return "other"
+
+
+def _sequence_by_object_session(exchanges):
+    seqs: dict[tuple, list[dict]] = {}
+    for i, ex in enumerate(exchanges):
+        if not _valid_row(ex):
+            continue
+        key = (ex["resource"], ex.get("session"))
+        seqs.setdefault(key, []).append({
+            "actor": ex["identity"], "action": ex["action"], "status": ex["status"],
+            "state_class": _state_class(ex["status"]), "_idx": ex.get("_idx", i)})
+    for key in seqs:
+        seqs[key].sort(key=lambda s: s["_idx"])
+    return seqs
+
+
+# --------------------------------------------------------------------------- #
+# T3 -- vertical privilege / authz inversion                                  #
+#   On one resource, >=1 identity is DENIED (401/403) while a DIFFERENT        #
+#   identity SUCCEEDS (2xx). The denial-vs-success differential is the signal  #
+#   (class scanners miss it); CEM then tests whether the succeeding identity's #
+#   credential was actually necessary.                                         #
+# --------------------------------------------------------------------------- #
+def _mine_vertical_privilege(resource, rows):
+    denied = [r for r in rows if _is_denial(r["status"])]
+    if not denied:
+        return []
+    denied_ids = {r["identity"] for r in denied}
+    success, seen = [], set()
+    for r in rows:
+        if _is_success(r["status"]) and r["identity"] not in seen:
+            seen.add(r["identity"])
+            success.append(r)
+    # vertical privilege is about a privileged OPERATION, not reading someone's
+    # object (that is T1 ownership). Scoping to non-read actions keeps correct
+    # per-owner read protection (owner 2xx / non-owner 403) out of this template.
+    offenders = [r for r in success
+                 if r["identity"] not in denied_ids and r["action"] not in READ_ACTIONS]
+    if not offenders:
+        return []
+    offender = offenders[0]
+    return [{
+        "invariant": "vertical_privilege",
+        "resource": resource,
+        # a denial-vs-success differential on the same object is a strong signal
+        # regardless of whether a body was captured -> high (CEM is precision).
+        "confidence": "high",
+        "negative_control": {"denial_seen": True,
+                             "content_relation": _content_relation([r["body"] for r in success])},
+        "observation": (
+            f"on '{resource}', identity '{offender['identity']}' succeeded (2xx) at an "
+            f"action denied (401/403) to {len(denied_ids)} other identity(ies) "
+            f"({', '.join(sorted(denied_ids))}) -- a vertical-privilege differential."),
+        "hypothesis": (
+            f"vertical-privilege invariant may be violated on '{resource}': identity "
+            f"'{offender['identity']}' performs an action others are denied "
+            f"(candidate -- to be falsified by CEM, not asserted)."),
+        "evidence_idx": sorted([r["_idx"] for r in denied] + [offender["_idx"]]),
+        "cem_spec": _cem_spec_for_identity_drop(resource, offender),
+    }]
+
+
+# --------------------------------------------------------------------------- #
 # Public API                                                                  #
 # --------------------------------------------------------------------------- #
 def mine_invariants(exchanges: list[dict]) -> list[dict]:
@@ -329,6 +403,7 @@ def mine_invariants(exchanges: list[dict]) -> list[dict]:
         if own is not None:
             candidates.append(own)
         candidates.extend(_mine_one_time_use(resource, rows))
+        candidates.extend(_mine_vertical_privilege(resource, rows))
     return candidates
 
 
