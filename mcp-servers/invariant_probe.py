@@ -134,7 +134,12 @@ def _by_resource(exchanges):
 def _content_relation(bodies) -> str:
     """REUSE authz_diff's pure owner-compare oracle: are the successful bodies
     the SAME object (identical normalized content -> likely public/shared) or
-    DIVERGENT (each identity sees different content)?"""
+    DIVERGENT (each identity sees different content)?  When NO body is available
+    (real captured corpus -- Burp stores none), the relation is UNKNOWN: the
+    cheap content negative control can't run, so the probe stays high-recall and
+    leans entirely on the CEM gate for precision."""
+    if not any(b and b.strip() for b in bodies):
+        return "unknown"
     import authz_diff
     forms = set()
     for b in bodies:
@@ -150,7 +155,10 @@ def _negative_control(rows, success_rows) -> dict:
     #   denial somewhere on the resource => it IS per-owner protected for some
     #     identity, so a divergent cross-identity 2xx read is more suspicious.
     #   no denial + identical content for all => looks public / a collection.
-    if denial_seen:
+    if relation == "unknown":
+        # no body to compare -> cannot raise confidence on content; cap it.
+        confidence = "medium" if denial_seen else "low"
+    elif denial_seen:
         confidence = "high"
     elif relation == "identical":
         confidence = "low"
@@ -161,6 +169,59 @@ def _negative_control(rows, success_rows) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Real-request mapping (P4-M1): a mined candidate's CEM hypothesis fires at the #
+# REAL captured request and drops the REAL identity header, when the corpus    #
+# row carries one; otherwise the P4-M0 synthesized invariant.local scaffold.   #
+# --------------------------------------------------------------------------- #
+_IDENTITY_HEADERS = ("authorization", "cookie", "x-api-key", "x-auth-token")
+
+
+def _identity_header_name(headers) -> str | None:
+    """The identity-bearing header actually present in a captured request
+    (original-case key), or None.  Must match what case-mcp's _perturbation_for
+    can drop (an exact/case-insensitive header name, Authorization alias)."""
+    if not isinstance(headers, dict):
+        return None
+    lowered = {str(k).lower(): k for k in headers}
+    for name in _IDENTITY_HEADERS:
+        if name in lowered:
+            return lowered[name]
+    return None
+
+
+def _cem_spec_for_identity_drop(resource, offender) -> dict:
+    """Build the CEM hypothesis for an identity-necessity test on `offender`.
+    Real path (row carries a captured request with an identity header): drop
+    that header on the real base_request, so run_cem_pipeline fires at the real
+    target.  Synthesized path (P4-M0, no base_request): the invariant.local
+    query-param scaffold -- unchanged, so existing pipeline tests still pass."""
+    br = offender.get("base_request")
+    body = offender.get("body") or ""
+    hdr = _identity_header_name(br.get("headers") if br else None)
+    if br and hdr and br.get("method", "GET").upper() in ("GET", "HEAD", "OPTIONS"):
+        sig = {"status_in": [200]}
+        if body.strip():
+            sig["body_contains"] = _trim(body)
+        return {
+            "base_request": br,
+            "success_signature": sig,
+            "conditions": [{"name": hdr, "category": "identity",
+                            "baseline_value": br["headers"][hdr],
+                            "perturbation": {"drop": True}}],
+        }
+    return {
+        "base_request": {
+            "method": "GET",
+            "url": _url(resource, {"identity": offender["identity"], "action": "read"}),
+            "headers": {}, "body": None},
+        "success_signature": {"status_in": [200], "body_contains": _trim(body)},
+        "conditions": [{"name": "identity", "category": "identity",
+                        "baseline_value": offender["identity"],
+                        "perturbation": {"drop": True}}],
+    }
+
+
+# --------------------------------------------------------------------------- #
 # T1 -- ownership / horizontal authz                                          #
 # --------------------------------------------------------------------------- #
 def _mine_ownership(resource, rows):
@@ -168,7 +229,10 @@ def _mine_ownership(resource, rows):
     success = []
     seen_ids: set[str] = set()
     for r in reads:
-        if _is_success(r["status"]) and r["body"].strip() and r["identity"] not in seen_ids:
+        # body-optional (high recall): a real captured corpus has no body
+        # (Burp stores none), so a 2xx read counts on identity alone; the CEM
+        # gate -- not a body check here -- is what rejects a false positive.
+        if _is_success(r["status"]) and r["identity"] not in seen_ids:
             seen_ids.add(r["identity"])
             success.append(r)
     if len(seen_ids) < 2:
@@ -192,17 +256,7 @@ def _mine_ownership(resource, rows):
             f"'{offender['identity']}' can read an object owned by '{owner}' "
             f"(candidate -- to be falsified by CEM, not asserted)."),
         "evidence_idx": sorted(r["_idx"] for r in success),
-        "cem_spec": {
-            "base_request": {
-                "method": "GET",
-                "url": _url(resource, {"identity": offender["identity"], "action": "read"}),
-                "headers": {}, "body": None},
-            "success_signature": {"status_in": [200], "body_contains": _trim(offender["body"])},
-            "conditions": [{
-                "name": "identity", "category": "identity",
-                "baseline_value": offender["identity"],
-                "perturbation": {"drop": True}}],
-        },
+        "cem_spec": _cem_spec_for_identity_drop(resource, offender),
     }
 
 
