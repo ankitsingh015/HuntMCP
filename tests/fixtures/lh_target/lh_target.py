@@ -28,6 +28,13 @@ only in the evaluator-only answer key, so the blind index never leaks it):
   * lh_s_golf   -- a decoy surface that is CORRECTLY secured (the right answer is
                    "no finding"), shaped like lh_s_bravo so the blind index cannot
                    tell them apart
+  * lh_s_hotel  -- a vertical-privilege differential (low-priv succeeds at a
+                   privileged op another is denied); a P4-M1 T3 lead, NOT soundly
+                   CEM-confirmable (documented)
+  * lh_s_india  -- a client-controlled privilege PARAMETER (role=admin) escalates;
+                   a P4-M1 T4 violation the frozen CEM counterfactual CONFIRMS
+  * lh_s_kilo   -- shaped like india but the role param is IGNORED server-side;
+                   the high-recall probe flags it, CEM must REJECT it (decoy)
 """
 from __future__ import annotations
 
@@ -177,3 +184,44 @@ class LhTarget:
         if identity == _OWNER:
             return Response(200, "doc-1 belongs to you", "200")
         return Response(403, "forbidden -- not the owner", "403")
+
+    # ----------------------------------------------------------------- #
+    # lh_s_hotel -- VERTICAL PRIVILEGE (T3 lead; class-less)
+    #   A privileged OPERATION ("export"): an unauthenticated caller is denied
+    #   (403) but a low-privilege authenticated identity SUCCEEDS and sees
+    #   admin-only data -> a vertical-privilege differential class scanners miss.
+    #   NOTE (honest limit, encoded here + in tests): this is NOT soundly
+    #   CEM-*confirmable* -- dropping the credential denies BOTH a real violation
+    #   and correct RBAC, so the invariant probe stages it as a DISCOVERED lead
+    #   for human / VAL-AUTHZ review, never a CEM-confirmed necessity claim.
+    # ----------------------------------------------------------------- #
+    def _h_hotel(self, epoch, identity, action, args) -> Response:
+        if action != "export":
+            return Response(400, "bad action", "400")
+        if identity == "anon":
+            return Response(403, "forbidden -- authentication required", "403")
+        return Response(200, "HOTEL-LEAK admin export visible to a low-priv user", "200:leak")
+
+    # ----------------------------------------------------------------- #
+    # lh_s_india -- STATE-GATED / PRIVILEGE PARAMETER (T4 violation; class-less)
+    #   A CLIENT-CONTROLLED `role` param escalates privilege: role=admin returns
+    #   admin-only data that role=user does not. The param IS necessary for the
+    #   leak, so the FROZEN CEM counterfactual CONFIRMS it (drop role -> normal
+    #   data -> role necessary). No single vuln-class scanner targets "client
+    #   sets its own role param".
+    # ----------------------------------------------------------------- #
+    def _h_india(self, epoch, identity, action, args) -> Response:
+        if args.get("role") == "admin":
+            return Response(200, "INDIA-LEAK admin report (role=admin honored)", "200:leak")
+        return Response(200, "india normal report", "200")
+
+    # ----------------------------------------------------------------- #
+    # lh_s_kilo -- SECURED / INERT PARAMETER (T4 decoy; CEM must reject)
+    #   Shaped like india -- a `role` param varies across identities so the
+    #   high-recall probe FLAGS it -- but the server IGNORES role entirely, so
+    #   the content is identical regardless. Dropping role changes nothing =>
+    #   role is NOT necessary => the frozen CEM counterfactual REJECTS it. A
+    #   CONFIRMED-necessary verdict here would be a confirmed false invariant.
+    # ----------------------------------------------------------------- #
+    def _h_kilo(self, epoch, identity, action, args) -> Response:
+        return Response(200, "kilo report (role parameter ignored server-side)", "200")

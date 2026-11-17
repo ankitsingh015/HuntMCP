@@ -86,6 +86,20 @@ def build_corpus():
     corpus += _drive("lh_s_delta", [("alice", "read", {})], epoch=0)
     corpus += _drive("lh_s_delta", [("alice", "read", {})], epoch=1)
     corpus += _drive("lh_s_echo", [("alice", "probe", {}), ("alice", "callback", {})])
+    # P4-M1 T3 vertical-privilege (hotel): anon denied, low-priv bob succeeds at
+    # a privileged non-read op -> the probe stages it as a DISCOVERED lead.
+    corpus += _drive("lh_s_hotel", [("anon", "export", {}), ("bob", "export", {})])
+    # P4-M1 T4 privilege parameter (india): role varies across identities; the
+    # rows carry the REAL captured request so the candidate is real-request
+    # mapped and CEM can drop the `role` query param.
+    for ident, role in [("alice", "user"), ("bob", "admin")]:
+        r = LhTarget().act("lh_s_india", 0, ident, "read", {"role": role})
+        ex = _exchange((ident, "read", {"role": role}), "lh_s_india", r)
+        ex["base_request"] = {
+            "method": "GET",
+            "url": f"https://{invariant_probe._HOST}/lh_s_india?role={role}",
+            "headers": {}, "body": None}
+        corpus.append(ex)
     return corpus
 
 

@@ -83,6 +83,30 @@ INV_GROUND_TRUTH = MappingProxyType({
         "in_family": False, "family": None, "class_scannable": False,
         "cem_must_reject": True,
     }),
+    # P4-M1 deeper templates.
+    # vertical-privilege differential (T3): a low-priv identity succeeds at a
+    # privileged op another is denied. in_family for the T3 detector (the probe
+    # SHOULD surface it); class-less (no vuln-class scanner targets it). It is a
+    # DISCOVERED lead, NOT a CEM-confirmable necessity claim -- so it is
+    # deliberately absent from CEM_MUST_REJECT (nothing false to confirm) and the
+    # pipeline gate never asserts a `necessary` verdict for it.
+    "lh_s_hotel": MappingProxyType({
+        "in_family": True, "family": "vertical_privilege", "class_scannable": False,
+    }),
+    # client-controlled privilege PARAMETER (T4) genuinely escalates -> the param
+    # IS necessary for the leak, CEM confirms it. class-less differential value.
+    "lh_s_india": MappingProxyType({
+        "in_family": True, "family": "state_gated_param", "class_scannable": False,
+    }),
+    # T4 PRECISION decoy: a role param the server ignores. The high-recall probe
+    # flags it (role varies across identities), so in_family is False at the
+    # PROBE stage and the frozen CEM counterfactual MUST reject it (dropping role
+    # returns identical content => role not necessary). A CONFIRMED-necessary
+    # verdict here is a confirmed false invariant.
+    "lh_s_kilo": MappingProxyType({
+        "in_family": False, "family": None, "class_scannable": False,
+        "cem_must_reject": True,
+    }),
 })
 
 # Resources the probe is ALLOWED to flag (high recall) but whose candidate the

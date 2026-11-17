@@ -68,7 +68,7 @@ Two shallow heuristic invariant templates:
 """
 from __future__ import annotations
 
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 READ_ACTIONS = frozenset({"read", "access", "get", "view", "show", "fetch"})
 _HOST = "invariant.local"  # placeholder authority for synthesized base requests
@@ -134,7 +134,12 @@ def _by_resource(exchanges):
 def _content_relation(bodies) -> str:
     """REUSE authz_diff's pure owner-compare oracle: are the successful bodies
     the SAME object (identical normalized content -> likely public/shared) or
-    DIVERGENT (each identity sees different content)?"""
+    DIVERGENT (each identity sees different content)?  When NO body is available
+    (real captured corpus -- Burp stores none), the relation is UNKNOWN: the
+    cheap content negative control can't run, so the probe stays high-recall and
+    leans entirely on the CEM gate for precision."""
+    if not any(b and b.strip() for b in bodies):
+        return "unknown"
     import authz_diff
     forms = set()
     for b in bodies:
@@ -150,7 +155,10 @@ def _negative_control(rows, success_rows) -> dict:
     #   denial somewhere on the resource => it IS per-owner protected for some
     #     identity, so a divergent cross-identity 2xx read is more suspicious.
     #   no denial + identical content for all => looks public / a collection.
-    if denial_seen:
+    if relation == "unknown":
+        # no body to compare -> cannot raise confidence on content; cap it.
+        confidence = "medium" if denial_seen else "low"
+    elif denial_seen:
         confidence = "high"
     elif relation == "identical":
         confidence = "low"
@@ -161,6 +169,59 @@ def _negative_control(rows, success_rows) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Real-request mapping (P4-M1): a mined candidate's CEM hypothesis fires at the #
+# REAL captured request and drops the REAL identity header, when the corpus    #
+# row carries one; otherwise the P4-M0 synthesized invariant.local scaffold.   #
+# --------------------------------------------------------------------------- #
+_IDENTITY_HEADERS = ("authorization", "cookie", "x-api-key", "x-auth-token")
+
+
+def _identity_header_name(headers) -> str | None:
+    """The identity-bearing header actually present in a captured request
+    (original-case key), or None.  Must match what case-mcp's _perturbation_for
+    can drop (an exact/case-insensitive header name, Authorization alias)."""
+    if not isinstance(headers, dict):
+        return None
+    lowered = {str(k).lower(): k for k in headers}
+    for name in _IDENTITY_HEADERS:
+        if name in lowered:
+            return lowered[name]
+    return None
+
+
+def _cem_spec_for_identity_drop(resource, offender) -> dict:
+    """Build the CEM hypothesis for an identity-necessity test on `offender`.
+    Real path (row carries a captured request with an identity header): drop
+    that header on the real base_request, so run_cem_pipeline fires at the real
+    target.  Synthesized path (P4-M0, no base_request): the invariant.local
+    query-param scaffold -- unchanged, so existing pipeline tests still pass."""
+    br = offender.get("base_request")
+    body = offender.get("body") or ""
+    hdr = _identity_header_name(br.get("headers") if br else None)
+    if br and hdr and br.get("method", "GET").upper() in ("GET", "HEAD", "OPTIONS"):
+        sig = {"status_in": [200]}
+        if body.strip():
+            sig["body_contains"] = _trim(body)
+        return {
+            "base_request": br,
+            "success_signature": sig,
+            "conditions": [{"name": hdr, "category": "identity",
+                            "baseline_value": br["headers"][hdr],
+                            "perturbation": {"drop": True}}],
+        }
+    return {
+        "base_request": {
+            "method": "GET",
+            "url": _url(resource, {"identity": offender["identity"], "action": "read"}),
+            "headers": {}, "body": None},
+        "success_signature": {"status_in": [200], "body_contains": _trim(body)},
+        "conditions": [{"name": "identity", "category": "identity",
+                        "baseline_value": offender["identity"],
+                        "perturbation": {"drop": True}}],
+    }
+
+
+# --------------------------------------------------------------------------- #
 # T1 -- ownership / horizontal authz                                          #
 # --------------------------------------------------------------------------- #
 def _mine_ownership(resource, rows):
@@ -168,7 +229,10 @@ def _mine_ownership(resource, rows):
     success = []
     seen_ids: set[str] = set()
     for r in reads:
-        if _is_success(r["status"]) and r["body"].strip() and r["identity"] not in seen_ids:
+        # body-optional (high recall): a real captured corpus has no body
+        # (Burp stores none), so a 2xx read counts on identity alone; the CEM
+        # gate -- not a body check here -- is what rejects a false positive.
+        if _is_success(r["status"]) and r["identity"] not in seen_ids:
             seen_ids.add(r["identity"])
             success.append(r)
     if len(seen_ids) < 2:
@@ -192,17 +256,7 @@ def _mine_ownership(resource, rows):
             f"'{offender['identity']}' can read an object owned by '{owner}' "
             f"(candidate -- to be falsified by CEM, not asserted)."),
         "evidence_idx": sorted(r["_idx"] for r in success),
-        "cem_spec": {
-            "base_request": {
-                "method": "GET",
-                "url": _url(resource, {"identity": offender["identity"], "action": "read"}),
-                "headers": {}, "body": None},
-            "success_signature": {"status_in": [200], "body_contains": _trim(offender["body"])},
-            "conditions": [{
-                "name": "identity", "category": "identity",
-                "baseline_value": offender["identity"],
-                "perturbation": {"drop": True}}],
-        },
+        "cem_spec": _cem_spec_for_identity_drop(resource, offender),
     }
 
 
@@ -260,6 +314,169 @@ def _mine_one_time_use(resource, rows):
 
 
 # --------------------------------------------------------------------------- #
+# State-transition view (P4-M1): per (object-instance, session) ordered action #
+# sequence -- the "state machine" is observable status/content deltas, not an  #
+# inferred automaton. Used to FORM candidates; every emitted hypothesis still  #
+# reduces to a frozen-CEM droppable-condition test.                            #
+# --------------------------------------------------------------------------- #
+def _state_class(status) -> str:
+    if _is_denial(status):
+        return "denied"
+    if _is_success(status):
+        return "ok"
+    return "other"
+
+
+def _sequence_by_object_session(exchanges):
+    seqs: dict[tuple, list[dict]] = {}
+    for i, ex in enumerate(exchanges):
+        if not _valid_row(ex):
+            continue
+        key = (ex["resource"], ex.get("session"))
+        seqs.setdefault(key, []).append({
+            "actor": ex["identity"], "action": ex["action"], "status": ex["status"],
+            "state_class": _state_class(ex["status"]), "_idx": ex.get("_idx", i)})
+    for steps in seqs.values():
+        steps.sort(key=lambda s: s["_idx"])
+    return seqs
+
+
+# --------------------------------------------------------------------------- #
+# T3 -- vertical privilege / authz inversion                                  #
+#   On one resource, >=1 identity is DENIED (401/403) while a DIFFERENT        #
+#   identity SUCCEEDS (2xx). The denial-vs-success differential is the signal  #
+#   (class scanners miss it); CEM then tests whether the succeeding identity's #
+#   credential was actually necessary.                                         #
+# --------------------------------------------------------------------------- #
+def _mine_vertical_privilege(resource, rows):
+    denied = [r for r in rows if _is_denial(r["status"])]
+    if not denied:
+        return []
+    denied_ids = {r["identity"] for r in denied}
+    # vertical privilege is about a privileged OPERATION, not reading someone's
+    # object (that is T1 ownership). Scoping to non-read actions keeps correct
+    # per-owner read protection (owner 2xx / non-owner 403) out of this template.
+    # Collect the FIRST non-read success per identity directly -- never dedup on
+    # an earlier read by the same identity (recon-before-op is the common order),
+    # which would otherwise suppress the privileged success entirely.
+    offenders, seen = [], set()
+    for r in rows:
+        if (_is_success(r["status"]) and r["action"] not in READ_ACTIONS
+                and r["identity"] not in denied_ids and r["identity"] not in seen):
+            seen.add(r["identity"])
+            offenders.append(r)
+    if not offenders:
+        return []
+    offender = offenders[0]
+    success = [r for r in rows if _is_success(r["status"])]
+    return [{
+        "invariant": "vertical_privilege",
+        "resource": resource,
+        # a denial-vs-success differential on the same object is a strong signal
+        # regardless of whether a body was captured -> high (CEM is precision).
+        "confidence": "high",
+        "negative_control": {"denial_seen": True,
+                             "content_relation": _content_relation([r["body"] for r in success])},
+        "observation": (
+            f"on '{resource}', identity '{offender['identity']}' succeeded (2xx) at an "
+            f"action denied (401/403) to {len(denied_ids)} other identity(ies) "
+            f"({', '.join(sorted(denied_ids))}) -- a vertical-privilege differential."),
+        "hypothesis": (
+            f"vertical-privilege invariant may be violated on '{resource}': identity "
+            f"'{offender['identity']}' performs an action others are denied "
+            f"(candidate -- to be falsified by CEM, not asserted)."),
+        "evidence_idx": sorted([r["_idx"] for r in denied] + [offender["_idx"]]),
+        "cem_spec": _cem_spec_for_identity_drop(resource, offender),
+    }]
+
+
+# --------------------------------------------------------------------------- #
+# T4 -- state-gated parameter                                                 #
+#   A query param present on a 2xx request and ABSENT on a denied one is a     #
+#   candidate authorization/ownership gate. CEM then drops it and checks       #
+#   whether the request still succeeds (gate not enforced).                    #
+# --------------------------------------------------------------------------- #
+def _query_params(row) -> dict:
+    """Query params carried by a row's real captured request (preferred) or its
+    args dict -- the CEM-droppable surface for T4."""
+    br = row.get("base_request")
+    if br and br.get("url"):
+        return dict(parse_qsl(urlsplit(br["url"]).query, keep_blank_values=True))
+    args = row.get("args")
+    return {k: v for k, v in args.items()} if isinstance(args, dict) else {}
+
+
+def _mine_state_gated_param(resource, rows):
+    """HIGH RECALL (CEM is precision): flag any query param that looks like an
+    access/privilege gate -- (A) present on a 2xx request and absent on a denied
+    one, OR (B) present on >=2 distinct identities' 2xx requests with DIFFERING
+    values (an identity/privilege-scoped param). Emit one candidate per
+    (param, identity) carrying it, so CEM can confirm the one whose drop removes
+    a leak (a real violation, e.g. a client-settable `role=admin`) and reject an
+    inert param (drop changes nothing). The denial trigger does NOT by itself
+    assert the param is necessary -- only CEM does."""
+    successes = [r for r in rows
+                 if _is_success(r["status"]) and (r.get("base_request") or {}).get("url")]
+    denial_params = [_query_params(r) for r in rows if _is_denial(r["status"])]
+    if not successes:
+        return []
+
+    seen: dict[str, set] = {}
+    for r in successes:
+        for k, v in _query_params(r).items():
+            if str(v):
+                seen.setdefault(k, set()).add((r.get("identity"), str(v)))
+
+    gate_params = set()
+    for pname, iv in seen.items():
+        absent_in_denial = any(pname not in dp or not str(dp.get(pname, ""))
+                               for dp in denial_params)
+        varies = len({i for i, _ in iv}) >= 2 and len({val for _, val in iv}) >= 2
+        if absent_in_denial or varies:
+            gate_params.add(pname)
+    if not gate_params:
+        return []
+
+    candidates, emitted = [], set()
+    for r in successes:
+        params = _query_params(r)
+        for pname in sorted(gate_params):
+            pval = params.get(pname)
+            if not str(pval) if pval is not None else True:
+                continue
+            key = (pname, r.get("identity"))
+            if key in emitted:
+                continue
+            emitted.add(key)
+            body = r.get("body") or ""
+            sig = {"status_in": [200]}
+            if body.strip():
+                sig["body_contains"] = _trim(body)
+            candidates.append({
+                "invariant": "state_gated_param",
+                "resource": resource,
+                "confidence": "medium",  # high recall; CEM decides enforcement
+                "negative_control": {"denial_seen": bool(denial_params), "gate_param": pname},
+                "observation": (
+                    f"on '{resource}', identity '{r.get('identity')}' carried query param "
+                    f"'{pname}' on a 2xx request -- a candidate access/privilege gate."),
+                "hypothesis": (
+                    f"state-gated-parameter invariant may be violated on '{resource}': the "
+                    f"gate param '{pname}' may control access it should not, or not be "
+                    f"enforced (candidate -- to be falsified by CEM, not asserted)."),
+                "evidence_idx": sorted([r["_idx"]]
+                                       + [x["_idx"] for x in rows if _is_denial(x["status"])]),
+                "cem_spec": {
+                    "base_request": r["base_request"],
+                    "success_signature": sig,
+                    "conditions": [{"name": pname, "category": "state",
+                                    "baseline_value": pval, "perturbation": {"drop": True}}],
+                },
+            })
+    return candidates
+
+
+# --------------------------------------------------------------------------- #
 # Public API                                                                  #
 # --------------------------------------------------------------------------- #
 def mine_invariants(exchanges: list[dict]) -> list[dict]:
@@ -275,6 +492,8 @@ def mine_invariants(exchanges: list[dict]) -> list[dict]:
         if own is not None:
             candidates.append(own)
         candidates.extend(_mine_one_time_use(resource, rows))
+        candidates.extend(_mine_vertical_privilege(resource, rows))
+        candidates.extend(_mine_state_gated_param(resource, rows))
     return candidates
 
 
