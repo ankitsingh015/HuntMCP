@@ -126,6 +126,43 @@ def test_sync_skips_failed(tmp_path):
     assert "1" in done.split() and "2" not in done.split()
 
 
+# --- supersede dedup (cross-source) -------------------------------------
+
+def test_existing_other_sources_finds_h1_not_hexbrain(tmp_path):
+    (tmp_path / "h1-xss-5-old.md").write_text("x")
+    (tmp_path / "hexbrain-xss-5-new.md").write_text("x")
+    others = hb._existing_other_sources(str(tmp_path), 5)
+    names = [os.path.basename(p) for p in others]
+    assert names == ["h1-xss-5-old.md"]
+
+
+def test_existing_other_sources_ignores_non_h1_user_files(tmp_path):
+    # a hand-added writeup that happens to contain -5- must NOT be superseded
+    (tmp_path / "custom-notes-5-analysis.md").write_text("mine")
+    (tmp_path / "command-injection-example-5.md").write_text("mine")
+    assert hb._existing_other_sources(str(tmp_path), 5) == []
+
+
+def test_sync_supersede_removes_h1_and_clears_chunks(tmp_path):
+    wd = str(tmp_path)
+    (tmp_path / "h1-access-791-old.md").write_text("old h1 body")
+    deleted = []
+    hb.sync([791], wd, fetch=_fake_raw, sleep_s=0, supersede=True,
+            chunk_deleter=lambda url: deleted.append(url))
+    # old h1 file gone, new hexbrain file written
+    assert not (tmp_path / "h1-access-791-old.md").exists()
+    assert list(tmp_path.glob("hexbrain-*-791-*.md"))
+    # chunks cleared for that report's url
+    assert deleted == ["https://hackerone.com/reports/791"]
+
+
+def test_sync_no_supersede_leaves_h1(tmp_path):
+    wd = str(tmp_path)
+    (tmp_path / "h1-access-791-old.md").write_text("old")
+    hb.sync([791], wd, fetch=_fake_raw, sleep_s=0)  # supersede default off
+    assert (tmp_path / "h1-access-791-old.md").exists()
+
+
 # --- Task 4: embed path --------------------------------------------------
 
 def test_embed_flag_calls_embedder(tmp_path, monkeypatch):

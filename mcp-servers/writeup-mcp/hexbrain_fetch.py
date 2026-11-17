@@ -141,6 +141,30 @@ def _on_disk(writeup_dir: str, rid: int) -> bool:
     return bool(glob.glob(os.path.join(writeup_dir, f"hexbrain-*-{rid}-*.md")))
 
 
+def _existing_other_sources(writeup_dir: str, rid: int) -> list[str]:
+    """Writeup files for this report id from the h1_fetch source
+    (h1-*-<id>-*.md). Restricted to the h1- prefix on purpose: supersede
+    removes these, and matching any '*-<id>-*.md' would delete hand-added user
+    writeups that merely contain -<id>-. The surrounding dashes keep id 5 from
+    matching id 51."""
+    return glob.glob(os.path.join(writeup_dir, f"h1-*-{rid}-*.md"))
+
+
+def _resolve_chunk_deleter():
+    """The real Chroma chunk remover (delete_by_url), or None if the embed
+    stack is unavailable. Lazily imported, like _embedder()."""
+    try:
+        import importlib.util
+        here = os.path.dirname(__file__)
+        spec = importlib.util.spec_from_file_location(
+            "writeup_chroma", os.path.join(here, "chroma_client.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.delete_by_url
+    except Exception:
+        return None
+
+
 def fetch_report_md(rid: int, retries: int = 3, timeout: int = 25) -> str | None:
     """Fetch one report's markdown from the fixed HexBrain host. Returns the
     text, or None on 404/private/error. Honors a 429 Retry-After."""
@@ -164,18 +188,26 @@ def fetch_report_md(rid: int, retries: int = 3, timeout: int = 25) -> str | None
 
 
 def sync(ids, writeup_dir, fetch=fetch_report_md, sleep_s: float = 0.3,
-         done_file: str | None = None, embed: bool = False) -> dict:
+         done_file: str | None = None, embed: bool = False,
+         supersede: bool = False, chunk_deleter=None) -> dict:
     """Fetch each report id, write data/writeups/hexbrain-*.md, ledger the id.
 
     Idempotent (skips ids in the ledger or already on disk) and resumable. A
     fetch returning None / raising is counted failed and NOT ledgered, so a
     rerun retries it. `fetch(rid) -> str | None` is injected for tests.
+
+    supersede: when a report already exists from another source (e.g. an
+    h1_fetch h1-*-<id>-*.md), remove that file and delete its chunks from the
+    RAG (by url) before writing the cleaner HexBrain version. chunk_deleter(url)
+    is injected for tests; in production it resolves to chroma_client.delete_by_url.
     """
     os.makedirs(writeup_dir, exist_ok=True)
     done_file = done_file or os.path.join(writeup_dir, DONE_NAME)
     done = _done_ids(done_file)
-    written = skipped = failed = 0
+    written = skipped = failed = superseded = 0
     embed_fn = _embedder() if embed else None
+    if supersede and chunk_deleter is None:
+        chunk_deleter = _resolve_chunk_deleter()
     for rid in ids:
         if str(rid) in done or _on_disk(writeup_dir, rid):
             skipped += 1
@@ -187,6 +219,14 @@ def sync(ids, writeup_dir, fetch=fetch_report_md, sleep_s: float = 0.3,
         if not raw:
             failed += 1
             continue
+        if supersede:
+            others = _existing_other_sources(writeup_dir, rid)
+            if others:
+                if chunk_deleter:
+                    chunk_deleter(f"https://hackerone.com/reports/{rid}")
+                for old in others:
+                    os.remove(old)
+                superseded += 1
         fname, text = to_writeup_md(raw, rid)
         path = os.path.join(writeup_dir, fname)
         with open(path, "w") as fh:
@@ -202,7 +242,8 @@ def sync(ids, writeup_dir, fetch=fetch_report_md, sleep_s: float = 0.3,
                 pass  # files written; embed is best-effort
         if sleep_s:
             time.sleep(sleep_s)
-    return {"written": written, "skipped": skipped, "failed": failed}
+    return {"written": written, "skipped": skipped, "failed": failed,
+            "superseded": superseded}
 
 
 def _embedder():
@@ -241,6 +282,9 @@ def _cli() -> None:
                      help="list new ids from an Atom feed url (e.g. /feed)")
     ap.add_argument("--limit", type=int, default=0, help="max reports this run")
     ap.add_argument("--embed", action="store_true", help="embed into the RAG")
+    ap.add_argument("--supersede", action="store_true",
+                    help="replace an older same-id report (e.g. h1_fetch) with "
+                         "the clean HexBrain one: remove its file + RAG chunks")
     ap.add_argument("--writeup-dir", default=_default_writeup_dir())
     args = ap.parse_args()
 
@@ -251,8 +295,9 @@ def _cli() -> None:
     if args.limit:
         ids = ids[: args.limit]
 
-    res = sync(ids, args.writeup_dir, embed=args.embed)
-    print(f"written={res['written']} skipped={res['skipped']} failed={res['failed']}")
+    res = sync(ids, args.writeup_dir, embed=args.embed, supersede=args.supersede)
+    print(f"written={res['written']} skipped={res['skipped']} "
+          f"failed={res['failed']} superseded={res['superseded']}")
 
 
 if __name__ == "__main__":

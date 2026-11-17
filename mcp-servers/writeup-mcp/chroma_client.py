@@ -57,6 +57,21 @@ def upsert_chunks(
     )
 
 
+def delete_by_url(url: str) -> int:
+    """Delete every chunk whose metadata url matches (all chunks of one report).
+    Returns the count removed. Used to supersede an older copy of a report (e.g.
+    an h1_fetch version) before embedding a cleaner HexBrain version -- both
+    share the same hackerone.com/reports/<id> url, so this clears any source."""
+    if not url:
+        return 0
+    collection = get_collection()
+    existing = collection.get(where={"url": url})
+    ids = (existing or {}).get("ids", []) or []
+    if ids:
+        collection.delete(ids=ids)
+    return len(ids)
+
+
 def collection_stats() -> dict:
     collection = get_collection()
     return {"count": collection.count(), "name": COLLECTION_NAME}
