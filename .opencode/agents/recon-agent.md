@@ -15,6 +15,9 @@ tools:
   "osint-mcp*": true
   "github-security-mcp*": true
   "discspec-mcp*": true
+  # knowledge-map surface map (Phase 0+1): recon populates nodes as it
+  # discovers host/endpoint/feature/flow/tech surface.
+  "surface-map-mcp*": true
 permission:
   edit: allow
   # webfetch is deliberately NOT scope-gated (unlike bash) -- its real

@@ -64,13 +64,19 @@
     "gcp-postexploit-mcp*": false,
     "local-privesc-mcp*": false,
     "ad-recon-mcp*": false,
-    "ws-rpc-mcp*": false
+    "ws-rpc-mcp*": false,
+    "surface-map-mcp*": false
   },
   "mcp": {
     "writeup-mcp": {
       "type": "local",
       "enabled": true,
       "command": ["./scripts/venv-python.sh", "mcp-servers/writeup-mcp/server.py"]
+    },
+    "surface-map-mcp": {
+      "type": "local",
+      "enabled": true,
+      "command": ["./scripts/venv-python.sh", "mcp-servers/surface-map-mcp/server.py"]
     },
     "memory-mcp": {
       "type": "local",
