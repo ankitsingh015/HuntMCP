@@ -12,6 +12,7 @@ from h1_fetch import fetch_report as _h1_fetch_report
 from h1_fetch import report_id as _h1_report_id
 from h1_fetch import report_to_markdown as _h1_report_md
 from mcp.server.fastmcp import FastMCP
+from plan_feature import build_plan as _build_plan
 
 app = FastMCP("writeup-mcp")
 
@@ -62,6 +63,21 @@ def query_rag(query_text: str, top_k: int = 5) -> str:
         lines.append(f"    {doc}...")
         lines.append("")
     return "\n".join(lines)
+
+
+@app.tool()
+def plan_feature(feature: str, program: str = "", limit: int = 6) -> str:
+    """Signature-driven precedent for a feature/flow you are about to test.
+    Describe the feature (e.g. "profile picture upload", "password reset by
+    email", "invite teammate to workspace") and get back the vulnerability
+    classes real disclosed reports found in features LIKE IT, ranked by how
+    often -- including classes you would not have proposed yourself. Driven by
+    the feature's signature, not your hypothesis, so it surfaces blind spots.
+    For depth on a class use query_rag/get_testing_playbook."""
+    text = feature if not program else f"{feature} {program}"
+    emb = embed([text])
+    results = query(emb, top_k=max(limit * 4, 20))
+    return _build_plan(feature, results, limit=limit)
 
 
 @app.tool()
