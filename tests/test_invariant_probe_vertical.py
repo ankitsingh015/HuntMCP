@@ -77,3 +77,17 @@ def test_no_vertical_privilege_candidate_when_all_denied_or_all_allowed():
     all_allowed = [_row("Bearer a", 200, idx=0), _row("Bearer b", 200, idx=1)]
     assert _vertical(all_denied) == []
     assert _vertical(all_allowed) == []
+
+
+def test_vertical_privilege_still_fires_when_offender_read_before_the_privileged_op():
+    """Review finding: the offender commonly RECONs (a read) before the
+    privileged op. The non-read success must still be detected even though the
+    same identity had an earlier read success on the resource."""
+    corpus = [
+        _row("Bearer lowpriv", 200, action="read", idx=0),   # bob reads first
+        _row("Bearer admin", 403, action="export", idx=1),   # admin denied export
+        _row("Bearer lowpriv", 200, action="export", idx=2),  # bob then exports
+    ]
+    cands = _vertical(corpus)
+    assert len(cands) == 1, cands
+    assert cands[0]["cem_spec"]["conditions"][0]["name"] == "Authorization"

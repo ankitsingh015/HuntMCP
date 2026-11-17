@@ -353,19 +353,22 @@ def _mine_vertical_privilege(resource, rows):
     if not denied:
         return []
     denied_ids = {r["identity"] for r in denied}
-    success, seen = [], set()
-    for r in rows:
-        if _is_success(r["status"]) and r["identity"] not in seen:
-            seen.add(r["identity"])
-            success.append(r)
     # vertical privilege is about a privileged OPERATION, not reading someone's
     # object (that is T1 ownership). Scoping to non-read actions keeps correct
     # per-owner read protection (owner 2xx / non-owner 403) out of this template.
-    offenders = [r for r in success
-                 if r["identity"] not in denied_ids and r["action"] not in READ_ACTIONS]
+    # Collect the FIRST non-read success per identity directly -- never dedup on
+    # an earlier read by the same identity (recon-before-op is the common order),
+    # which would otherwise suppress the privileged success entirely.
+    offenders, seen = [], set()
+    for r in rows:
+        if (_is_success(r["status"]) and r["action"] not in READ_ACTIONS
+                and r["identity"] not in denied_ids and r["identity"] not in seen):
+            seen.add(r["identity"])
+            offenders.append(r)
     if not offenders:
         return []
     offender = offenders[0]
+    success = [r for r in rows if _is_success(r["status"])]
     return [{
         "invariant": "vertical_privilege",
         "resource": resource,
