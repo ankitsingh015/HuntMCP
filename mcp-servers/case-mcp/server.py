@@ -297,6 +297,31 @@ def mine_invariants(target: str = "", limit: int = 100) -> str:
 
 
 @app.tool()
+def order_experiments(candidates: str) -> str:
+    """P4-INFOGAIN: order candidate experiments by descending expected
+    information-gain-per-cost, so you run the highest-yield tests first. Pass a
+    JSON list of candidates, each `{"vuln_class": "...", "cost"?: <float>, ...}`
+    (any extra keys are preserved). Returns ALL of them re-ordered, each
+    annotated with `_info_gain`/`_info_gain_score`/`_novel`. **HINTS, NEVER
+    SKIPS (§11-A):** nothing is dropped, and a NOVEL class with no history is
+    scored with the optimistic prior so it is never ranked below a known
+    low-yield test purely for lacking a track record. Read-only, offline, no
+    target request; the per-class history is read from this engagement's case
+    store."""
+    import info_gain
+
+    try:
+        cands = json.loads(candidates)
+    except (json.JSONDecodeError, TypeError) as e:
+        return json.dumps({"error": f"candidates must be a JSON list: {e}"})
+    if not isinstance(cands, list):
+        return json.dumps({"error": "candidates must be a JSON list"})
+    history = info_gain.build_history_from_case_store()
+    ordered = info_gain.order_experiments(cands, history)
+    return json.dumps({"ordered": ordered, "count": len(ordered)})
+
+
+@app.tool()
 def case_summary() -> str:
     """Current case state: hypothesis/finding counts by status, evidence
     and experiment counts, root causes grouped. Call this to orient before
