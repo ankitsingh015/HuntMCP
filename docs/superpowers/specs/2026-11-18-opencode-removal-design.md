@@ -78,7 +78,7 @@ Chosen: **#2**, per the maintainer decision.
 
 Audit source: issue #160 comment + verification this session (2026-11-18).
 
-### A. MCP servers — OpenCode-only (3), must be added to `.mcp.json` + enabled in `.claude/settings.local.json`
+### A. MCP servers — OpenCode-only (3), must be added to `.mcp.json` + enabled in the committed `.claude/settings.json`
 
 - `surface-map-mcp` (also closes #161) — absent from `.mcp.json`.
 - `discspec-mcp` — absent from `.mcp.json`.
@@ -87,9 +87,19 @@ Audit source: issue #160 comment + verification this session (2026-11-18).
 
 `.mcp.json` entry shape to mirror existing working entries:
 `{"command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh", "args":
-["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/<name>/server.py"]}`, then add
-`<name>` to `enabledMcpjsonServers` in `.claude/settings.local.json`.
-(Editing `settings.local.json` triggers `confirm-hook-edit.sh` — expected.)
+["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/<name>/server.py"]}`.
+
+**Enablement home (decided with maintainer, 2026-11-18):** the issue said
+"enable in `.claude/settings.local.json`", but that file is **gitignored**
+(per-user) — enablement there never ships, so on a fresh clone / in CI the
+servers would be registered-but-disabled and the capability silently
+dropped the moment `opencode.jsonc` (today's committed enablement source,
+asserted by `ci.yml`) is deleted. Therefore enablement moves to the
+committed, shared `.claude/settings.json`
+(`enabledMcpjsonServers`/`disabledMcpjsonServers`), which ships and is
+CI-readable — the true single source of truth. `settings.local.json`
+remains a valid optional per-user override. (Editing `settings.json`
+triggers `confirm-hook-edit.sh` — expected.)
 
 ### B. Agents — all 6 differ, reconcile BEFORE deleting `.opencode/agents`
 

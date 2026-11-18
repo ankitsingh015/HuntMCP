@@ -15,10 +15,11 @@
 - **No silent capability drop:** every OpenCode-only capability must be proven reachable in the Claude path BEFORE any deletion; if one can't be preserved, STOP and ask the maintainer.
 - Branch: `fix/wiring-and-testing-159-164`. Commit per concern. No AI-attribution lines in commits/PRs. Do not push/PR without an explicit in-the-moment ask.
 - `.mcp.json` entry shape (copy verbatim from existing entries): `{"command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh", "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/<name>/server.py"]}`.
-- Editing `.claude/settings.local.json` and hook files triggers `confirm-hook-edit.sh` — expected, not an error.
+- Editing `.claude/settings.json`, `.claude/settings.local.json` and hook files triggers `confirm-hook-edit.sh` — expected, not an error.
+- **Enablement home (decided 2026-11-18):** the committed, shared `.claude/settings.json` holds `enabledMcpjsonServers`/`disabledMcpjsonServers` — NOT the gitignored, per-user `.claude/settings.local.json`. `settings.local.json` is gitignored, so enablement there never ships; the committed `settings.json` is the single source of truth that ships + works in CI. `settings.local.json` remains a valid optional per-user override.
 - MCP servers load only at Claude Code startup; in-session verification of the 3 new servers requires a maintainer-triggered restart (Task 1 ends in that checkpoint).
 - Protected security-detection benchmarks and their ground truth must not be weakened (`.claude/rules/benchmarks.md`). This plan touches only registration/wiring tests, not detection benchmarks.
-- 6 MCP servers are intentionally disabled in settings.local (`second-opinion-mcp`, `azure-postexploit-mcp`, `aws-postexploit-mcp`, `gcp-postexploit-mcp`, `local-privesc-mcp`, `ad-recon-mcp`) — these remain a documented disabled-exception set, present in `.mcp.json` but not enabled.
+- 6 MCP servers are intentionally disabled in `.claude/settings.json` (`second-opinion-mcp`, `azure-postexploit-mcp`, `aws-postexploit-mcp`, `gcp-postexploit-mcp`, `local-privesc-mcp`, `ad-recon-mcp`) — a documented disabled-exception set, present in `.mcp.json` but not enabled.
 
 ## Review Focus
 
@@ -34,13 +35,13 @@
 
 **Files:**
 - Modify: `.mcp.json` (add `surface-map-mcp`, `discspec-mcp`, `ws-rpc-mcp`)
-- Modify: `.claude/settings.local.json` (`enabledMcpjsonServers` += the 3)
+- Modify: `.claude/settings.json` (committed; add `enabledMcpjsonServers`/`disabledMcpjsonServers` with the 3 enabled) — replaces the gitignored `settings.local.json` as the enablement home.
 
 **Interfaces:**
-- Produces: 3 servers registered + enabled in the Claude path; relied on by Task 2's drift test and the whole deletion.
+- Produces: 3 servers registered + enabled in the committed Claude path; relied on by Task 2's drift test and the whole deletion.
 
 - [ ] **Step 1:** Add the 3 entries to `.mcp.json` `mcpServers` using the exact entry shape above.
-- [ ] **Step 2:** Add the 3 names to `enabledMcpjsonServers` in `.claude/settings.local.json`.
+- [ ] **Step 2:** Add the full `enabledMcpjsonServers` (28, incl. the 3) + `disabledMcpjsonServers` (6) lists to the committed `.claude/settings.json`.
 - [ ] **Step 3 (out-of-session smoke):** For each, start `scripts/venv-python.sh mcp-servers/<name>/server.py` as a stdio subprocess and confirm it initializes without import/boot error. Expected: process starts, no traceback.
 - [ ] **Step 4: Commit** (`.mcp.json`, `.claude/settings.local.json`): "feat: wire surface-map/discspec/ws-rpc MCP servers into Claude Code config (#160, #161)".
 - [ ] **Step 5: RESTART CHECKPOINT** — pause and ask the maintainer to restart the session. On restart, call a real tool on each and capture the response:
@@ -60,7 +61,7 @@
 
 - [ ] **Step 1: Write the failing/updated tests.** Replace `_registered_server_names()` so "registered" = a key in `.mcp.json` `mcpServers` (drop the `opencode.jsonc` read). Keep `_claude_agent_mcp_refs`. Delete `_opencode_agent_mcp_refs` and `test_opencode_agent_mcp_refs_all_registered_or_known_exception` (no `.opencode/agents` post-removal). Add:
   - `test_every_mcp_servers_dir_is_registered_in_mcp_json()` — every `mcp-servers/<name>-mcp` directory is a key in `.mcp.json` (this is the bug that let surface-map stay orphaned). Allow `_KNOWN_UNTRACKED_PERSONAL_SERVERS` (obscura-mcp, burp).
-  - `test_every_registered_server_is_enabled_or_documented_disabled()` — every `.mcp.json` server is in `enabledMcpjsonServers` of `.claude/settings.local.json`, except the documented `_KNOWN_DISABLED` set (the 6 above), asserting that set is not stale (none of the 6 are also enabled).
+  - `test_every_registered_server_is_enabled_or_documented_disabled()` — every `.mcp.json` server is in `enabledMcpjsonServers` of the committed `.claude/settings.json`, except the documented `_KNOWN_DISABLED` set (the 6 above), asserting that set is not stale (none of the 6 are also enabled). Reads `.claude/settings.json` (committed), never the gitignored `settings.local.json`.
   - Keep `test_claude_agent_mcp_refs_all_registered_or_known_exception()`, now resolving against the `.mcp.json`-based registry.
 - [ ] **Step 2: Run** `pytest tests/test_agent_mcp_registry_drift.py -v`. Expected: PASS (fails before Task 1 wiring; passes after).
 - [ ] **Step 3: Commit:** "test: drift test validates .mcp.json as single MCP source + every server-dir registered (#163)".
@@ -70,7 +71,7 @@
 **Files:**
 - Modify: `tests/test_agent_tool_scoping.py`
 
-- [ ] **Step 1: Rewrite.** `AGENTS_DIR` → `.claude/agents`. Replace `_load_opencode_config()` with a reader of `.claude/settings.local.json` `enabledMcpjsonServers` for the enabled set. Replace `_reenabled_servers(fm)` with a parser of the comma-separated `tools:` string that extracts `mcp__<name>` tokens (reuse the drift test's `_claude_agent_mcp_refs` logic). Then:
+- [ ] **Step 1: Rewrite.** `AGENTS_DIR` → `.claude/agents`. Replace `_load_opencode_config()` with a reader of the committed `.claude/settings.json` `enabledMcpjsonServers` for the enabled set. Replace `_reenabled_servers(fm)` with a parser of the comma-separated `tools:` string that extracts `mcp__<name>` tokens (reuse the drift test's `_claude_agent_mcp_refs` logic). Then:
   - DROP `test_global_disable_covers_every_enabled_mcp_server` and `test_global_tools_map_only_disables_never_enables` (no central "global tools map" exists in Claude Code).
   - KEEP, retargeted to `.claude/agents` + settings.local enabled set: `test_every_agent_declares_a_nonempty_scoped_allowlist`, `test_agent_allowlists_reference_only_real_enabled_servers`, `test_no_agent_reenables_all_servers`, `test_orchestrator_is_tightly_scoped` (huntbrain's 7-server set), `test_no_orphan_mcp_server` (every ENABLED server reachable by ≥1 agent), `test_high_critical_detection_tools_available_to_owning_agent` (the `HIGH_CRIT_COVERAGE` map unchanged).
 - [ ] **Step 2: Run** `pytest tests/test_agent_tool_scoping.py -v`. Expected: PASS. If `test_no_orphan_mcp_server` or the coverage map fails, it is a real wiring gap to fix in the agent frontmatter (or document), not a test to weaken.
@@ -81,7 +82,7 @@
 **Files:**
 - Modify: `tests/test_surface_map_mcp.py`, `tests/test_sandbox_runner.py`
 
-- [ ] **Step 1:** In `test_surface_map_mcp.py`, replace `_opencode_cfg()`/the opencode registration assertion with: surface-map-mcp is a key in `.mcp.json` AND in `enabledMcpjsonServers`. In `test_sandbox_runner.py`, update the line-88 docstring/comment that references `opencode.jsonc` to describe the `.mcp.json`/no-network contract (comment-only; assertions unchanged unless they read opencode).
+- [ ] **Step 1:** In `test_surface_map_mcp.py`, replace `_opencode_cfg()`/the opencode registration assertion with: surface-map-mcp is a key in `.mcp.json` AND in `enabledMcpjsonServers` of the committed `.claude/settings.json`. In `test_sandbox_runner.py`, update the line-88 docstring/comment that references `opencode.jsonc` to describe the `.mcp.json`/no-network contract (comment-only; assertions unchanged unless they read opencode).
 - [ ] **Step 2: Run** `pytest tests/test_surface_map_mcp.py tests/test_sandbox_runner.py -v`. Expected: PASS.
 - [ ] **Step 3: Commit:** "test: surface-map + sandbox_runner tests drop opencode.jsonc references (#160)".
 
@@ -113,7 +114,7 @@
 - Modify: the 67 files referencing `opencode` outside `.opencode/` — docs (`README.md`, `ARCHITECTURE.md`, `CLAUDE.md`, `AGENTS.md`→fold uniques into `CLAUDE.md` then remove, `PHASE1*.md`, `IMPLEMENTATION-TASK-TRACKER.md`, `docs/**`, `knowledge/master-pentest-prompt.md`), code (`mcp-servers/*.py`, `mcp-servers/{httpx,target-discovery,surface-map,playwright}-mcp/server.py`, `scripts/*.sh`), CI (`.github/workflows/ci.yml`), ignore (`.gitignore`, `.dockerignore`), and `internal-research/**` per the spec (superseded-note for pure history, content edit elsewhere).
 
 - [ ] **Step 1:** Delete the two targets.
-- [ ] **Step 2:** `grep -rniE 'opencode' . | grep -v node_modules` and update every live reference so the repo describes one stack. Fold AGENTS.md uniques into CLAUDE.md. Remove the OpenCode `validate-config`/opencode-reading CI job steps; ensure the drift/scoping tests run in CI.
+- [ ] **Step 2:** `grep -rniE 'opencode' . | grep -v node_modules` and update every live reference so the repo describes one stack. Fold AGENTS.md uniques into CLAUDE.md. Remove the OpenCode `validate-config` CI job; **re-point `ci.yml`'s enablement assertion (currently `assert data['mcp'][name].get('enabled')` reading `opencode.jsonc`, ~L333) to read `.claude/settings.json` `enabledMcpjsonServers` + `.mcp.json`**; ensure the drift/scoping tests run in CI.
 - [ ] **Step 3: Verify no dangling refs:** `grep -rniE 'opencode\.jsonc|\.opencode/' . | grep -v node_modules | grep -v docs/superpowers/specs/2026-11-18 | grep -v internal-research/.*history` returns only intentional historical/superseded notes. Expected: no live wiring reference remains.
 - [ ] **Step 4:** `bash -n scripts/*.sh`; `ruff check mcp-servers/ --ignore E402,F811 --target-version py312`; `python -m py_compile` touched servers. Expected: clean.
 - [ ] **Step 5: Commit:** "refactor!: remove OpenCode stack; Claude Code is the single source of truth (#160)".
