@@ -131,6 +131,16 @@ flags anything abandoned for 30+ minutes).
    of the minified bundle. A 404 on the guessed `.map` path just means no
    map is exposed — move on, this is a bonus signal, not a required step.
 
+   **Parse any API spec you find with `mcp__discspec-mcp`.** When recon
+   turns up an OpenAPI/Swagger spec (`/openapi.json`, `/swagger.json`,
+   `/v3/api-docs`, `/*.yaml`) or a GraphQL endpoint (`/graphql`), call
+   `discover_from_openapi(url)` / `discover_from_graphql(url)` (both
+   scope-gated). A spec declares operations that are often linked from no
+   crawlable page, so this surfaces endpoints katana and the JS mining
+   above both miss. Feed the flattened endpoint/parameter list into the
+   surface map and on to scan-agent (which runs `schemathesis-mcp` against
+   the same spec for property-based conformance fuzzing).
+
 7. **Detect AI/LLM-backed features and route to prompt-injection testing.**
    A platform exposing an LLM-backed feature (document analysis, a
    chat/assistant endpoint, an upload-to-summarize flow) is a first-class

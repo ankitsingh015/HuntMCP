@@ -94,8 +94,15 @@
 
 - [ ] **Step 1:** For each agent, `diff .claude/agents/<a>.md .opencode/agents/<a>.md`. Identify content present ONLY in the `.opencode` copy that is genuine capability/instruction (not OpenCode-runtime syntax, not stylistic). Fold that into the `.claude` copy. The `.claude` copy stays authoritative for format and for Claude-Code-specific mechanics.
 - [ ] **Step 2:** Re-run `pytest tests/test_agent_tool_scoping.py tests/test_agent_mcp_registry_drift.py -v` after edits (frontmatter `tools:` must still satisfy scoping + drift). Expected: PASS.
-- [ ] **Step 3:** Record per-agent in a scratch note what (if anything) was folded, for the PR's parity table.
-- [ ] **Step 4: Commit:** "refactor: fold opencode-only agent logic into .claude agents before removal (#160)".
+- [x] **Step 3:** Per-agent fold record (for PR parity table):
+  - **scan-agent** — folded the batch-nuclei section (`scan_batch_target`/`scan_batch_with_templates`/`check_batch`), absent from `.claude`; added a schemathesis API-schema-fuzzing phase (Task 3 follow-up).
+  - **report-agent** — folded the disclosed-report precedent step (`writeup-mcp search_disclosed_reports`); the self-duplicate step (`hackerone-mcp check_my_duplicates`, a live call) was relocated to huntbrain, since report-agent is Tier-1 file-only (NOT a drop — capability preserved, better scoped).
+  - **huntbrain** — added the HackerOne self-duplicate pre-check in Phase 5 (it owns `hackerone-mcp`).
+  - **recon-agent** — added discspec `discover_from_openapi`/`discover_from_graphql` usage in endpoint discovery (Task 3 follow-up).
+  - **exploit-agent** — restored `writeup-mcp` tool + the `query_rag(...)` precedent step before validation (dropped in `.claude`, present in `.opencode`).
+  - **chain-planner** — no fold: all tool tokens already present in `.claude`, the extra `.opencode` lines were prose/casing only.
+  - Only remaining cross-stack tool delta: report-agent's `hackerone-mcp` (intentional, relocated to huntbrain).
+- [x] **Step 4: Commit** DONE.
 
 ### Task 6: Port or consciously drop the 4 slash commands + confirm scope-gate parity
 

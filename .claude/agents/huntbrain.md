@@ -344,6 +344,16 @@ never being the only place data lives:
 
 ## Phase 5 — Report
 
+15.5. **Self-duplicate pre-check (HackerOne engagements only).** Before
+   spawning report-agent, for each confirmed finding run `mcp__hackerone-mcp`
+   `check_my_duplicates(handle, keyword)` — `handle` is the last path segment
+   of engagement.yaml's `program_url` when its host is `hackerone.com` (e.g.
+   `hackerone.com/example-program` → `example-program`); build `keyword` from
+   the finding's vuln_class + endpoint fragment. If it returns one of your own
+   matching reports, pass that to report-agent to flag at the top of the draft
+   (a solo hunter re-reporting their own old finding is a real, avoidable
+   mistake). Honest limit: this only sees reports *you* can access — no API can
+   rule out another hunter's pending/private report. Skip entirely off-HackerOne.
 16. Spawn `report-agent` with exploit-agent's confirmed findings and chains.
 
 ## Phase 6 — Learn (write-back, every time, win or lose)
