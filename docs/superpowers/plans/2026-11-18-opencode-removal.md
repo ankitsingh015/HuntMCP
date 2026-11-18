@@ -74,8 +74,9 @@
 - [ ] **Step 1: Rewrite.** `AGENTS_DIR` → `.claude/agents`. Replace `_load_opencode_config()` with a reader of the committed `.claude/settings.json` `enabledMcpjsonServers` for the enabled set. Replace `_reenabled_servers(fm)` with a parser of the comma-separated `tools:` string that extracts `mcp__<name>` tokens (reuse the drift test's `_claude_agent_mcp_refs` logic). Then:
   - DROP `test_global_disable_covers_every_enabled_mcp_server` and `test_global_tools_map_only_disables_never_enables` (no central "global tools map" exists in Claude Code).
   - KEEP, retargeted to `.claude/agents` + settings.local enabled set: `test_every_agent_declares_a_nonempty_scoped_allowlist`, `test_agent_allowlists_reference_only_real_enabled_servers`, `test_no_agent_reenables_all_servers`, `test_orchestrator_is_tightly_scoped` (huntbrain's 7-server set), `test_no_orphan_mcp_server` (every ENABLED server reachable by ≥1 agent), `test_high_critical_detection_tools_available_to_owning_agent` (the `HIGH_CRIT_COVERAGE` map unchanged).
-- [ ] **Step 2: Run** `pytest tests/test_agent_tool_scoping.py -v`. Expected: PASS. If `test_no_orphan_mcp_server` or the coverage map fails, it is a real wiring gap to fix in the agent frontmatter (or document), not a test to weaken.
-- [ ] **Step 3: Commit:** "test: tool-scoping invariants validate .claude agents + settings.local (#160)".
+- [x] **Step 2: Run** `pytest tests/test_agent_tool_scoping.py -v`. DONE — RED first (`test_no_orphan_enabled_server` flagged discspec-mcp + schemathesis-mcp as enabled-but-no-agent-references them), then GREEN after wiring discspec→recon-agent, schemathesis→scan-agent frontmatter allowlists. Two opencode-global-map tests dropped (no such construct in Claude Code).
+- [x] **Step 3: Commit** DONE (agent allowlist wiring, then scoping-test rewrite).
+- NOTE (Task 5 follow-up): discspec/schemathesis now have frontmatter ACCESS; add agent-BODY usage instructions (when recon calls discspec on a discovered spec; when scan runs schemathesis on an API) during the agent reconciliation so they genuinely fire, not just allowlisted.
 
 ### Task 4: Rewrite surface-map test + fix sandbox_runner test's opencode reference
 
