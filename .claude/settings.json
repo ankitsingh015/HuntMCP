@@ -31,7 +31,8 @@
     "idor-mcp",
     "surface-map-mcp",
     "discspec-mcp",
-    "ws-rpc-mcp"
+    "ws-rpc-mcp",
+    "schemathesis-mcp"
   ],
   "disabledMcpjsonServers": [
     "second-opinion-mcp",

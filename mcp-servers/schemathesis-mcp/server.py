@@ -299,3 +299,8 @@ def list_scans() -> str:
         marker = " [LIKELY ABANDONED]" if j["likely_abandoned"] else ""
         lines.append(f"  {j['job_id']}  {j['elapsed_s']}s{marker}")
     return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    print("schemathesis-mcp starting...", file=sys.stderr)
+    app.run(transport="stdio")
