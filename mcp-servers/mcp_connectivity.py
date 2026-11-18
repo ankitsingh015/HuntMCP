@@ -14,7 +14,7 @@ agent's own narrative or output." The suggested fix: "An agent-startup
 smoke check of every declared MCP server's live connection state,
 surfaced directly in the relying agent's own opening context."
 
-This wraps `opencode mcp list` (opencode's own built-in, pure read-only
+This wraps `claude mcp list` (Claude Code's own built-in, pure read-only
 introspection of every registered server's live connection state -- no
 live target contact, no engagement/session state touched) and produces
 the "surfaced directly" half: a short, agent-context-ready summary
@@ -49,9 +49,10 @@ HEALTH_FILENAME = "mcp-health.json"
 
 # Per-capability fallback chain (issue #134 part 3): when a server is down,
 # degrade to these, predictably, instead of ad hoc per session. Keyed by the
-# server name as it appears in opencode.jsonc / `opencode mcp list`. Recorded
+# server name as it appears in .mcp.json / `claude mcp list`. Recorded
 # into the health snapshot for every down server so a finding can cite not
 # just "primary path unavailable" but exactly what it fell back to.
+# Keyed by server name as it appears in .mcp.json / `claude mcp list`.
 CAPABILITY_FALLBACKS: dict[str, str] = {
     "burp": (
         "Repeater -> raw curl with manually-set headers; "
@@ -73,38 +74,33 @@ def fallback_for(server_name: str) -> str | None:
     None if no specific fallback is recorded for it."""
     return CAPABILITY_FALLBACKS.get(server_name)
 
-# A server status line, after ANSI stripping, has the real, distinctive
-# shape "<bullet><single-char-checkmark> <name> <status>" (e.g.
-# "●  ✓ writeup-mcp connected") -- requiring the SECOND token to be
-# exactly one character (the ✓/✗ symbol) is what distinguishes a real
-# server line from the surrounding header ("──  MCP Servers") and footer
-# ("└  32 server(s)") lines, which only have ONE leading symbol token
-# before a multi-character word.
-#
-# The status word itself is captured as ANY trailing token (\S+), not a
-# hardcoded alternation of four literals (connected/failed/error/
-# disconnected) -- a code-review finding, confirmed via direct
-# reproduction: a status word opencode emits that isn't one of those four
-# (e.g. "connecting", "pending", "timeout" -- all plausible for a server
-# mid-handshake or using OAuth) used to simply not match this regex at
-# all, so that server's line vanished from parse_mcp_list_output()'s
-# result ENTIRELY instead of being captured as non-connected -- which
-# also silently shrank the "all N connected" denominator in
-# summarize_for_agent_context(), compounding the problem. Downstream code
-# (find_disconnected()) already treats anything other than the literal
-# string "connected" as a problem, so capturing any token here and
-# comparing it downstream is both correct and strictly more robust.
-_SERVER_LINE_RE = re.compile(r"^\S+\s+\S\s+([A-Za-z0-9][A-Za-z0-9_.-]*)\s+(\S+)\s*$")
-
-
+# `claude mcp list` prints one line per server, after ANSI stripping:
+#   "<name>: <command-or-url> - ✔ Connected"
+#   "<name>: <command-or-url> - ✗ Failed to connect"
+# The server NAME is everything before the first ": "; the STATUS is
+# everything after the LAST " - " (space-dash-space, which only occurs
+# before the status -- a `--flag` in the command has no surrounding
+# spaces). "✔ Connected" normalizes to the literal "connected"; any other
+# trailing text (a failure/timeout/handshake word) is kept verbatim
+# (lowercased, symbol stripped) so find_disconnected() -- which treats
+# anything other than "connected" as a problem -- flags it. The
+# "Checking MCP server health…" header and blank lines have no " - " and
+# are skipped.
 def parse_mcp_list_output(raw: str) -> dict[str, str]:
-    """Returns {server_name: status_word} for every server line found in
-    `opencode mcp list`'s stdout, ANSI escape codes stripped first."""
+    """Returns {server_name: status_word} for every server line in
+    `claude mcp list`'s stdout, ANSI escape codes stripped first."""
     statuses: dict[str, str] = {}
     for line in _ANSI_RE.sub("", raw).splitlines():
-        m = _SERVER_LINE_RE.match(line.strip())
-        if m:
-            statuses[m.group(1)] = m.group(2)
+        line = line.strip()
+        if " - " not in line or ": " not in line:
+            continue
+        left, _, status_part = line.rpartition(" - ")
+        name = left.split(": ", 1)[0].strip()
+        if not name:
+            continue
+        sp = status_part.strip()
+        status = "connected" if ("✔" in sp or sp.lower() == "connected") else sp.replace("✗", "").strip().lower()
+        statuses[name] = status
     return statuses
 
 
@@ -130,17 +126,17 @@ def summarize_for_agent_context(statuses: dict[str, str]) -> str:
 
 
 def collect_live_statuses(timeout: int = 30) -> dict[str, str]:
-    """Run `opencode mcp list` (opencode's own read-only introspection -- no
+    """Run `claude mcp list` (Claude Code's own read-only introspection -- no
     live target contact, no engagement state touched) and return the parsed
-    {server: status}. Returns {} if the opencode binary isn't installed, the
+    {server: status}. Returns {} if the claude binary isn't installed, the
     command fails, or it times out -- the caller treats {} as "could not
     check," which is distinct from "all connected" (a non-empty dict with no
     disconnected entries)."""
-    if not shutil.which("opencode"):
+    if not shutil.which("claude"):
         return {}
     try:
         result = subprocess.run(
-            ["opencode", "mcp", "list"], capture_output=True, text=True, timeout=timeout
+            ["claude", "mcp", "list"], capture_output=True, text=True, timeout=timeout
         )
     except (subprocess.TimeoutExpired, OSError):
         return {}

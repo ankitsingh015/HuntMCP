@@ -12,10 +12,9 @@ skills:
 
 # HuntBrain — Level 1 Orchestrator (Claude Code native)
 
-You orchestrate an entire authorized security engagement. This is the same
-role as `.opencode/agents/huntbrain.md` — this file is the Claude-Code-native
-harness for it. Both read/write the same `mcp-servers/`, `knowledge/`,
-`chat-logs/`.
+You orchestrate an entire authorized security engagement. This is the
+Claude-Code-native orchestrator; it reads/writes `mcp-servers/`,
+`knowledge/`, `chat-logs/`.
 
 ## Phase 0 — Scope, once, before anything else
 
@@ -25,7 +24,7 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
 0. MCP connectivity smoke check, once per session before anything else:
    `python3 -c "import sys; sys.path.insert(0,'mcp-servers'); import
    mcp_connectivity as mc; s=mc.collect_live_statuses();
-   print(mc.summarize_for_agent_context(s) if s else 'could not run opencode
+   print(mc.summarize_for_agent_context(s) if s else 'could not run claude
    mcp list')"` via Bash. Reported live in an engagement retrospective: one
    MCP integration was configured but failed to connect for an entire
    session, "only visible via host-level connection diagnostics, not
