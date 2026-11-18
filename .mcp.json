@@ -123,6 +123,18 @@
     "ad-recon-mcp": {
       "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
       "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/ad-recon-mcp/server.py"]
+    },
+    "surface-map-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/surface-map-mcp/server.py"]
+    },
+    "discspec-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/discspec-mcp/server.py"]
+    },
+    "ws-rpc-mcp": {
+      "command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh",
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/ws-rpc-mcp/server.py"]
     }
   }
 }
