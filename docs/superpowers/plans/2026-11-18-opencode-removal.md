@@ -83,9 +83,9 @@
 **Files:**
 - Modify: `tests/test_surface_map_mcp.py`, `tests/test_sandbox_runner.py`
 
-- [ ] **Step 1:** In `test_surface_map_mcp.py`, replace `_opencode_cfg()`/the opencode registration assertion with: surface-map-mcp is a key in `.mcp.json` AND in `enabledMcpjsonServers` of the committed `.claude/settings.json`. In `test_sandbox_runner.py`, update the line-88 docstring/comment that references `opencode.jsonc` to describe the `.mcp.json`/no-network contract (comment-only; assertions unchanged unless they read opencode).
-- [ ] **Step 2: Run** `pytest tests/test_surface_map_mcp.py tests/test_sandbox_runner.py -v`. Expected: PASS.
-- [ ] **Step 3: Commit:** "test: surface-map + sandbox_runner tests drop opencode.jsonc references (#160)".
+- [x] **Step 1:** DONE — surface-map test now asserts registration in `.mcp.json` + enabled in `.claude/settings.json`; sandbox_runner docstring updated to reference `.mcp.json` launch configs. No opencode reads remain in either.
+- [x] **Step 2: Run** DONE — 49 passed.
+- [x] **Step 3: Commit** DONE.
 
 ### Task 5: Reconcile the 6 drifted agents — fold `.opencode`-only logic into `.claude`
 

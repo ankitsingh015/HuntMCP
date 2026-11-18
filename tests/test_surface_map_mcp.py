@@ -23,17 +23,21 @@ def test_mcp_add_then_next_untested(tmp_path, monkeypatch):
     assert "file upload" in out
 
 
-def _opencode_cfg():
-    raw = open(os.path.join(ROOT, "opencode.jsonc")).read()
-    clean = "\n".join(ln for ln in raw.split("\n") if not ln.strip().startswith("//"))
-    return json.loads(clean)
+def _mcp_json_servers():
+    return set(json.load(open(os.path.join(ROOT, ".mcp.json")))["mcpServers"].keys())
 
 
-def test_mcp_registration_present_and_not_force_enabled():
-    cfg = _opencode_cfg()
-    assert "surface-map-mcp" in cfg["mcp"]
-    # disabled-by-default: hidden in the global tools block, opt-in per agent
-    assert cfg["tools"].get("surface-map-mcp*") is False
+def _enabled_servers():
+    d = json.load(open(os.path.join(ROOT, ".claude", "settings.json")))
+    return set(d.get("enabledMcpjsonServers", []))
+
+
+def test_mcp_registration_present_and_enabled():
+    # Claude Code single source of truth (#160/#161): surface-map-mcp is
+    # registered in .mcp.json and enabled by default in the committed
+    # .claude/settings.json, so it loads in every engagement.
+    assert "surface-map-mcp" in _mcp_json_servers()
+    assert "surface-map-mcp" in _enabled_servers()
 
 
 # --- Task 4: bind_precedent ----------------------------------------------
