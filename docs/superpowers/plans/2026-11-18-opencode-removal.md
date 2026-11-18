@@ -110,10 +110,10 @@
 - Create (per port decision): `.claude/commands/{chain,ingest,learn,watch}.md`
 - Reference: `.opencode/commands/*.md`, `.opencode/plugin/scope-gate.ts`, `scripts/hooks/scope_gate_hook.py`
 
-- [ ] **Step 1 (commands):** For each of `chain/ingest/learn/watch`: read the `.opencode/commands/<c>.md`. If it maps to a capability a Claude Code slash command can carry, port it into `.claude/commands/<c>.md` (Claude Code command format). If it only made sense under OpenCode (or is already covered by an MCP tool / `audit.md`), consciously drop it and record the reason. Default bias: PORT, since these are user-facing engagement verbs (`/chain`, `/ingest`, `/learn`, `/watch`) with live MCP backends (chainer-mcp, writeup-mcp ingest, lessons/writeup learn, watch-mcp).
-- [ ] **Step 2 (scope-gate parity):** Diff `scope-gate.ts` against `scope_gate_hook.py` for `_is_rm_command` + scope-check behavior. Port anything the TS plugin enforces that the Python hook does not. If parity already holds, record that.
-- [ ] **Step 3:** `bash -n scripts/*.sh` and `ruff check`/`py_compile` any touched Python. Expected: clean.
-- [ ] **Step 4: Commit:** "feat: port opencode slash commands to .claude/commands + verify scope-gate parity (#160)".
+- [x] **Step 1 (commands):** DONE — all 4 ported to `.claude/commands/` (none dropped; each backs a live `.claude` MCP server: chainer-mcp, writeup-mcp×2, watch-mcp). Cleaned OpenCode-isms: chain's `@chain-planner` spawn → "invoke the chain-planner agent"; watch's stale `/openwatch` examples → `/watch`. They register as Claude Code slash commands.
+- [x] **Step 2 (scope-gate parity):** DONE — parity holds trivially. `scope-gate.ts` is NOT a separate implementation: it's a thin OpenCode adapter that shells out to `scripts/hooks/scope_gate_hook.py` (its own header calls that the single source of truth). All `_is_rm_command`/scope/secret/RCE logic already lives in the Python hook, which Claude Code calls directly via `.claude/settings.json`. Deleting the `.ts` loses only OpenCode's bridge — nothing to port.
+- [x] **Step 3:** commands are markdown; no shell/python touched.
+- [x] **Step 4: Commit** DONE.
 
 ### Task 7: Delete `.opencode/` + `opencode.jsonc` and sweep every reference
 
