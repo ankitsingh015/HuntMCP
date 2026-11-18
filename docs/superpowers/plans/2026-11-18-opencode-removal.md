@@ -44,7 +44,7 @@
 - [x] **Step 2:** Add the full `enabledMcpjsonServers` (28, incl. the 3) + `disabledMcpjsonServers` (6) lists to the committed `.claude/settings.json`. DONE (commit 9852fa68; enablement-home decision recorded in 1d6b6bd0).
 - [x] **Step 3 (out-of-session smoke):** DONE — MCP stdio initialize+tools/list: surface-map-mcp→6 tools, discspec-mcp→2, ws-rpc-mcp→2. All boot clean.
 - [x] **Step 4: Commit** DONE (`.mcp.json` + `.claude/settings.json`, commit 9852fa68).
-- [ ] **Step 5: RESTART CHECKPOINT**  ← PENDING: maintainer restarts session; then call a real tool on each of the 3 servers in-session. — pause and ask the maintainer to restart the session. On restart, call a real tool on each and capture the response:
+- [x] **Step 5: RESTART CHECKPOINT** DONE — after restart all 3 loaded + called in-session: surface-map `next_untested`→"No untested nodes"; ws-rpc `enumerate_ddp_methods`→parsed fixture; discspec `discover_from_openapi`→correctly blocked by live scope gate (proves tool + hook wiring). #161 closed. — pause and ask the maintainer to restart the session. On restart, call a real tool on each and capture the response:
   - `mcp__surface-map-mcp__next_untested` (local sqlite; safe — returns nodes or empty).
   - `mcp__ws-rpc-mcp__enumerate_ddp_methods` on a tiny local JS fixture (safe — no network).
   - `mcp__discspec-mcp__discover_from_openapi` with a dummy/out-of-scope URL (safe — a graceful scope/validation error response still proves the tool is loaded and callable).
@@ -63,8 +63,8 @@
   - `test_every_mcp_servers_dir_is_registered_in_mcp_json()` — every `mcp-servers/<name>-mcp` directory is a key in `.mcp.json` (this is the bug that let surface-map stay orphaned). Allow `_KNOWN_UNTRACKED_PERSONAL_SERVERS` (obscura-mcp, burp).
   - `test_every_registered_server_is_enabled_or_documented_disabled()` — every `.mcp.json` server is in `enabledMcpjsonServers` of the committed `.claude/settings.json`, except the documented `_KNOWN_DISABLED` set (the 6 above), asserting that set is not stale (none of the 6 are also enabled). Reads `.claude/settings.json` (committed), never the gitignored `settings.local.json`.
   - Keep `test_claude_agent_mcp_refs_all_registered_or_known_exception()`, now resolving against the `.mcp.json`-based registry.
-- [ ] **Step 2: Run** `pytest tests/test_agent_mcp_registry_drift.py -v`. Expected: PASS (fails before Task 1 wiring; passes after).
-- [ ] **Step 3: Commit:** "test: drift test validates .mcp.json as single MCP source + every server-dir registered (#163)".
+- [x] **Step 2: Run** `pytest tests/test_agent_mcp_registry_drift.py -v`. DONE — RED first (caught `schemathesis-mcp` as a real orphan, proving the #163 fix has teeth), then GREEN after wiring schemathesis (maintainer-approved 4th server; its `server.py` was missing an `app.run()` entry point — fixed). 141 in-scope tests pass.
+- [x] **Step 3: Commit** DONE (schemathesis wiring + run-block fix, then drift test rewrite).
 
 ### Task 3: Rewrite the tool-scoping test against the Claude path
 

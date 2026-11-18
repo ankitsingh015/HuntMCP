@@ -78,12 +78,21 @@ Chosen: **#2**, per the maintainer decision.
 
 Audit source: issue #160 comment + verification this session (2026-11-18).
 
-### A. MCP servers — OpenCode-only (3), must be added to `.mcp.json` + enabled in the committed `.claude/settings.json`
+### A. MCP servers — never-wired-in-Claude-Code (4), must be added to `.mcp.json` + enabled in the committed `.claude/settings.json`
 
 - `surface-map-mcp` (also closes #161) — absent from `.mcp.json`.
 - `discspec-mcp` — absent from `.mcp.json`.
 - `ws-rpc-mcp` — absent from `.mcp.json`; referenced by
   `.claude/agents/exploit-agent.md` tool allowlist.
+- `schemathesis-mcp` — **surfaced by the rewritten drift test (Task 2)**: a
+  complete server (3 tools, design+impl specs, already feeding
+  `case-mcp`'s `ingest_schemathesis_falsifiers`) that was in NEITHER
+  `.mcp.json` NOR `opencode.jsonc`, so it never loaded in any engagement.
+  Root cause of its orphaning: its `server.py` had **no `app.run(...)`
+  entry point**, so running it did nothing. Maintainer approved wiring it
+  (2026-11-18); fix = add the standard stdio entry point + register/enable
+  it. The 4 pre-existing `ruff` issues in that file (import-sort + redundant
+  `# noqa: E402`) are left untouched as unrelated pre-existing debt.
 
 `.mcp.json` entry shape to mirror existing working entries:
 `{"command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh", "args":
