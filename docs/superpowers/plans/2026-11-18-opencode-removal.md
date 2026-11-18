@@ -40,11 +40,11 @@
 **Interfaces:**
 - Produces: 3 servers registered + enabled in the committed Claude path; relied on by Task 2's drift test and the whole deletion.
 
-- [ ] **Step 1:** Add the 3 entries to `.mcp.json` `mcpServers` using the exact entry shape above.
-- [ ] **Step 2:** Add the full `enabledMcpjsonServers` (28, incl. the 3) + `disabledMcpjsonServers` (6) lists to the committed `.claude/settings.json`.
-- [ ] **Step 3 (out-of-session smoke):** For each, start `scripts/venv-python.sh mcp-servers/<name>/server.py` as a stdio subprocess and confirm it initializes without import/boot error. Expected: process starts, no traceback.
-- [ ] **Step 4: Commit** (`.mcp.json`, `.claude/settings.local.json`): "feat: wire surface-map/discspec/ws-rpc MCP servers into Claude Code config (#160, #161)".
-- [ ] **Step 5: RESTART CHECKPOINT** — pause and ask the maintainer to restart the session. On restart, call a real tool on each and capture the response:
+- [x] **Step 1:** Add the 3 entries to `.mcp.json` `mcpServers` using the exact entry shape above. DONE (commit 9852fa68).
+- [x] **Step 2:** Add the full `enabledMcpjsonServers` (28, incl. the 3) + `disabledMcpjsonServers` (6) lists to the committed `.claude/settings.json`. DONE (commit 9852fa68; enablement-home decision recorded in 1d6b6bd0).
+- [x] **Step 3 (out-of-session smoke):** DONE — MCP stdio initialize+tools/list: surface-map-mcp→6 tools, discspec-mcp→2, ws-rpc-mcp→2. All boot clean.
+- [x] **Step 4: Commit** DONE (`.mcp.json` + `.claude/settings.json`, commit 9852fa68).
+- [ ] **Step 5: RESTART CHECKPOINT**  ← PENDING: maintainer restarts session; then call a real tool on each of the 3 servers in-session. — pause and ask the maintainer to restart the session. On restart, call a real tool on each and capture the response:
   - `mcp__surface-map-mcp__next_untested` (local sqlite; safe — returns nodes or empty).
   - `mcp__ws-rpc-mcp__enumerate_ddp_methods` on a tiny local JS fixture (safe — no network).
   - `mcp__discspec-mcp__discover_from_openapi` with a dummy/out-of-scope URL (safe — a graceful scope/validation error response still proves the tool is loaded and callable).
