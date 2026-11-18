@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # venv-python.sh -- resolve the right venv Python interpreter and exec it.
 #
-# Why this exists: .mcp.json/opencode.jsonc used to hardcode
+# Why this exists: .mcp.json used to hardcode
 # "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python" directly. .venv/ is gitignored
 # (never shared across git worktrees), and CLAUDE_PROJECT_DIR is not always
 # set in every harness session -- when it's empty, that path falls back to
@@ -10,7 +10,7 @@
 # server then fails to start, with no clear error surfaced to the caller.
 #
 # Fix: this script is a real, git-tracked file present in every worktree
-# (unlike .venv itself), so .mcp.json/opencode.jsonc point at THIS instead
+# (unlike .venv itself), so .mcp.json points at THIS instead
 # of the venv directly. It tries, in order:
 #   1. $CLAUDE_PROJECT_DIR/.venv/bin/python, if that env var is set
 #   2. ./.venv/bin/python relative to this script's own repo root (covers

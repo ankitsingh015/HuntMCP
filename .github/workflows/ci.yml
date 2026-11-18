@@ -7,9 +7,9 @@ on:
       - 'mcp-servers/**/*.py'
       - 'scripts/**'
       - 'tests/**'
-      - 'opencode.jsonc'
-      - '.opencode/plugin/**'
+      - '.mcp.json'
       - '.claude/settings.json'
+      - '.claude/agents/**'
       - 'Dockerfile'
       - '.github/workflows/ci.yml'
       - '.claude/skills/**'
@@ -19,8 +19,9 @@ on:
       - 'mcp-servers/**/*.py'
       - 'scripts/**'
       - 'tests/**'
-      - '.opencode/plugin/**'
+      - '.mcp.json'
       - '.claude/settings.json'
+      - '.claude/agents/**'
       - 'Dockerfile'
       - '.github/workflows/ci.yml'
       - '.claude/skills/**'
@@ -148,16 +149,13 @@ jobs:
     # covers the latter (it sweeps tests/, which includes these same
     # files), but a passing unit-tests run can't tell you the PreToolUse
     # hook registration itself didn't silently go missing. This job runs
-    # the real subprocess dispatch path for both harnesses HuntMCP
-    # supports: Claude Code's scripts/hooks/scope_gate_hook.py (invoked
-    # exactly as .claude/settings.json's PreToolUse entry invokes it) and
-    # OpenCode's .opencode/plugin/scope-gate.ts (which shells out to that
-    # same script -- test_scope_gate_plugin.mjs drives the real plugin
-    # code against a real python3 subprocess, only Bun.spawn's transport
-    # is shimmed). If a future edit drops the hook registration, points it
-    # at the wrong path, or reintroduces a fail-open bug, this job goes
-    # red even though scope_gate_hook.py's unit tests alone would not
-    # catch a registration-level break.
+    # the real subprocess dispatch path for Claude Code:
+    # scripts/hooks/scope_gate_hook.py, invoked exactly as
+    # .claude/settings.json's PreToolUse entry invokes it. If a future edit
+    # drops the hook registration, points it at the wrong path, or
+    # reintroduces a fail-open bug, this job goes red even though
+    # scope_gate_hook.py's unit tests alone would not catch a
+    # registration-level break.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -169,11 +167,6 @@ jobs:
 
       - name: Install Python dependencies
         run: pip install --no-cache-dir pytest pyyaml
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
 
       # Real subprocess dispatch: hook registration in .claude/settings.json,
       # in-scope allow, out-of-scope block, fail-closed on malformed JSON /
@@ -187,12 +180,6 @@ jobs:
       # hook is actually wired.
       - name: Claude Code PreToolUse real dispatch (S1/S2)
         run: python3 -m pytest tests/test_scope_gate_dispatch.py -v
-
-      # OpenCode's tool.execute.before port of the same hook, end to end
-      # against a real python3 subprocess -- see
-      # tests/test_scope_gate_plugin.mjs's own header comment.
-      - name: OpenCode plugin real dispatch
-        run: node tests/test_scope_gate_plugin.mjs
 
   scan-agent-content:
     name: Scan Skill/MCP Content
@@ -311,26 +298,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate opencode.jsonc
+      - name: Validate .mcp.json + enablement (Claude Code single source)
         run: |
           python3 -c "
           import json
-          with open('opencode.jsonc') as f:
-              content = f.read()
-          # Strip comments
-          lines = []
-          for line in content.split('\n'):
-              stripped = line.strip()
-              if stripped.startswith('//'):
-                  continue
-              lines.append(line)
-          clean = '\n'.join(lines)
-          data = json.loads(clean)
-          mcp_count = len(data.get('mcp', {}))
-          assert 'default_agent' in data, 'Missing default_agent'
-          print(f'✅ opencode.jsonc valid — {mcp_count} MCP servers registered')
-          for name in data.get('mcp', {}):
-              assert data['mcp'][name].get('enabled'), f'{name} is not enabled'
+          servers = set(json.load(open('.mcp.json'))['mcpServers'])
+          st = json.load(open('.claude/settings.json'))
+          enabled = set(st.get('enabledMcpjsonServers', []))
+          disabled = set(st.get('disabledMcpjsonServers', []))
+          mcp_count = len(servers)
+          print(f'✅ .mcp.json valid — {mcp_count} MCP servers registered')
+          # Every registered server must be either enabled or explicitly disabled
+          # in the committed .claude/settings.json (no silently-unaccounted server).
+          unaccounted = servers - enabled - disabled
+          assert not unaccounted, f'registered but not enabled/disabled in settings.json: {sorted(unaccounted)}'
+          stale = (enabled | disabled) - servers
+          assert not stale, f'settings.json references non-registered server(s): {sorted(stale)}'
+          print(f'✅ enablement accounted for: {len(enabled)} enabled, {len(disabled)} disabled')
           " 2>&1
 
       - name: Validate MCP server structure
@@ -449,7 +433,9 @@ jobs:
         run: |
           python3 -c "
           import os, re, yaml
-          agent_dir = '.opencode/agents'
+          # Claude Code agent format: name + description required (there is no
+          # OpenCode 'mode' field in .claude/agents frontmatter).
+          agent_dir = '.claude/agents'
           files = [f for f in os.listdir(agent_dir) if f.endswith('.md')]
           issues = 0
           for f in sorted(files):
@@ -461,10 +447,9 @@ jobs:
                   continue
               try:
                   data = yaml.safe_load(match.group(1))
+                  assert 'name' in data, 'Missing name'
                   assert 'description' in data, 'Missing description'
-                  assert 'mode' in data, 'Missing mode'
-                  assert data['mode'] in ('primary', 'subagent'), 'Invalid mode'
-                  print(f'✅ {f}: {data[\"mode\"]} — {data[\"description\"][:60]}')
+                  print(f'✅ {f}: {data[\"name\"]} — {data[\"description\"][:60]}')
               except Exception as e:
                   print(f'❌ {f}: {e}')
                   issues += 1
