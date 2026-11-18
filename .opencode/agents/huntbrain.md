@@ -110,6 +110,19 @@ complete/incomplete status.
      `case_summary()` reflect what's actually been tested and confirmed so
      far, more reliable than re-deriving it from conversation history
      alone (especially after a context compaction).
+18c. **Long-horizon capabilities (P4) — use them, especially on a target you
+     revisit or an engagement that spans multiple passes/epochs:**
+     - **Resurrection:** when new evidence lands (a deferred OOB callback fires,
+       recon surfaces a new asset, the target changes between passes), call
+       case-mcp `find_resurrectable_hypotheses()` before concluding. It returns
+       dormant INCONCLUSIVE/REFUTED leads that NEW evidence now makes worth a
+       second look — exactly the async/deferred-evidence bugs a single pass
+       drops. Advisory: you decide, then `update_hypothesis(...)` to re-open.
+     - **Info-gain ordering:** when several candidate tests/experiments are
+       open, pass them (`[{"vuln_class","cost"?}]`) to case-mcp
+       `order_experiments(...)` to run the highest-yield first. It HINTS, NEVER
+       SKIPS — every candidate is returned and a novel class is never ranked
+       below a known low-yield one, so ordering never suppresses a new test.
 
 ## Phase 4 — Exploitation & Validation
 

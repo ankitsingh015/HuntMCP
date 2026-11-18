@@ -142,6 +142,19 @@ _BACKERS = {
 
 
 # --------------------------------------------------------------------------- #
+def evaluate_arm(target, steps: list, conclusions: dict) -> LhReport:
+    """Anti-gaming arm scorer: score the FULL AK.EXPECTED set, filling any
+    scenario the arm did not conclude on with an implicit `inconclusive` so a
+    silent omission is counted (inconclusive -- its own bucket, never a hit,
+    never an FCCR hit), not silently dropped. An arm's official long-horizon
+    score MUST use this, not the per-scenario `evaluate` primitive below."""
+    filled = dict(conclusions)
+    for sid in AK.EXPECTED:
+        if sid not in filled:
+            filled[sid] = ScenarioConclusion(verdict="inconclusive")
+    return evaluate(target, steps, filled)
+
+
 def evaluate(target, steps: list, conclusions: dict) -> LhReport:
     """Deterministic given (target event log, conclusions)."""
     per_scenario: dict = {}
