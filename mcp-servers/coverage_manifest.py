@@ -43,6 +43,11 @@ BATTERY_BY_KIND: dict[str, set[str]] = {
     "flow": {"access-control", "business-logic", "auth", "idor"},
     "host": {"info-disclosure", "security-misconfig", "subdomain-takeover"},
     "tech": {"known-cve"},
+    # #164: the rendered page, each of its real inputs, and each state-changing
+    # UI action (from the UI-walk) are first-class surface, not just URLs.
+    "page": {"xss", "access-control", "csrf"},
+    "input": {"xss", "sqli"},
+    "action": {"csrf", "idor", "access-control", "business-logic"},
 }
 
 # Alias groups: canonical key -> the surface forms (normalized) that mean it.
@@ -113,6 +118,11 @@ def required_classes(node: dict) -> set[str]:
     FLOOR, UNIONed with classes the node's bound precedent surfaces. A node with
     no precedent still gets the floor; precedent only widens it."""
     floor = set(BATTERY_BY_KIND.get(node.get("kind", ""), set()))
+    # #164: a destructive control (delete/remove/revoke/cancel...) must have its
+    # business logic tested (broken-delete / cancel-without-revoke live there),
+    # whatever kind of node recorded it.
+    if (node.get("meta") or {}).get("classification") == "destructive":
+        floor.add("business-logic")
     return floor | _classes_in_text(node.get("precedent"))
 
 

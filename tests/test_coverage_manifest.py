@@ -147,3 +147,30 @@ def test_class_matches_multi_group_alias():
     m = coverage_manifest._class_matches
     assert m("cve-misconfig-nuclei", "known-cve") is True       # finding 2
     assert m("cve-misconfig-nuclei", "security-misconfig") is True
+
+
+# ---- #164: page / input / action node kinds --------------------------------
+def test_required_classes_page_input_action_battery():
+    assert coverage_manifest.required_classes(_node("page")) == {"xss", "access-control", "csrf"}
+    assert coverage_manifest.required_classes(_node("input")) == {"xss", "sqli"}
+    assert coverage_manifest.required_classes(_node("action")) == {"csrf", "idor", "access-control", "business-logic"}
+
+
+def test_required_classes_destructive_meta_adds_business_logic_any_kind():
+    n = _node("endpoint", meta={"classification": "destructive"})
+    assert "business-logic" in coverage_manifest.required_classes(n)
+    assert "business-logic" not in coverage_manifest.required_classes(_node("endpoint"))
+
+
+def test_page_input_action_nodes_gate_exhaustion(tmp_path):
+    mp = str(tmp_path / "map.json")
+    db = str(tmp_path / "case.db")
+    pid = surface_map.add_node("page", "http://app.test/items", "page:http://app.test/items",
+                               meta={"endpoint": "http://app.test/items"}, path=mp)
+    surface_map.add_node("input", "name", "input:x:name", parent_id=pid, path=mp)
+    surface_map.add_node("action", "DELETE", "action:DELETE x", parent_id=pid,
+                         meta={"classification": "destructive"}, path=mp)
+    m = coverage_manifest.compute_manifest(db_path=db, map_path=mp)
+    open_cells = {(c["node_id"], c["vuln_class"]) for c in m["open_cells"]}
+    assert len(open_cells) == 3 + 2 + 4
+    assert m["exhausted"] is False

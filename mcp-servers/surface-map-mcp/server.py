@@ -30,7 +30,8 @@ def _fmt(node: dict) -> str:
 @app.tool()
 def add_node(kind: str, label: str, signature: str, parent_id: int = 0) -> str:
     """Record one discovered element of the target's surface. kind is one of
-    host/endpoint/feature/flow/tech; label is human text; signature is the
+    host/endpoint/feature/flow/tech (plus page/input/action, emitted by
+    browser-mcp's UI-walk, #164); label is human text; signature is the
     stable descriptor precedent is matched on (e.g. "upload:image",
     "auth:password-reset"). parent_id links it under another node (0 = top).
     Dedups on (kind, signature, parent): re-recording returns the same id."""
