@@ -200,8 +200,11 @@ class _Walker:
             post = req.post_data
         except Exception:  # noqa: BLE001 -- binary body
             post = None
+        if action == "abort" and reason == "mutating-get" and self.permit_mutating_get(url):
+            action, reason = "continue", None
         if action == "abort":
             self._edge(method, url, False, self.refine_block_reason(method, url, reason), post)
+            self.on_aborted(method, url, post, reason)
             await route.abort("blockedbyclient")
             return
         host = urlsplit(url).hostname or ""
@@ -219,6 +222,14 @@ class _Walker:
     def refine_block_reason(self, method: str, url: str, reason: str | None) -> str | None:
         """Pass 2 hook: a more specific reason for an aborted request."""
         return reason
+
+    def permit_mutating_get(self, url: str) -> bool:
+        """Teardown hook: let exactly one state-changing GET through (the
+        human-confirmed logout link). Never true in Pass 1/2."""
+        return False
+
+    def on_aborted(self, method: str, url: str, post, reason: str | None) -> None:
+        """Pass 2 hook: observe an aborted request (dry-click capture)."""
 
     async def forward_sent(self, route, method: str, url: str, post) -> None:
         """Pass 2 hook: send a non-GET the policy allowed (Pass 1 never gets here)."""

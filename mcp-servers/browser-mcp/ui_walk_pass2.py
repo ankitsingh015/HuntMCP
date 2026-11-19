@@ -93,6 +93,8 @@ class CanaryWalker(ui_walk._Walker):
         self.created_ids: set[str] = set()
         self.dialog_msgs: list[str] = []
         self.inv["pass2_edges"] = []
+        self.inv["destroy_log"] = []
+        self.last_aborted: dict | None = None
 
     # -- policy -------------------------------------------------------------
     def allow_send(self, method: str, url: str) -> bool:
@@ -171,7 +173,13 @@ class CanaryWalker(ui_walk._Walker):
         await self.destroy_phase(pages)
 
     async def destroy_phase(self, pages: list[dict]) -> None:
-        """create->destroy->verify (ui_walk_destroy, Task 7)."""
+        import ui_walk_destroy
+
+        await ui_walk_destroy.run(self, pages)
+
+    def on_aborted(self, method, url, post, reason) -> None:
+        if method not in L.SAFE_METHODS:
+            self.last_aborted = {"method": method, "url": url, "body": post}
 
     async def _submit_page(self, prec: dict) -> None:
         groups: dict = {}
