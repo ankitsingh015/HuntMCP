@@ -74,15 +74,14 @@ CLI usage (what HuntBrain runs via Bash at Phase 0):
            known engagement (active or paused), so resuming/parallelizing
            a past target never requires typing or remembering its exact
            name/slug by hand -- copy the line, paste it into a new
-           terminal, launch opencode/claude from there.
+           terminal, launch Claude Code from there.
     python3 mcp-servers/engagement_paths.py downloads-dir
         -> prints (creating if needed) data/engagements/<slug>/downloads/
            for the active target, or data/downloads (legacy, no active
            target) otherwise. recon-agent uses this so raw curl/wget JS-
            bundle/dump downloads land under the current target's own
            directory instead of an unscoped /tmp path -- see
-           .claude/agents/recon-agent.md and .opencode/agents/
-           recon-agent.md's Phase 3 for the calling convention.
+           .claude/agents/recon-agent.md's Phase 3 for the calling convention.
 """
 
 from __future__ import annotations

@@ -13,11 +13,7 @@
 # be forced to load (see ARCHITECTURE.md's "PortSwigger mcp-server" row and
 # AGENTS.md's runtime-dependencies section for the full rationale).
 #
-# This registers with the Claude Code CLI only. OpenCode has no equivalent
-# non-interactive "add a local stdio MCP server" flag on `opencode mcp add`
-# (confirmed against its own --help: only --url/--env/--header, both aimed
-# at remote servers) -- see the printed note at the end for the manual
-# opencode.jsonc snippet if you drive HuntMCP via `opencode run` instead.
+# This registers the Burp MCP bridge with the Claude Code CLI.
 #
 # Usage:
 #   ./scripts/connect-burp.sh              # register/repair the bridge
@@ -125,13 +121,4 @@ proxy/scanner/organizer/repeater toolset).
 It only works while Burp stays open with the extension running -- if you
 close Burp, the tool calls just fail to connect; nothing else in HuntMCP is
 affected.
-
-Driving HuntMCP via OpenCode instead? \`opencode mcp add\` has no
-non-interactive way to register a local stdio server like this one, so add
-it by hand to your personal (untracked) ~/.config/opencode/opencode.jsonc:
-
-  "burp": {
-    "type": "local",
-    "command": ["java", "-jar", "$JAR", "--sse-url", "$URL"]
-  }
 EOF
