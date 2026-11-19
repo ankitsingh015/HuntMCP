@@ -525,8 +525,8 @@ def build_argv(tool_name: str, args: list[str], scratch_dir: str, *,
         # and P3-SCHEMA's tests/fixtures/schema_target/) to reach their
         # own throwaway, --internal (no host/internet route),
         # test-harness-owned target container -- never set by any
-        # production launch config (opencode.jsonc), so every real Tier-2
-        # tool invocation is unaffected. Deliberately read from the
+        # production launch config (the .mcp.json server entries), so every
+        # real Tier-2 tool invocation is unaffected. Deliberately read from the
         # process environment, not a build_argv()/start_job() parameter or
         # any MCP tool argument: there is no code path from an agent's
         # tool-call input to this variable. An empty string is treated as

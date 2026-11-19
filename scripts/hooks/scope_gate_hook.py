@@ -1421,19 +1421,14 @@ def main() -> int:
     # Blanket rm block -- unconditional, independent of scope/engagement
     # state entirely (this is a "never run rm, never ask" rule, not a
     # target-scope rule). .claude/settings.json's `Bash(rm *)`/`Bash(rm)`
-    # permissions.deny already enforces this for Claude Code before the
-    # call even reaches this hook; this check is what makes it real for
-    # OpenCode too (via .opencode/plugin/scope-gate.ts, which invokes this
-    # same script for every Bash call) -- opencode.jsonc's declarative
-    # `permission.bash` glob deny (`"rm **": "deny"` alongside `"*":
-    # "allow"`) was tested live and did not actually block rm across
-    # several pattern/ordering attempts, so this hook is the real
-    # enforcement point on that harness, same as it already is for scope.
+    # permissions.deny already enforces this before the call even reaches
+    # this hook; this check is the defense-in-depth backstop in case that
+    # permission is ever edited away or a command slips past the glob.
     if tool_name == "Bash" and _is_rm_command(command):
         return _block(
-            "BLOCKED: rm is disabled by default in this repo (both Claude "
-            "Code and OpenCode) -- ask the user to delete the file "
-            "themselves, or move it aside instead of removing it."
+            "BLOCKED: rm is disabled by default in this repo -- ask the user "
+            "to delete the file themselves, or move it aside instead of "
+            "removing it."
         )
 
     # S3 (secrets scoped out of untrusted execution) -- same blanket,
