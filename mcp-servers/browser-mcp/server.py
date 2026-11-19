@@ -279,12 +279,31 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
 async def screenshot(url: str, wait_ms: int = 1000, cookie_header: str = "",
                       bearer_token: str = "", local_storage: dict[str, str] | None = None,
                       session_file: str = "",
-        session_storage: dict[str, str] | None = None) -> str:
-    """Full-page screenshot of url as a base64-encoded PNG -- visual PoC
-    evidence for a report's "screenshot + PoC" requirement. Pass
-    cookie_header/bearer_token/local_storage/session_file for a screenshot
-    of a logged-in-only view. Requires scope-gate clearance first (Tier-2)."""
-    r = await browser_confirm.screenshot_base64(
+                      session_storage: dict[str, str] | None = None,
+                      as_base64: bool = False) -> str:
+    """Screenshot url -- visual comprehension of the page AND visual PoC
+    evidence for a report's "screenshot + PoC" requirement. Default (#164):
+    saves a size-capped JPEG (1280 wide, max 4000px tall) under the
+    engagement's screenshots/ dir and returns its PATH -- open it with the
+    Read tool to actually look at the page, and attach the path as
+    screenshot evidence. as_base64=True returns the old full-page
+    `data:image/png;base64,...` string unchanged (too large to view inline;
+    kept for existing consumers). Pass cookie_header/bearer_token/
+    local_storage/session_storage/session_file for a logged-in-only view.
+    Requires scope-gate clearance first (Tier-2)."""
+    if as_base64:
+        r = await browser_confirm.screenshot_base64(
+            url, wait_ms=wait_ms,
+            cookie_header=cookie_header or None,
+            bearer_token=bearer_token or None,
+            local_storage=local_storage or None,
+            session_file=session_file or None,
+            session_storage=session_storage or None,
+        )
+        if r["error"]:
+            return f"Browser error: {r['error']}"
+        return f"data:image/png;base64,{r['screenshot_base64']}"
+    r = await browser_confirm.screenshot_to_file(
         url, wait_ms=wait_ms,
         cookie_header=cookie_header or None,
         bearer_token=bearer_token or None,
@@ -294,7 +313,12 @@ async def screenshot(url: str, wait_ms: int = 1000, cookie_header: str = "",
     )
     if r["error"]:
         return f"Browser error: {r['error']}"
-    return f"data:image/png;base64,{r['screenshot_base64']}"
+    provenance = {
+        "class": "wire", "captured_by": "browser-mcp", "method": "GET",
+        "url": r.get("final_url") or url, "status": r.get("status"),
+    }
+    return (f"Screenshot saved: {r['path']} ({r['width']}x{r['height']} JPEG). "
+            f"View it with Read.\n\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}")
 
 
 @app.tool()

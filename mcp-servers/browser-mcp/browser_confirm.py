@@ -732,3 +732,76 @@ async def screenshot_base64(url: str, wait_ms: int = 1000,
     _log_call("browser-mcp", [url], returncode=None,
               duration_ms=(time.monotonic() - start) * 1000, block=None)
     return result
+
+
+# #164: viewable screenshots. A full-page PNG as base64 overflows the tool
+# output limit, so the agent could never actually SEE the page it captured.
+# Default now: a JPEG file (viewport 1280 wide, clipped to SCREENSHOT_MAX_HEIGHT)
+# under the engagement's screenshots/ dir; the agent opens it with Read.
+SCREENSHOT_VIEWPORT = {"width": 1280, "height": 800}
+SCREENSHOT_MAX_HEIGHT = 4000
+SCREENSHOT_JPEG_QUALITY = 70
+
+
+def _screenshot_dir() -> str:
+    import engagement_paths
+
+    return engagement_paths.resolve_dir("screenshots")
+
+
+async def _capture_jpeg(page, out_dir: str) -> dict:
+    """Screenshot an already-loaded page to a capped JPEG; returns
+    {path, width, height}. Used by screenshot_to_file and by the UI-walker."""
+    import secrets
+    from datetime import datetime, timezone
+
+    await page.set_viewport_size(SCREENSHOT_VIEWPORT)
+    full_h = await page.evaluate("Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)")
+    height = max(1, min(int(full_h or SCREENSHOT_VIEWPORT["height"]), SCREENSHOT_MAX_HEIGHT))
+    width = SCREENSHOT_VIEWPORT["width"]
+    host = (urlsplit(page.url).hostname or "page").replace(":", "_")
+    name = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{host}-{secrets.token_hex(3)}.jpg"
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, name)
+    await page.screenshot(path=path, type="jpeg", quality=SCREENSHOT_JPEG_QUALITY, full_page=True,
+                          clip={"x": 0, "y": 0, "width": width, "height": height})
+    return {"path": path, "width": width, "height": height}
+
+
+async def screenshot_to_file(url: str, wait_ms: int = 1000,
+                             timeout_ms: int = DEFAULT_TIMEOUT_MS,
+                             cookie_header: str | None = None,
+                             bearer_token: str | None = None,
+                             local_storage: dict[str, str] | None = None,
+                             session_file: str | None = None,
+                             session_storage: dict[str, str] | None = None,
+                             out_dir: str | None = None) -> dict:
+    """Navigate and save a capped JPEG screenshot; returns
+    {path, width, height, status, final_url, error}."""
+    _enforce_budget("browser-mcp")
+    start = time.monotonic()
+    from playwright.async_api import async_playwright
+
+    result = {"url": url, "path": None, "width": None, "height": None,
+              "status": None, "final_url": None, "error": None}
+    context = None
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(**_launch_kwargs())
+        try:
+            context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage,
+                                            session_file, session_storage=session_storage)
+            response = await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            await page.wait_for_timeout(wait_ms)
+            if response is not None:
+                result["status"] = response.status
+                result["final_url"] = response.url
+            result.update(await _capture_jpeg(page, out_dir or _screenshot_dir()))
+        except Exception as e:
+            result["error"] = str(e)
+        finally:
+            if context is not None:
+                await _save_session(context, session_file)
+            await browser.close()
+    _log_call("browser-mcp", [url], returncode=None,
+              duration_ms=(time.monotonic() - start) * 1000, block=None)
+    return result
