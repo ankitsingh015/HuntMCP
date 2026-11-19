@@ -76,3 +76,28 @@ def test_retrieve_loads_writeup_server_only_once(monkeypatch):
     assert srv._retrieve("ssrf:x") == "plan for ssrf:x"
     srv._retrieve("xss:y")
     assert calls["n"] == 1
+
+
+# --- mark_na (#159 coverage N/A escape valve) ------------------------------
+
+import surface_map  # noqa: E402
+
+
+def test_mark_na_stores_reason(tmp_path, monkeypatch):
+    p = str(tmp_path / "m.json")
+    nid = surface_map.add_node("endpoint", "/x", "ep:x", path=p)
+    assert surface_map.mark_na(nid, "sqli", "no backend DB on this route", path=p) is True
+    assert surface_map.get_node(nid, path=p)["na"]["sqli"] == "no backend DB on this route"
+
+
+def test_mark_na_rejects_empty_reason(tmp_path):
+    p = str(tmp_path / "m.json")
+    nid = surface_map.add_node("endpoint", "/x", "ep:x", path=p)
+    import pytest
+    with pytest.raises(ValueError):
+        surface_map.mark_na(nid, "sqli", "   ", path=p)
+
+
+def test_mark_na_unknown_node_returns_false(tmp_path):
+    p = str(tmp_path / "m.json")
+    assert surface_map.mark_na(999, "sqli", "reason", path=p) is False

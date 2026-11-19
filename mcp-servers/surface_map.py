@@ -95,7 +95,7 @@ def add_node(kind: str, label: str, signature: str, parent_id: int | None = None
         data["nodes"].append({
             "id": nid, "kind": kind, "label": label, "signature": signature,
             "parent_id": parent_id, "state": "discovered",
-            "precedent": None, "findings": [], "meta": meta or {},
+            "precedent": None, "findings": [], "meta": meta or {}, "na": {},
         })
         _save_map(data, path)
         return nid
@@ -137,6 +137,19 @@ def attach_finding(node_id: int, finding_id: int, path: str | None = None) -> bo
     def _m(n):
         if finding_id not in n["findings"]:
             n["findings"].append(finding_id)
+    return _update(node_id, path, _m)
+
+
+def mark_na(node_id: int, vuln_class: str, reason: str, path: str | None = None) -> bool:
+    """Exempt one (node, vuln_class) coverage cell with a recorded reason (the
+    #159 escape valve). The reason is mandatory and auditable: an empty/
+    whitespace reason raises ValueError so the gate can't be closed with a bare
+    rubber-stamp. Returns False for an unknown node."""
+    if not reason or not reason.strip():
+        raise ValueError("mark_na requires a non-empty reason")
+
+    def _m(n):
+        n.setdefault("na", {})[vuln_class] = reason.strip()
     return _update(node_id, path, _m)
 
 
