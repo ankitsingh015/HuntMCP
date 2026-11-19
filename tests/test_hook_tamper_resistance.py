@@ -809,3 +809,36 @@ def test_main_allows_7z_extraction_into_an_unrelated_directory(monkeypatch):
         "command": "7z x /tmp/x.7z -o/tmp/scratch/",
     }}
     assert _run_main(monkeypatch, payload) == 0
+
+
+# ---- #164: the Pass-2 UI-walk grant file is human-only ---------------------
+def _active_grant_path(monkeypatch, tmp_path):
+    pointer = tmp_path / ".active-for-grant"
+    pointer.write_text("grant-target")
+    monkeypatch.setattr(engagement_paths, "ACTIVE_POINTER", str(pointer))
+    monkeypatch.setattr(engagement_paths, "ENGAGEMENTS_ROOT", str(tmp_path / "engagements"))
+    return str(tmp_path / "engagements" / "grant-target" / "ui-walk-authorized.yaml")
+
+
+def test_main_blocks_agent_write_of_ui_walk_grant_file(monkeypatch, tmp_path):
+    path = _active_grant_path(monkeypatch, tmp_path)
+    payload = {"tool_name": "Write", "tool_input": {"file_path": path, "content": "canary_submit: true\n"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_bash_write_of_ui_walk_grant_file(monkeypatch, tmp_path):
+    path = _active_grant_path(monkeypatch, tmp_path)
+    payload = {"tool_name": "Bash", "tool_input": {"command": f"printf 'canary_submit: true\\n' > {path}"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_edit_of_ui_walk_grant_module(monkeypatch):
+    payload = {"tool_name": "Edit", "tool_input": {
+        "file_path": os.path.join(REPO_ROOT, "mcp-servers", "ui_walk_grant.py"),
+        "old_string": "a", "new_string": "b"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_no_active_engagement_still_works(monkeypatch, tmp_path):
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(tmp_path / "unrelated.txt"), "content": "x"}}
+    assert _run_main(monkeypatch, payload) == 0

@@ -58,6 +58,7 @@ from budget_guard import BudgetExceeded  # noqa: E402
 from budget_guard import enforce as _enforce_budget  # noqa: E402
 import hook_confirm  # noqa: E402
 import rce_confirm  # noqa: E402
+import ui_walk_grant  # noqa: E402
 from scope_guard import NoEngagementFile, is_in_scope, load_engagement  # noqa: E402
 from scope_guard import is_safe_test_host as _is_safe_test_host  # noqa: E402
 
@@ -570,6 +571,9 @@ _PROTECTED_RELATIVE_PATHS = (
     "scripts/confirm-os-shell.sh",
     "scripts/confirm-hook-edit.sh",
     "scripts/confirm-state-change.sh",
+    # #164: decides how the human-only UI-walk Pass-2 grant file is parsed --
+    # an agent editing it could make load_grant() always return a grant.
+    "mcp-servers/ui_walk_grant.py",
 )
 
 
@@ -604,6 +608,12 @@ def _protected_paths() -> frozenset[Path]:
     paths = {_resolve_maybe_relative(rel) for rel in _PROTECTED_RELATIVE_PATHS}
     paths.add(Path(rce_confirm._token_path()).resolve())
     paths.add(Path(hook_confirm._token_path()).resolve())
+    # #164: the human-owned Pass-2 grant for the ACTIVE engagement -- if an
+    # agent could write it, it could grant itself real canary submits.
+    try:
+        paths.add(Path(ui_walk_grant.grant_path()).resolve())
+    except RuntimeError:
+        pass  # no active engagement: no grant file to protect
     return frozenset(p for p in paths if p is not None)
 
 
