@@ -128,3 +128,22 @@ def test_exhausted_false_lists_open_cells(tmp_path):
     assert out["counts"]["open"] == len(coverage_manifest.BATTERY_BY_KIND["endpoint"])
     assert all(c["node_id"] == nid for c in out["open_cells"])
     assert {"node_id": nid, "vuln_class": "sqli"} in out["open_cells"]
+
+
+# ---- regression: code-review findings 1 & 2 ------------------------------
+
+def test_classes_in_text_matches_on_word_boundaries_not_substrings():
+    # 'resource'/'author'/'embrace' must NOT yield rce/auth/race (substring bug).
+    node = _node("endpoint", precedent="Prior work on resource limits by the author; embrace caution.")
+    got = coverage_manifest.required_classes(node)
+    assert "rce" not in got and "auth" not in got and "business-logic" not in got
+    assert got == coverage_manifest.BATTERY_BY_KIND["endpoint"]  # floor only, no noise
+    # a genuinely-named class (dash/space/punct delimited) still widens.
+    node2 = _node("endpoint", precedent="Known SSTI on the template param.")
+    assert "ssti" in coverage_manifest.required_classes(node2)
+
+
+def test_class_matches_multi_group_alias():
+    m = coverage_manifest._class_matches
+    assert m("cve-misconfig-nuclei", "known-cve") is True       # finding 2
+    assert m("cve-misconfig-nuclei", "security-misconfig") is True

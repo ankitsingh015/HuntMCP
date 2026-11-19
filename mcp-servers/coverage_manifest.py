@@ -23,6 +23,7 @@ docs/superpowers/specs/2026-11-19-coverage-manifest-design.md
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 try:
@@ -60,7 +61,7 @@ _ALIASES: dict[str, set[str]] = {
     "business-logic": {"business-logic", "logic-flaw", "race-condition", "race"},
     "info-disclosure": {"info-disclosure", "information-disclosure", "exposed-secrets", "source-leak-github"},
     "security-misconfig": {"security-misconfig", "misconfiguration", "cve-misconfig-nuclei"},
-    "subdomain-takeover": {"subdomain-takeover", "subdomain-takeover"},
+    "subdomain-takeover": {"subdomain-takeover", "subdomain-takeout"},
     "known-cve": {"known-cve", "cve", "cve-misconfig-nuclei"},
     "prototype-pollution": {"prototype-pollution", "prototype-pollution-xss"},
     "ssti": {"ssti", "server-side-template-injection", "template-injection"},
@@ -73,37 +74,36 @@ def _normalize_class(s: str) -> str:
     return s.strip().lower().replace("_", "-").replace(" ", "-")
 
 
-def _canonical_class(s: str) -> str | None:
-    """The canonical battery key a free-form class string maps to, or None."""
+def _canonical_classes(s: str) -> set[str]:
+    """Every canonical battery key a free-form class string maps to. A class
+    alias can legitimately belong to more than one group (e.g.
+    'cve-misconfig-nuclei' is both security-misconfig AND known-cve), so this
+    returns a set, not a first-match."""
     norm = _normalize_class(s)
-    for canon, forms in _ALIASES.items():
-        if norm == canon or norm in forms:
-            return canon
-    return None
+    return {canon for canon, forms in _ALIASES.items() if norm == canon or norm in forms}
 
 
 def _class_matches(finding_class: str, battery_class: str) -> bool:
     """Conservative: a finding's free-form vuln_class covers a battery class
-    only if both resolve to the same canonical key, or they are exactly equal
-    once normalized. No loose substring matching."""
-    fnorm = _normalize_class(finding_class)
-    bnorm = _normalize_class(battery_class)
-    if fnorm == bnorm:
+    only if they are equal once normalized, or they share a canonical key. No
+    loose substring matching."""
+    if _normalize_class(finding_class) == _normalize_class(battery_class):
         return True
-    fcanon = _canonical_class(finding_class)
-    bcanon = _canonical_class(battery_class)
-    return fcanon is not None and fcanon == bcanon
+    return bool(_canonical_classes(finding_class) & _canonical_classes(battery_class))
 
 
 def _classes_in_text(text: str | None) -> set[str]:
-    """Canonical classes explicitly named in precedent text (token match on an
-    alias). Used to widen a node's required battery from its bound precedent."""
+    """Canonical classes explicitly named in precedent text, matched on WORD
+    boundaries (dash-delimited after normalizing every non-alphanumeric run to
+    '-') so a class token is NEVER matched inside an unrelated word (e.g.
+    'resource' must not yield 'rce', 'author' must not yield 'auth'). Used to
+    widen a node's required battery from its bound precedent."""
     if not text:
         return set()
-    norm = _normalize_class(text)
+    norm = "-" + re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") + "-"
     found: set[str] = set()
     for canon, forms in _ALIASES.items():
-        if canon in norm or any(f in norm for f in forms):
+        if f"-{canon}-" in norm or any(f"-{form}-" in norm for form in forms):
             found.add(canon)
     return found
 
