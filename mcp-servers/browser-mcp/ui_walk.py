@@ -81,7 +81,7 @@ _ENUM_JS = r"""
       if (el.labels && el.labels.length) label = el.labels[0].innerText.trim();
       else { const l = el.closest('label'); if (l) label = l.innerText.trim(); }
       inputs.push({idx: tag(el), tag: el.tagName.toLowerCase(), name: el.getAttribute('name') || '', id: el.id || '',
-        type: (el.getAttribute('type') || el.tagName.toLowerCase()).toLowerCase(), label: label.slice(0, 80),
+        type: (el.isContentEditable && !('value' in el) ? 'contenteditable' : (el.type || el.tagName)).toLowerCase(), label: label.slice(0, 80),
         placeholder: el.getAttribute('placeholder') || '', required: !!el.required,
         maxlength: el.maxLength > 0 ? el.maxLength : null,
         form_action: f ? (f.action || '') : '', form_method: f ? (f.method || 'get') : ''});
@@ -201,7 +201,7 @@ class _Walker:
         except Exception:  # noqa: BLE001 -- binary body
             post = None
         if action == "abort":
-            self._edge(method, url, False, reason, post)
+            self._edge(method, url, False, self.refine_block_reason(method, url, reason), post)
             await route.abort("blockedbyclient")
             return
         host = urlsplit(url).hostname or ""
@@ -209,14 +209,20 @@ class _Walker:
             self.cur_page["third_party_hosts"].append(host)
         if method not in L.SAFE_METHODS:
             self._edge(method, url, True, None, post)
-            self.on_sent(method, url, post)
-        elif req.resource_type in ("xhr", "fetch"):
+            await self.forward_sent(route, method, url, post)
+            return
+        if req.resource_type in ("xhr", "fetch"):
             self._edge(method, url, True, None)
             self.get_log.append({"url": url, "page": self.cur_page["url"] if self.cur_page else None})
         await route.continue_()
 
-    def on_sent(self, method: str, url: str, post) -> None:
-        """Pass 2 hook: a non-GET was actually sent."""
+    def refine_block_reason(self, method: str, url: str, reason: str | None) -> str | None:
+        """Pass 2 hook: a more specific reason for an aborted request."""
+        return reason
+
+    async def forward_sent(self, route, method: str, url: str, post) -> None:
+        """Pass 2 hook: send a non-GET the policy allowed (Pass 1 never gets here)."""
+        await route.continue_()
 
     async def _on_ws(self, ws) -> None:
         # Never connect to the server in this pass: client frames go nowhere.

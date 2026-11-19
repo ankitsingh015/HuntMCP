@@ -133,3 +133,7 @@ def test_default_scope_check_loopback_needs_no_engagement():
 
 def test_default_scope_check_external_without_engagement_is_false():
     assert not L._default_scope_check("https://real-target-unlisted.com/")
+
+
+def test_canary_value_contenteditable_is_textlike():
+    assert "hm1234abcd" in L.canary_value("hm1234abcd", "contenteditable", None)

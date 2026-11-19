@@ -131,7 +131,7 @@ def make_canary() -> str:
     return "hm" + secrets.token_hex(4)
 
 
-_TEXTLIKE = {"", "text", "textarea", "search"}
+_TEXTLIKE = {"", "text", "textarea", "search", "contenteditable"}
 
 
 def canary_value(token: str, input_type: str | None, maxlength: int | None) -> str:
