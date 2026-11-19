@@ -84,17 +84,21 @@ def test_main_blocks_write_of_settings_local_json(monkeypatch):
     assert _run_main(monkeypatch, payload) == 2
 
 
-def test_main_blocks_edit_of_opencode_dispatch_plugin(monkeypatch):
+def test_main_blocks_edit_of_claude_settings_json(monkeypatch):
+    # .claude/settings.json registers the PreToolUse hook -- editing it could
+    # drop the scope gate, so it's a protected boundary path.
     payload = {"tool_name": "Edit", "tool_input": {
-        "file_path": ".opencode/plugin/scope-gate.ts",
+        "file_path": ".claude/settings.json",
         "old_string": "x", "new_string": "y",
     }}
     assert _run_main(monkeypatch, payload) == 2
 
 
-def test_main_blocks_edit_of_opencode_jsonc(monkeypatch):
+def test_main_blocks_edit_of_mcp_json(monkeypatch):
+    # .mcp.json decides which MCP servers load -- a tamper vector now in the
+    # protected boundary (replacing the removed opencode.jsonc entry).
     payload = {"tool_name": "Edit", "tool_input": {
-        "file_path": "opencode.jsonc",
+        "file_path": ".mcp.json",
         "old_string": "x", "new_string": "y",
     }}
     assert _run_main(monkeypatch, payload) == 2
@@ -694,11 +698,11 @@ def test_main_blocks_curl_remote_name_deriving_a_protected_filename(monkeypatch)
     filename from the URL's own last path segment, saved in the
     process's cwd (assumed repo-root, same honest limit
     _resolve_maybe_relative already documents for every relative
-    Bash-write target). opencode.jsonc is the one protected path that's
-    a bare repo-root filename, so it's the meaningful positive case for
-    this specific derivation mechanism."""
+    Bash-write target). .mcp.json is a protected path that's a bare
+    repo-root filename, so it's the meaningful positive case for this
+    specific derivation mechanism."""
     payload = {"tool_name": "Bash", "tool_input": {
-        "command": "curl -O https://example.com/opencode.jsonc",
+        "command": "curl -O https://example.com/.mcp.json",
     }}
     assert _run_main(monkeypatch, payload) == 2
 

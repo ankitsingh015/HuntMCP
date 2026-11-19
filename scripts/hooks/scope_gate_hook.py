@@ -495,8 +495,8 @@ def _reads_env_file(command: str) -> bool:
 # See mcp-servers/rce_confirm.py's own module docstring for why the "ask"
 # side of this has to be a separate, human-run interactive script rather
 # than a declarative bash permission (same reason as the rm-block's own
-# comment above: opencode.jsonc's declarative "ask"/deny was empirically
-# not enforced under `opencode run --auto`).
+# comment above: a static declarative "ask"/deny permission can't inspect
+# the actual command, so enforcement has to be this hook).
 _PERSISTENT_RCE_FLAGS = {"--os-shell", "--os-pwn", "--os-cmd", "--os-bof"}
 
 
@@ -545,15 +545,15 @@ def _is_persistent_rce_command(command: str) -> bool:
 # S6 (hook tamper-resistance): the files that constitute the scope-gate
 # enforcement boundary itself -- scope_gate_hook.py, every module it
 # imports to do real enforcement (scope/budget/audit/RCE-confirm/sandbox/
-# secrets), both harnesses' hook registration (.claude/settings.json for
-# Claude Code, .opencode/plugin/scope-gate.ts + opencode.jsonc for
-# OpenCode), .claude/settings.local.json (gitignored but still carries
-# permission allows / the disabled-MCP-servers list), and both confirm
-# scripts. *Why this file exists at all*: without this, an agent with
-# ordinary Edit/Write/Bash access could simply overwrite scope_gate_hook.py
-# (or drop its registration) to silently neutralize every S1-S5 control
-# mid-session -- see MASTER-ROADMAP-FINAL-v3.md's Phase-S Tier-2 spec
-# ("hook neutralizable mid-session").
+# secrets), the Claude Code hook registration (.claude/settings.json), the
+# MCP server registration (.mcp.json -- which servers load, a tamper
+# vector of its own), .claude/settings.local.json (gitignored but still
+# carries permission allows / the disabled-MCP-servers list), and both
+# confirm scripts. *Why this file exists at all*: without this, an agent
+# with ordinary Edit/Write/Bash access could simply overwrite
+# scope_gate_hook.py (or drop its registration) to silently neutralize
+# every S1-S5 control mid-session -- see MASTER-ROADMAP-FINAL-v3.md's
+# Phase-S Tier-2 spec ("hook neutralizable mid-session").
 _PROTECTED_RELATIVE_PATHS = (
     "scripts/hooks/scope_gate_hook.py",
     "mcp-servers/scope_guard.py",
@@ -566,8 +566,7 @@ _PROTECTED_RELATIVE_PATHS = (
     "mcp-servers/state_change_confirm.py",
     ".claude/settings.json",
     ".claude/settings.local.json",
-    ".opencode/plugin/scope-gate.ts",
-    "opencode.jsonc",
+    ".mcp.json",
     "scripts/confirm-os-shell.sh",
     "scripts/confirm-hook-edit.sh",
     "scripts/confirm-state-change.sh",
@@ -1294,9 +1293,9 @@ def main() -> int:
     # call this hook is the sole enforcement point for. Block instead --
     # this stops only the ONE gated tool call that produced the malformed
     # payload (exit 2, clear stderr reason), not the session itself. In real
-    # operation Claude Code/OpenCode construct this JSON themselves from the
-    # tool call already in flight, so this is not expected to fire on
-    # ordinary Read/Edit/git-status traffic.
+    # operation Claude Code constructs this JSON itself from the tool call
+    # already in flight, so this is not expected to fire on ordinary
+    # Read/Edit/git-status traffic.
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
@@ -1314,11 +1313,10 @@ def main() -> int:
     # the tool call as the parse-failure case above -- same reasoning, same
     # fail-closed response. Found live during review: e.g. `echo null |
     # ...` previously crashed on payload.get() with an uncaught
-    # AttributeError (exit 1), which both real callers (.claude/
-    # settings.json's PreToolUse dispatch and .opencode/plugin/
-    # scope-gate.ts's `exitCode === 2` check) treat as an implicit allow --
-    # the exact fail-open gap S1 exists to close, just reachable one step
-    # earlier than the Tier-2 evaluation below.
+    # AttributeError (exit 1), which the real caller (.claude/settings.json's
+    # PreToolUse dispatch, which treats a non-2 exit as an implicit allow)
+    # would let through -- the exact fail-open gap S1 exists to close, just
+    # reachable one step earlier than the Tier-2 evaluation below.
     if not isinstance(payload, dict):
         return _block(
             "BLOCKED by scope gate: hook payload is not a JSON object. "
