@@ -549,7 +549,7 @@ def test_scan_with_templates_fails_closed_when_templates_snapshot_is_missing(mon
     assert called["start_job"] is False
 
 
-_AGENTS_DIR = os.path.join(ROOT, ".opencode", "agents")
+_AGENTS_DIR = os.path.join(ROOT, ".claude", "agents")
 # Grabs the whole argument list first, then pulls the templates value out
 # of it -- NOT a single regex requiring a literal `"` right after the
 # first comma. Adversarial review caught that a stricter, double-quote-
@@ -604,7 +604,7 @@ def test_agent_docs_scan_with_templates_calls_match_the_pinned_template_layout()
     machine, same as the other pinned-snapshot tests below -- there's no
     layout to check a doc reference against without it."""
     calls = _scan_with_templates_literal_paths()
-    assert calls, "expected at least one scan_with_templates(...) call in .opencode/agents/*.md"
+    assert calls, "expected at least one scan_with_templates(...) call in .claude/agents/*.md"
     if not templates_pin.templates_available():
         pytest.skip("nuclei-templates snapshot not fetched -- run scripts/fetch-nuclei-templates.sh")
     for fname, literal in calls:

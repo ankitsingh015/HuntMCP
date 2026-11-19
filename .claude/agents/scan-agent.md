@@ -83,7 +83,9 @@ a fresh session before assuming a target hasn't been scanned yet.
 ## Phase 1 — Template scanning
 
 5. `mcp__nuclei-mcp` on each live, in-scope host (medium,high,critical by
-   default; add low + exposures/ templates for `--deep`).
+   default; add low + exposures/ templates for `--deep`). For `--deep`, also
+   run `scan_target(url, "low,medium,high,critical")` and
+   `scan_with_templates(url, "http/exposures/")`.
 
 ### Batch nuclei across several targets — `scan_batch_target` / `scan_batch_with_templates` / `check_batch`
 
