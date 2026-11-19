@@ -205,5 +205,12 @@ def test_live_mcp_list_reports_every_registered_server_connected():
         return
     statuses = mcp_connectivity.parse_mcp_list_output(result.stdout)
     assert statuses, "parsed zero servers from real `claude mcp list` output -- parser is out of sync with real format"
-    disconnected = mcp_connectivity.find_disconnected(statuses)
-    assert disconnected == {}, f"servers not connected: {disconnected}"
+    # Only assert THIS repo's own registered MCP servers (.mcp.json) -- NOT the
+    # operator's external claude.ai connectors (Google Drive/Calendar/Docs),
+    # which `claude mcp list` also prints and whose tools-fetch can transiently
+    # time out; those are not this repo's concern and would make the check flaky.
+    import json
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    repo_servers = set(json.load(open(os.path.join(repo_root, ".mcp.json")))["mcpServers"])
+    disconnected = {k: v for k, v in mcp_connectivity.find_disconnected(statuses).items() if k in repo_servers}
+    assert disconnected == {}, f"repo-own servers not connected: {disconnected}"
