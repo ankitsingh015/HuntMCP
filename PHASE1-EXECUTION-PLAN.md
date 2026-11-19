@@ -70,7 +70,7 @@ the human gives implementation approval (G0).
 | `mcp-servers/case_store.py` | MOD | Add 4 CEM tables to `_init_schema` + CRUD helpers. |
 | `mcp-servers/case-mcp/server.py` | MOD | Add 6 CEM `@app.tool()` wrappers; senders enforce budget + audit inline. |
 | `scripts/hooks/scope_gate_hook.py` | MOD | Add `"case-mcp"` to `TIER2_MCP_SERVERS`. |
-| `.opencode/agents/report-agent.md` | MOD | Document the Counterfactual Evidence Bundle section. |
+| `.claude/agents/report-agent.md` | MOD | Document the Counterfactual Evidence Bundle section. |
 | `tests/fixtures/cem_target/app.py` | NEW | Constructed ground-truth benchmark HTTP target (localhost). |
 | `tests/fixtures/cem_target/ground_truth.py` | NEW | Read-only expected labels (protected; see §8). |
 | `tests/test_cem_engine.py` | NEW | Unit tests (no network; fake fetch). |
