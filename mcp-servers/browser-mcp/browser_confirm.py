@@ -65,7 +65,7 @@ import os
 import sys
 import time
 from typing import NamedTuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from audit_log import log_call as _log_call
@@ -74,11 +74,16 @@ from browser_launch import launch_kwargs as _launch_kwargs
 from browser_launch import parse_cookie_header as _parse_cookie_header
 from budget_guard import enforce as _enforce_budget
 
+# #164: sidecar key in a session_file holding sessionStorage per origin
+# ({origin: {key: value}}); Playwright's storage_state has no sessionStorage.
+SESSION_STORAGE_KEY = "huntmcp_session_storage"
+
 
 async def _new_page(browser, url: str, cookie_header: str | None,
                      bearer_token: str | None = None,
                      local_storage: dict[str, str] | None = None,
-                     session_file: str | None = None):
+                     session_file: str | None = None,
+                     session_storage: dict[str, str] | None = None):
     """Shared context/page setup for every function below -- an explicit
     BrowserContext (not the implicit one `browser.new_page()` creates) is
     required to seed cookies/headers at all, since Playwright's
@@ -137,9 +142,21 @@ async def _new_page(browser, url: str, cookie_header: str | None,
       storage_state), so this only needs to be passed once, on the
       first call that establishes the session."""
     context_kwargs = {}
+    saved_session_storage: dict = {}
     if session_file and os.path.isfile(session_file):
-        context_kwargs["storage_state"] = session_file
+        state = _load_session_state(session_file)
+        saved_session_storage = state.pop(SESSION_STORAGE_KEY, {}) or {}
+        context_kwargs["storage_state"] = state
     context = await browser.new_context(**context_kwargs)
+    # #164: restore sessionStorage (which Playwright's storage_state drops) and
+    # apply an explicit session_storage seed, each guarded to its own origin so
+    # one origin's token never leaks into another origin's page.
+    restore = {o: dict(kv) for o, kv in saved_session_storage.items() if isinstance(kv, dict)}
+    if session_storage:
+        restore.setdefault(_origin_of(url), {}).update(session_storage)
+    for origin, kv in restore.items():
+        if kv:
+            await context.add_init_script(_session_storage_script(origin, kv))
     if cookie_header:
         await context.add_cookies(_parse_cookie_header(cookie_header, url))
     if bearer_token:
@@ -162,9 +179,63 @@ async def _save_session(context, session_file: str | None) -> None:
     session that rotated, a logout). Silently does nothing if
     session_file wasn't provided -- session persistence is opt-in per
     call, not a hidden default."""
-    if session_file:
-        os.makedirs(os.path.dirname(os.path.abspath(session_file)) or ".", exist_ok=True)
-        await context.storage_state(path=session_file)
+    if not session_file:
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(session_file)) or ".", exist_ok=True)
+    state = await context.storage_state()
+    # #164: capture sessionStorage per visited origin into a sidecar key,
+    # merged over whatever origins the file already had (an origin this call
+    # never visited keeps its saved values).
+    side = {}
+    if os.path.isfile(session_file):
+        side = _load_session_state(session_file).get(SESSION_STORAGE_KEY, {}) or {}
+    for page in context.pages:
+        try:
+            origin = await page.evaluate("location.origin")
+            entries = await page.evaluate("Object.fromEntries(Object.entries(sessionStorage))")
+        except Exception:
+            continue
+        if origin and origin != "null" and isinstance(entries, dict):
+            side[origin] = entries
+    if side:
+        state[SESSION_STORAGE_KEY] = side
+    _write_private_json(session_file, state)
+
+
+def _origin_of(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _session_storage_script(origin: str, kv: dict) -> str:
+    sets = "".join(f"sessionStorage.setItem({json.dumps(k)}, {json.dumps(v)});" for k, v in kv.items())
+    return f"if (location.origin === {json.dumps(origin)}) {{ try {{ {sets} }} catch (e) {{}} }}"
+
+
+def _load_session_state(session_file: str) -> dict:
+    try:
+        with open(session_file) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_private_json(path: str, data: dict) -> None:
+    """Atomic 0600 write -- a session file carries cookies/tokens."""
+    import tempfile
+
+    d = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
@@ -172,7 +243,8 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
                               cookie_header: str | None = None,
                               bearer_token: str | None = None,
                               local_storage: dict[str, str] | None = None,
-                              session_file: str | None = None) -> dict:
+                              session_file: str | None = None,
+        session_storage: dict[str, str] | None = None) -> dict:
     """Navigate to url in a real headless browser and check whether marker
     actually executed as JS, vs. merely appearing in the raw response body.
     Checks three signals: (1) any JS dialog (alert/confirm/prompt) whose
@@ -200,7 +272,8 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file)
+            context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file,
+                                            session_storage=session_storage)
 
             async def _on_dialog(dialog):
                 if marker in (dialog.message or ""):
@@ -242,7 +315,8 @@ async def render_dom(url: str, wait_selector: str | None = None,
                       cookie_header: str | None = None,
                       bearer_token: str | None = None,
                       local_storage: dict[str, str] | None = None,
-                      session_file: str | None = None) -> dict:
+                      session_file: str | None = None,
+        session_storage: dict[str, str] | None = None) -> dict:
     """Return the fully rendered (post-JS) HTML for comparison against the
     raw HTTP response -- surfaces client-side-injected content, DOM
     clobbering, and anything a raw curl request would never show.
@@ -259,7 +333,8 @@ async def render_dom(url: str, wait_selector: str | None = None,
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file)
+            context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file,
+                                            session_storage=session_storage)
             response = await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             if wait_selector:
                 await page.wait_for_selector(wait_selector, timeout=timeout_ms)
@@ -311,7 +386,8 @@ async def extract_page_content(url: str, wait_selector: str | None = None,
                                 cookie_header: str | None = None,
                                 bearer_token: str | None = None,
                                 local_storage: dict[str, str] | None = None,
-                                session_file: str | None = None) -> dict:
+                                session_file: str | None = None,
+        session_storage: dict[str, str] | None = None) -> dict:
     """Navigate to url in a real headless browser and return its rendered,
     human-readable text plus every link on the page -- the general-purpose
     "browse this page and tell me what's actually on it" primitive that
@@ -334,7 +410,8 @@ async def extract_page_content(url: str, wait_selector: str | None = None,
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file)
+            context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file,
+                                            session_storage=session_storage)
             response = await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             if response is not None:
                 result["status"] = response.status
@@ -364,7 +441,8 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
                            cookie_header: str | None = None,
                            bearer_token: str | None = None,
                            local_storage: dict[str, str] | None = None,
-                           session_file: str | None = None) -> dict:
+                           session_file: str | None = None,
+        session_storage: dict[str, str] | None = None) -> dict:
     """Fill form fields (selector -> value) and click submit_selector --
     for stored-XSS/business-logic confirmation flows that need a real
     submission, not just a GET request. If then_check_marker is given,
@@ -383,7 +461,8 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file)
+            context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file,
+                                            session_storage=session_storage)
 
             async def _on_dialog(dialog):
                 if then_check_marker and then_check_marker in (dialog.message or ""):
@@ -624,7 +703,8 @@ async def screenshot_base64(url: str, wait_ms: int = 1000,
                              cookie_header: str | None = None,
                              bearer_token: str | None = None,
                              local_storage: dict[str, str] | None = None,
-                             session_file: str | None = None) -> dict:
+                             session_file: str | None = None,
+        session_storage: dict[str, str] | None = None) -> dict:
     """Full-page screenshot as base64 PNG -- visual PoC evidence for the
     report's "screenshot + PoC" requirement.
     cookie_header/bearer_token/local_storage/session_file (see _new_page()) seed an
@@ -638,7 +718,8 @@ async def screenshot_base64(url: str, wait_ms: int = 1000,
     async with async_playwright() as p:
         browser = await p.chromium.launch(**_launch_kwargs())
         try:
-            context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file)
+            context, page = await _new_page(browser, url, cookie_header, bearer_token, local_storage, session_file,
+                                            session_storage=session_storage)
             await page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
             await page.wait_for_timeout(wait_ms)
             png_bytes = await page.screenshot(full_page=True)

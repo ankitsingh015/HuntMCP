@@ -41,6 +41,13 @@ why all four, not just one):
   for APIs/SPAs that use a bearer token instead of (or alongside)
   cookies. NOT captured by session_file -- pass it on every call that
   needs it.
+- session_storage (#164, a dict of key -> value), seeded into the target
+  origin's sessionStorage before any page script runs -- for an OIDC SPA that
+  keeps its user/token in sessionStorage (e.g. oidc-client's default store).
+  sessionStorage is ALSO captured into session_file (sidecar key
+  "huntmcp_session_storage", per origin, origin-guarded on restore), which
+  Playwright's own storage_state does not do -- the cause of an authenticated
+  SPA rendering its logged-out shell from an otherwise-fresh session_file.
 - local_storage (a dict of key -> value), seeded into the target origin's
   localStorage before any page script runs, for a modern SPA that reads
   its own session/JWT out of localStorage rather than a cookie or a
@@ -65,7 +72,8 @@ app = FastMCP("browser-mcp")
 async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
                               cookie_header: str = "", bearer_token: str = "",
                               local_storage: dict[str, str] | None = None,
-                              session_file: str = "") -> str:
+                              session_file: str = "",
+        session_storage: dict[str, str] | None = None) -> str:
     """Navigate to url in a real headless browser and check whether marker
     actually executed as JS (a fired alert/confirm/prompt dialog containing
     it, or document.title containing it) vs. merely being present in the
@@ -82,6 +90,7 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
         bearer_token=bearer_token or None,
         local_storage=local_storage or None,
         session_file=session_file or None,
+        session_storage=session_storage or None,
     )
     if r["error"]:
         return f"Browser error: {r['error']}"
@@ -109,7 +118,8 @@ async def check_js_execution(url: str, marker: str, wait_ms: int = 2000,
 @app.tool()
 async def render_dom(url: str, wait_selector: str = "", cookie_header: str = "",
                       bearer_token: str = "", local_storage: dict[str, str] | None = None,
-                      session_file: str = "") -> str:
+                      session_file: str = "",
+        session_storage: dict[str, str] | None = None) -> str:
     """Return the fully rendered (post-JS) HTML for url, for comparison
     against the raw HTTP response -- surfaces client-side-injected content,
     DOM clobbering, and anything a plain curl would never show. Truncated
@@ -124,6 +134,7 @@ async def render_dom(url: str, wait_selector: str = "", cookie_header: str = "",
         bearer_token=bearer_token or None,
         local_storage=local_storage or None,
         session_file=session_file or None,
+        session_storage=session_storage or None,
     )
     if r["error"]:
         return f"Browser error: {r['error']}"
@@ -165,7 +176,8 @@ async def render_dom(url: str, wait_selector: str = "", cookie_header: str = "",
 async def extract_page_content(url: str, wait_selector: str = "", max_links: int = 200,
                                 cookie_header: str = "", bearer_token: str = "",
                                 local_storage: dict[str, str] | None = None,
-                                session_file: str = "") -> str:
+                                session_file: str = "",
+        session_storage: dict[str, str] | None = None) -> str:
     """Navigate to url in a real headless browser and return its rendered,
     human-readable text plus every link on the page (text + absolute href,
     deduped, capped at max_links) -- the general "browse this page and see
@@ -182,6 +194,7 @@ async def extract_page_content(url: str, wait_selector: str = "", max_links: int
         bearer_token=bearer_token or None,
         local_storage=local_storage or None,
         session_file=session_file or None,
+        session_storage=session_storage or None,
     )
     if r["error"]:
         return f"Browser error: {r['error']}"
@@ -222,7 +235,8 @@ async def extract_page_content(url: str, wait_selector: str = "", max_links: int
 async def fill_and_submit(url: str, field_values: dict[str, str], submit_selector: str,
                            then_check_marker: str = "", cookie_header: str = "",
                            bearer_token: str = "", local_storage: dict[str, str] | None = None,
-                           session_file: str = "") -> str:
+                           session_file: str = "",
+        session_storage: dict[str, str] | None = None) -> str:
     """Fill form fields (CSS selector -> value) and click submit_selector --
     for stored-XSS or business-logic flows needing a real form submission,
     not just a GET. If then_check_marker is given, checks the resulting
@@ -240,6 +254,7 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
         bearer_token=bearer_token or None,
         local_storage=local_storage or None,
         session_file=session_file or None,
+        session_storage=session_storage or None,
     )
     if r["error"]:
         return f"Browser error: {r['error']}"
@@ -263,7 +278,8 @@ async def fill_and_submit(url: str, field_values: dict[str, str], submit_selecto
 @app.tool()
 async def screenshot(url: str, wait_ms: int = 1000, cookie_header: str = "",
                       bearer_token: str = "", local_storage: dict[str, str] | None = None,
-                      session_file: str = "") -> str:
+                      session_file: str = "",
+        session_storage: dict[str, str] | None = None) -> str:
     """Full-page screenshot of url as a base64-encoded PNG -- visual PoC
     evidence for a report's "screenshot + PoC" requirement. Pass
     cookie_header/bearer_token/local_storage/session_file for a screenshot
@@ -274,6 +290,7 @@ async def screenshot(url: str, wait_ms: int = 1000, cookie_header: str = "",
         bearer_token=bearer_token or None,
         local_storage=local_storage or None,
         session_file=session_file or None,
+        session_storage=session_storage or None,
     )
     if r["error"]:
         return f"Browser error: {r['error']}"
