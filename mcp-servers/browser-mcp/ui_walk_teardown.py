@@ -227,20 +227,29 @@ class TeardownWalker(ui_walk_pass2.CanaryWalker):
             "next_step": "human: re-register the same email and check whether old data/permissions reattach"})
 
 
-async def run_teardown(base_url: str, identity_label: str, session_file: str | None = None,
-                       steps: list[str] | None = None, *, cookie_header: str | None = None,
-                       bearer_token: str | None = None, scope_check=None,
-                       screenshot_dir: str | None = None, max_pages: int = 50) -> dict:
+def gate(base_url: str, identity_label: str, steps: list[str] | None = None, scope_check=None) -> tuple[dict | None, dict | None]:
+    """(plan, None) when a fresh human confirmation for exactly this plan was
+    consumed; (None, refusal_or_blocked) otherwise. Synchronous and cheap, so
+    the MCP tool can answer "blocked: run this command" immediately."""
     scope = scope_check or L._default_scope_check
     if not scope(base_url):
-        return {"status": "refused", "error": "base URL is out of scope", "candidates": []}
+        return None, {"status": "refused", "error": "base URL is out of scope", "candidates": []}
     plan = plan_teardown(base_url, identity_label, steps)
     if state_change_confirm.consume_approval(plan["host"], TEARDOWN_METHODS, plan["fingerprint"]) is None:
         summary = _summary(plan)
         state_change_confirm.write_pending(plan["host"], TEARDOWN_METHODS, plan["fingerprint"], summary)
-        return {"status": "blocked", "plan": plan, "summary": summary, "candidates": [],
-                "command": (f"scripts/confirm-state-change.sh {plan['host']} "
-                            f"{','.join(TEARDOWN_METHODS)} {plan['fingerprint']}")}
+        return None, {"status": "blocked", "plan": plan, "summary": summary, "candidates": [],
+                      "command": (f"scripts/confirm-state-change.sh {plan['host']} "
+                                  f"{','.join(TEARDOWN_METHODS)} {plan['fingerprint']}")}
+    return plan, None
+
+
+async def execute(plan: dict, session_file: str | None = None, *, cookie_header: str | None = None,
+                  bearer_token: str | None = None, scope_check=None, screenshot_dir: str | None = None,
+                  max_pages: int = 50) -> dict:
+    """Run an already-approved plan (see gate())."""
+    scope = scope_check or L._default_scope_check
+    base_url, identity_label = plan["base_url"], plan["identity"]
     start = time.monotonic()
     auth = {"session_file": session_file, "cookie_header": cookie_header, "bearer_token": bearer_token,
             "local_storage": None, "session_storage": None}
@@ -258,3 +267,14 @@ async def run_teardown(base_url: str, identity_label: str, session_file: str | N
     return {"status": inv["status"], "error": inv["error"], "plan": plan, "steps_run": w.steps_run,
             "notes": plan["notes"] + w.notes, "candidates": inv["candidates"], "deleted": deleted,
             "walk_id": inv["walk_id"], "inventory": inv}
+
+
+async def run_teardown(base_url: str, identity_label: str, session_file: str | None = None,
+                       steps: list[str] | None = None, *, cookie_header: str | None = None,
+                       bearer_token: str | None = None, scope_check=None,
+                       screenshot_dir: str | None = None, max_pages: int = 50) -> dict:
+    plan, stop = gate(base_url, identity_label, steps, scope_check)
+    if stop is not None:
+        return stop
+    return await execute(plan, session_file, cookie_header=cookie_header, bearer_token=bearer_token,
+                         scope_check=scope_check, screenshot_dir=screenshot_dir, max_pages=max_pages)

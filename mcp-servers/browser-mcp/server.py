@@ -18,6 +18,14 @@ Chrome/Chromium is found (see ../browser_launch.SYSTEM_BROWSER_CANDIDATES,
 shared with playwright-mcp); otherwise run `playwright install chromium`
 once to get Playwright's own bundled browser.
 
+#164 page comprehension: start_ui_walk / check_ui_walk / list_ui_walks walk
+an app PAGE-FIRST (every rendered page's real inputs, controls and the UI->API
+call each makes; Pass 1 sends nothing state-changing, Pass 2 "canary" needs a
+human-written grant file), and run_teardown is the human-gated final step.
+screenshot() now saves a viewable JPEG by default (as_base64=True for the old
+string). See ui_walk.py and
+docs/superpowers/specs/2026-11-19-page-comprehension-ui-walk-design.md.
+
 Every tool here takes four optional, independent, combinable auth-seeding
 params (session_file added 2026-08-29, the other three the same day
 earlier -- see browser_confirm.py's _new_page() for the full rationale on
@@ -60,8 +68,17 @@ import sys
 
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 
+import asyncio
+from collections import Counter
+from urllib.parse import urlsplit
+
 import browser_confirm
+import job_runtime
 import session_capture
+import ui_walk
+import ui_walk_logic
+import ui_walk_store
+import ui_walk_teardown
 from injection_boundary import quarantine as _quarantine
 from mcp.server.fastmcp import FastMCP
 
@@ -445,6 +462,195 @@ async def capture_oauth_redirect(identity_label: str, start_url: str, callback_h
     return json.dumps(
         await session_capture.capture_oauth_redirect(identity_label, start_url, callback_host), indent=2
     )
+
+
+# ------------------------------------------------- UI-walk (#164)
+# Page comprehension: the rendered PAGE + its real inputs + its actions are
+# the unit of testing, not the URL. Walks run as background thread jobs (they
+# outlast an MCP call). Tier-2: scripts/check-scope.sh <host> first; url is
+# scope-checked again in code (and every navigation / sent request inside the
+# walk is scope-checked by the walker itself).
+
+_UI_JOBS: dict = {}
+_MAX_LISTED_PAGES = 30
+
+
+def _run_walk(**kw) -> dict:
+    inv = asyncio.run(ui_walk.walk(**kw))
+    path = ui_walk_store.save_inventory(inv)
+    nodes = ui_walk_store.emit_nodes(inv) if inv.get("pages") else {}
+    return {"kind": "walk", "inventory": inv, "path": path, "nodes": nodes}
+
+
+def _run_teardown_job(plan: dict, **kw) -> dict:
+    r = asyncio.run(ui_walk_teardown.execute(plan, **kw))
+    if r.get("inventory"):
+        r["path"] = ui_walk_store.save_inventory(r["inventory"])
+    return {"kind": "teardown", "result": r}
+
+
+def _provenance_line(url: str) -> str:
+    provenance = {"class": "wire", "captured_by": "browser-mcp", "method": "GET", "url": url, "status": None}
+    return f"\nProvenance (for case-mcp add_evidence): {json.dumps(provenance)}"
+
+
+def _target_detail(inv: dict) -> str:
+    """Everything target-derived (titles, URLs, control text, field names) --
+    quarantined as one block by the caller."""
+    out = []
+    for p in (inv.get("pages") or [])[:_MAX_LISTED_PAGES]:
+        out.append(f"PAGE {p.get('url')} -- {p.get('title')!r} [{p.get('auth_state', 'ok')}]")
+        for i in p.get("inputs") or []:
+            rev = f" (revealed by click {i['revealed_by']})" if i.get("revealed_by") else ""
+            out.append(f"  input {i.get('name') or i.get('id') or '(unnamed)'} type={i.get('type')} "
+                       f"frame={i.get('frame_origin')} form={i.get('form_action')}{rev}")
+        for e in p.get("api_edges") or []:
+            if (e.get("method") or "GET") != "GET" or not e.get("sent"):
+                out.append(f"  edge {e.get('method')} {e.get('url')} sent={e.get('sent')} "
+                           f"blocked={e.get('blocked_reason')}")
+    if len(inv.get("pages") or []) > _MAX_LISTED_PAGES:
+        out.append(f"... {len(inv['pages']) - _MAX_LISTED_PAGES} more page(s) in the inventory file")
+    for c in inv.get("candidates") or []:
+        out.append("CANDIDATE " + json.dumps(c, default=str)[:400])
+    return "\n".join(out)
+
+
+def _format_walk(value: dict) -> str:
+    inv = value["inventory"]
+    pages = inv.get("pages") or []
+    edges = [e for p in pages for e in p.get("api_edges") or []]
+    controls = [c for p in pages for c in p.get("controls") or []]
+    cand = Counter(c.get("type") for c in inv.get("candidates") or [])
+    lines = [
+        f"UI-walk {inv.get('walk_id')} [{inv.get('mode')}] status={inv.get('status')}"
+        + (f" error={inv.get('error')}" if inv.get("error") else ""),
+        f"Inventory: {value.get('path')}",
+        f"Pages: {len(pages)} (logged-out: {sum(1 for p in pages if p.get('auth_state') == 'logged-out')}) | "
+        f"Inputs: {sum(len(p.get('inputs') or []) for p in pages)} | Controls: {len(controls)} "
+        f"(clicked {sum(1 for c in controls if c.get('clicked'))}, "
+        f"never-click {sum(1 for c in controls if c.get('skipped_reason') == 'never-click')})",
+        f"UI->API edges: {len(edges)} (intercepted non-GET: "
+        f"{sum(1 for e in edges if e.get('method') != 'GET' and not e.get('sent'))}, sent non-GET: "
+        f"{sum(1 for e in edges if e.get('method') != 'GET' and e.get('sent'))})",
+        f"Real submits: {len(inv.get('real_submits') or [])} | Canaries: {len(inv.get('canaries') or [])} | "
+        f"Sinks: {len(inv.get('sinks') or [])} (executing: {sum(1 for s in inv.get('sinks') or [] if s.get('executed'))})",
+        "Candidates (leads for exploit-agent, NOT confirmed): "
+        + (", ".join(f"{k}={v}" for k, v in sorted(cand.items())) or "none"),
+        f"Surface-map nodes: {value.get('nodes') or {}}",
+    ]
+    if inv.get("status") == "auth_lost":
+        lines.append("AUTH LOST: the session no longer renders the logged-in view -- refresh the session "
+                     "(session_file / session_storage) and re-walk; do NOT treat the logged-out shell as the surface.")
+    lines += [f"Honest limit: {h}" for h in inv.get("honest_limits") or []]
+    lines.append(_quarantine(_target_detail(inv), source_label="ui-walk inventory"))
+    return "\n".join(lines) + "\n" + _provenance_line(inv.get("start_url") or "")
+
+
+def _format_teardown(r: dict) -> str:
+    cand = Counter(c.get("type") for c in r.get("candidates") or [])
+    lines = [f"Teardown status={r.get('status')}" + (f" error={r.get('error')}" if r.get("error") else ""),
+             f"Steps run: {r.get('steps_run')}", f"Walker objects deleted: {len(r.get('deleted') or [])}",
+             "Candidates (leads, NOT confirmed): " + (", ".join(f"{k}={v}" for k, v in sorted(cand.items())) or "none")]
+    lines += [f"Note: {n}" for n in r.get("notes") or []]
+    if r.get("path"):
+        lines.append(f"Inventory: {r['path']}")
+    inv = r.get("inventory") or {"candidates": r.get("candidates") or []}
+    lines.append(_quarantine(_target_detail(inv), source_label="ui-walk teardown"))
+    return "\n".join(lines) + "\n" + _provenance_line((r.get("plan") or {}).get("base_url") or "")
+
+
+@app.tool()
+def start_ui_walk(url: str, mode: str = "map", session_file: str = "", cookie_header: str = "",
+                  bearer_token: str = "", local_storage: dict[str, str] | None = None,
+                  session_storage: dict[str, str] | None = None, max_pages: int = 50,
+                  max_clicks_per_page: int = 40, same_origin_only: bool = True) -> str:
+    """PAGE-FIRST comprehension of an app (#164): render every in-scope page
+    reachable from url, list its REAL inputs (incl. lazy/third-party iframes,
+    modal- and tab-revealed fields, shadow DOM), click every control, and
+    record the UI->API call each one makes. Results become page/input/action
+    surface-map nodes the coverage gate counts.
+    mode="map" (Pass 1, always allowed): NOTHING state-changing is sent --
+    every non-GET, payment-provider request, out-of-scope navigation and
+    state-changing-looking GET is intercepted and recorded, not sent; logout /
+    account-delete / payment controls are never clicked.
+    mode="canary" (Pass 2): additionally fills every text input with a unique
+    XSS canary, REALLY submits, re-walks to find where each canary renders /
+    executes (incl. cross-page stored XSS), and runs create->destroy->verify
+    on walker-created objects only (broken delete, delete-IDOR and
+    cancel-without-revoke candidates). Refused unless the HUMAN has written
+    data/engagements/<slug>/ui-walk-authorized.yaml (`canary_submit: true`) --
+    you cannot create that file.
+    Returns a job id; poll with check_ui_walk. Pass session_file /
+    session_storage / cookie_header / bearer_token / local_storage to walk
+    the logged-in app. Requires scope-gate clearance first (Tier-2)."""
+    if mode not in ("map", "canary"):
+        return f"Error: unknown mode {mode!r}; expected 'map' or 'canary'."
+    if not ui_walk_logic._default_scope_check(url):
+        return f"Refused: {url!r} is out of scope for the active engagement -- no walk started."
+    job = job_runtime.start_thread_job(
+        "ui-walk", _run_walk, _UI_JOBS, start_url=url, mode=mode,
+        session_file=session_file or None, cookie_header=cookie_header or None,
+        bearer_token=bearer_token or None, local_storage=local_storage or None,
+        session_storage=session_storage or None, max_pages=max_pages,
+        max_clicks_per_page=max_clicks_per_page, same_origin_only=same_origin_only)
+    return (f"UI-walk started ({mode}) on {urlsplit(url).hostname}: job_id={job['job_id']}. "
+            "Poll with check_ui_walk(job_id).")
+
+
+@app.tool()
+def check_ui_walk(job_id: str) -> str:
+    """Poll a start_ui_walk / run_teardown job. When done: the page/input/
+    action counts, intercepted vs sent requests, canary sinks, the candidate
+    list for exploit-agent, the inventory file path, and surface-map node
+    counts. Target-derived text is quarantined."""
+    r = job_runtime.poll_thread_job(job_id, _UI_JOBS)
+    if r.get("error") and r.get("status") != "error":
+        return f"Error: {r['error']}"
+    if r["status"] == "running":
+        return f"UI-walk job {job_id} still running ({r.get('elapsed_s')}s). Poll again later."
+    if r["status"] == "error":
+        return f"UI-walk job {job_id} failed: {r.get('error')}"
+    value = r["value"]
+    return _format_teardown(value["result"]) if value.get("kind") == "teardown" else _format_walk(value)
+
+
+@app.tool()
+def list_ui_walks() -> str:
+    """List UI-walk / teardown jobs started in this server session."""
+    items = job_runtime.list_thread_jobs(_UI_JOBS)
+    if not items:
+        return "No UI-walk jobs in this session."
+    return "\n".join(json.dumps(i, default=str) for i in items)
+
+
+@app.tool()
+def run_teardown(url: str, identity_label: str, session_file: str = "", cookie_header: str = "",
+                 steps: list[str] | None = None) -> str:
+    """FINAL, human-gated engagement step (#164) -- only when the HUMAN says the
+    engagement is done (ideally after triage, so findings stay reproducible).
+    Never on your own initiative. Steps: cleanup (delete every walker-created
+    canary object, with broken-delete checks), logout (real logout, then
+    replay the old session -> logout-session-survives candidate),
+    account_delete (ONLY for a roster identity marked disposable: true).
+    Without a fresh confirmation this returns BLOCKED with the exact
+    scripts/confirm-state-change.sh command the HUMAN must run in their own
+    terminal (bound to this exact cleanup set + identity); then call again.
+    Returns a job id to poll with check_ui_walk. Requires scope-gate clearance
+    first (Tier-2)."""
+    try:
+        plan, stop = ui_walk_teardown.gate(url, identity_label, steps)
+    except ValueError as e:
+        return f"Error: {e}"
+    if stop is not None:
+        if stop["status"] == "blocked":
+            return ("BLOCKED: teardown changes state and needs a human confirmation for exactly this plan.\n"
+                    f"Plan: {stop['summary']}\nThe HUMAN runs, in their own terminal:\n  {stop['command']}\n"
+                    "then call run_teardown again with the same arguments.")
+        return f"Refused: {stop.get('error')}"
+    job = job_runtime.start_thread_job("ui-walk-teardown", _run_teardown_job, _UI_JOBS, plan,
+                                       session_file=session_file or None, cookie_header=cookie_header or None)
+    return f"Teardown started: job_id={job['job_id']}. Poll with check_ui_walk(job_id)."
+
 
 
 if __name__ == "__main__":
