@@ -2,7 +2,7 @@
 
 ## Philosophy
 
-HuntMCP is not a script that chains tools in a fixed order. It is a **multi-level AI agent orchestration system** running inside OpenCode that:
+HuntMCP is not a script that chains tools in a fixed order. It is a **multi-level AI agent orchestration system** running inside Claude Code that:
 
 1. Uses **Level 1 Orchestrator** (HuntBrain) to decide strategy
 2. Spawns **Level 2 Specialist Agents** (Recon, Scan, Exploit, Report + unlimited dynamic specialists)
@@ -13,12 +13,22 @@ HuntMCP is not a script that chains tools in a fixed order. It is a **multi-leve
 
 ## Current Implementation Status
 
+> **Note (2026-11-19, #160): OpenCode removed — Claude Code is the single source of truth.**
+> The dual OpenCode + Claude Code harness was consolidated to Claude Code only
+> (`.claude/agents`, `.mcp.json`, `.claude/settings.json`). Every OpenCode-only
+> capability was first ported into the Claude path (3+1 MCP servers wired, agents
+> reconciled, slash commands ported, `mcp_connectivity` moved to `claude mcp list`,
+> scope-gate already shared). The **Build Plan changelog further down is retained as
+> dated history** — its `✅ Done — … OpenCode …` entries describe the system as it was
+> at the time they were written; references there to `.opencode/`, `opencode.jsonc`, or
+> a second harness are historical, not current wiring.
+
 This doc describes the target design. As of 2026-08, actual build status (see the full
 phase-by-phase "Build Plan" further down for detail):
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Phase 1 — Local system (agents, MCP servers, knowledge base) | ✅ Built | 6 agents (incl. chain-planner), 22 MCP servers, dual OpenCode + Claude Code harness, payloads/wordlists seeded, 202-test pytest suite in CI |
+| Phase 1 — Local system (agents, MCP servers, knowledge base) | ✅ Built | 6 agents (incl. chain-planner), 35 MCP servers, Claude Code harness (single source of truth; OpenCode removed 2026-11-19, #160), payloads/wordlists seeded, pytest suite in CI |
 | Phase 2 — Go backend (API, auth, pgvector) | ✅ Built | See `backend/` — Gin + PostgreSQL/pgvector, JWT auth, `/mcp` endpoint. Not yet wired to the local agent system — see "World-project integration map" |
 | Phase 2.5-2.7 — Methodology depth, harness/safety hardening, knowledge/model backlog | ✅ Built | Scope gate, reactive rate limiting, model gateway, lessons registry, CVE search index — see Build Plan below |
 | Phase 2.8 — claude-bug-bounty-derived backlog | ✅ All 4 High-priority items done and live-tested | scope hook, `oob-mcp`, `waf-bypass-mcp` done; `hackerone-mcp` was the last untested-against-a-live-account item — confirmed working 2026-08-25 against a real HackerOne account's credentials (`sync_program_scope("security")` against HackerOne's own public program correctly returned real structured scope: 20 in-scope domains split from 5 out-of-scope via the `eligible_for_submission` field, formatted as an `engagement.yaml`-ready snippet), so Basic Auth header construction, the `/hackers/programs/{handle}/structured_scopes` call, and the response-parsing/formatting logic are all confirmed correct end-to-end, not just written-and-hoped. Medium: secrets scanning, audit log, pytest suite (117 tests) all done; skills-as-Claude-Code-Skills restructuring ✅ done (47 skills, all 59 original phases plus 3 new ones — see its own note below). Lower priority (SAST/static-code-scanning tooling, web3/DeFi, an actual mobile-analysis MCP tool — not just the `mobile-app-security` methodology skill) still open — new domains, larger scope commitment |
@@ -116,7 +126,7 @@ Orchestrator (1 file)
   │     Recon, Scan, Exploit, Report
   │
   ├── 50+ dynamic agents (created as .md files)
-  │     Each = one file in .opencode/agents/
+  │     Each = one file in .claude/agents/
   │     Each = specific instructions + specific MCPs
   │     Each = spawned only when HuntBrain detects the need
   │     Examples:
@@ -178,13 +188,19 @@ Two independent axes, and both must stay swappable — neither the runtime nor t
 
 ### Harness (how agents actually run)
 
-| Harness | What it is | When to use it |
-|---------|-----------|-----------------|
-| **Claude Code native** (✅ built) | `.claude/agents/*.md` + `.claude/commands/audit.md` + `.mcp.json`, mirroring `.opencode/agents/` — the same dual-install pattern Claude-BugHunter uses across Claude Code/OpenCode/Codex CLI/Hermes | Interactive use, when the operator wants to watch/steer an engagement live, billed through the operator's own Claude Code / Claude API access. Model is always Claude here — picked per-agent via each file's `model:` field, not via the provider gateway below. |
-| **OpenCode** (✅ existing, now gateway-wired) | Current `.opencode/agents/` + `opencode.jsonc`. `scripts/select-model.sh` runs the provider gateway and patches `opencode.jsonc`'s `"model"` field before launch — this is the harness the multi-provider chain below actually controls today. | Any run where you want a non-Claude model, or automatic fallback across whichever key you have set |
-| **Direct multi-provider API runner** (planned) | Lightweight headless script for scheduled/CI/`watch` mode use with any model | Continuous monitoring, unattended runs, or when the operator wants a non-Claude model driving without OpenCode at all |
+HuntMCP runs inside **Claude Code** — the single source of truth (OpenCode
+removed 2026-11-19, #160). HuntBrain and every Level 2 specialist are native
+Claude Code subagents (`.claude/agents/*.md`) with locked-down `tools:`
+allowlists; MCP servers are registered in `.mcp.json` and enabled in the
+committed `.claude/settings.json`; slash commands live in `.claude/commands/`;
+the scope-gate runs as a `PreToolUse` hook. The model is Claude, picked
+per-agent via each file's `model:` field.
 
-All three harnesses read and write the **same** `knowledge/`, `mcp-servers/`, and `chat-logs/` — the harness is just the front door, never the source of truth.
+The harness is just the front door — `knowledge/`, `mcp-servers/`, and
+`chat-logs/` are the source of truth. (A direct multi-provider API runner for
+unattended/scheduled runs with a non-Claude model remains a possible future
+addition; the model gateway below already exists to serve the cross-model
+tooling and would serve such a runner.)
 
 ### Model provider (which LLM actually answers)
 
@@ -197,9 +213,9 @@ Ordered fallback chain, one env var per provider — first one with a key set wi
 5. `OPENROUTER_API_KEY` — catch-all gateway to 100+ more providers/models through one key
 6. `OLLAMA_HOST` — local, no key required; also the slot for a purpose-built open-weight security model (e.g. WhiteRabbitNeo) for agents that need to avoid hosted-model refusal friction on legitimate, already-scope-confirmed PoC generation
 
-**Built**: `mcp-servers/model_gateway.py` (`select_provider()`), tested against all six chain entries plus the explicit-override and per-role-override paths. `scripts/select-model.sh` wires it into OpenCode by patching `opencode.jsonc`'s `"model"` field in place (`--apply`, targeted regex replace — never a full JSON round-trip, so `//` comments survive). Run it before `opencode run`; a plain `python3 mcp-servers/model_gateway.py [role]` with no `--apply` is always a dry-run preview, never writes anything.
+**Built**: `mcp-servers/model_gateway.py` (`select_provider()`, `PROVIDER_CHAIN`), tested against all six chain entries plus the explicit-override and per-role-override paths. It now drives the **cross-model tooling** — `second-opinion-mcp`'s independent review and `research_manifest`'s provider selection — rather than patching a harness config. `python3 mcp-servers/model_gateway.py [role]` is a read-only preview of which provider/model would be used (it never writes anything).
 
-Per-agent overrides (`HUNTMCP_MODEL_EXPLOIT=whiterabbitneo`, etc.) work in `select_provider()` today, but OpenCode itself only has one *global* model — there's no per-agent model in `opencode.jsonc`. Per-role selection only becomes meaningful once the direct multi-provider API runner exists (each agent's own call would carry its own role). Recommended per-agent assignment once that lands: cheap/fast model for Recon-agent (high call volume, low reasoning need), strongest available model for Exploit-agent/chain-planner/Report-agent (low volume, high stakes).
+Claude Code subagents pin their own harness model per-agent in each `.claude/agents/*.md` file's `model:` frontmatter. The gateway's per-agent overrides (`HUNTMCP_MODEL_EXPLOIT=…`, etc.) apply to the cross-model tooling, and would carry each agent's own role once a direct multi-provider API runner exists. Recommended assignment there: cheap/fast model for Recon-agent (high call volume, low reasoning need), strongest available model for Exploit-agent/chain-planner/Report-agent (low volume, high stakes).
 
 **The authorization gate never lives in the model.** Regardless of which harness or provider answers a given call, the Scope & Authorization check (target confirmed in-scope, engagement details on file) happens in HuntMCP's own agent logic before any Tier-2 (execution-capable) action — matching the Tier 1/Tier 2 split from `pentest-ai-agents`. A model refusing or not refusing a request is never the control; the scope-guard is.
 
@@ -546,7 +562,7 @@ What HuntMCP borrows from each project researched, and current status:
   --bounty "$2500" \
   --author "jane_doe"
 
-# Or via OpenCode command
+# Or via the /ingest slash command in Claude Code
 /ingest https://medium.com/... --class IDOR --tech React
 ```
 
@@ -617,11 +633,11 @@ Step 4: Save findings → "This target also had SSTI"
 ```
 HuntMCP/
 ├── mcp-servers/           ← YES push to GitHub (your code)
-├── .opencode/             ← YES push (agent configs)
+├── .claude/               ← YES push (agents, commands, skills, rules, settings.json)
+├── .mcp.json              ← YES push (MCP server registration)
 ├── scripts/               ← YES push (ingestion scripts)
 ├── knowledge/             ← YES push (payloads, wordlists, skill)
 ├── backend/               ← YES push (Go API code)
-├── opencode.jsonc         ← YES push
 ├── AGENTS.md              ← YES push
 ├── README.md              ← YES push
 │
@@ -776,25 +792,26 @@ HuntMCP/
 │       ├── db.py                          SQLite schema + queries
 │       └── requirements.txt
 │
-├── .opencode/
+├── .claude/
 │   ├── agents/
 │   │   ├── huntbrain.md                   LEVEL 1: Orchestrator
 │   │   ├── recon-agent.md                 LEVEL 2: Recon specialist
 │   │   ├── scan-agent.md                  LEVEL 2: Scan specialist
 │   │   ├── exploit-agent.md               LEVEL 2: Exploit specialist
 │   │   ├── report-agent.md                LEVEL 2: Report specialist
-│   │   ├── graphql-agent.md               DYNAMIC: spawned on demand
-│   │   ├── jwt-agent.md                   DYNAMIC: spawned on demand
-│   │   ├── oauth-agent.md                 DYNAMIC: spawned on demand
-│   │   └── cloud-agent.md                 DYNAMIC: spawned on demand
+│   │   ├── chain-planner.md               Attack-chain planner
+│   │   └── <dynamic>-agent.md             DYNAMIC: spawned on demand (graphql/jwt/oauth/cloud/…)
 │   │
-│   └── commands/
-│       ├── audit.md                        /audit <target> [--deep]
-│       ├── ingest.md                       /ingest <url> [--class XSS] [--tech React]
-│       ├── watch.md                        /watch <target> [--interval 6h]
-│       ├── report.md                       /report <scan-id>
-│       ├── chain.md                        /chain <scan-id>
-│       └── learn.md                        /learn <query> (query writeup DB)
+│   ├── commands/
+│   │   ├── audit.md                        /audit <target> [--deep]
+│   │   ├── ingest.md                       /ingest <url> [--class XSS] [--tech React]
+│   │   ├── watch.md                        /watch <target> [--interval 6h]
+│   │   ├── chain.md                        /chain <scan-id>
+│   │   └── learn.md                        /learn <query> (query writeup DB)
+│   │
+│   ├── skills/                             52 technique skills (SKILL.md each)
+│   ├── rules/                              engineering rules (autonomous/security/testing/…)
+│   └── settings.json                       hook registration + MCP enable/disable
 │
 ├── scripts/
 │   ├── ingest-writeup.sh                   Manual writeup ingestion
@@ -823,8 +840,9 @@ HuntMCP/
 │   ├── hunt-*.log                          Per-hunt logs
 │   └── cron-ingestion.log                  Writeup ingestion logs
 │
-├── opencode.jsonc                          Complete MCP config + permissions
-├── AGENTS.md                               Project-level instructions
+├── .mcp.json                               MCP server registration (Claude Code)
+├── CLAUDE.md                               Project-level instructions (single source of truth)
+├── AGENTS.md                               Pointer to CLAUDE.md (cross-tool convention)
 └── README.md                               Full documentation
 ```
 
@@ -880,7 +898,7 @@ CREATE INDEX idx_writeups_embedding ON writeups
 
 ### Local MCP servers vs. Go backend — current gap
 
-**Not yet wired up:** the Python MCP servers (`mcp-servers/writeup-mcp`, `mcp-servers/memory-mcp`) currently talk only to local ChromaDB/SQLite — there is no `HUNTMCP_BACKEND_URL`-style dual mode calling the Go API yet. Until that's built, the Go backend and the local OpenCode agent system are two independent, unconnected implementations of the same knowledge layer. Wiring the local MCP servers to optionally call the Go `/api/v1/query` and `/api/v1/hunts` endpoints (falling back to local storage when `HUNTMCP_BACKEND_URL` is unset) is the concrete next step to make Phase 2 actually useful to the Phase 1 agents, rather than a parallel backend nobody calls.
+**Not yet wired up:** the Python MCP servers (`mcp-servers/writeup-mcp`, `mcp-servers/memory-mcp`) currently talk only to local ChromaDB/SQLite — there is no `HUNTMCP_BACKEND_URL`-style dual mode calling the Go API yet. Until that's built, the Go backend and the local Claude Code agent system are two independent, unconnected implementations of the same knowledge layer. Wiring the local MCP servers to optionally call the Go `/api/v1/query` and `/api/v1/hunts` endpoints (falling back to local storage when `HUNTMCP_BACKEND_URL` is unset) is the concrete next step to make Phase 2 actually useful to the Phase 1 agents, rather than a parallel backend nobody calls.
 
 ### When to route through the Go backend instead of local storage
 
@@ -1323,7 +1341,7 @@ pip install sqlmap
   --tech React \
   --bounty 500
 
-# Or from the OpenCode prompt
+# Or via the /ingest slash command in Claude Code
 /ingest https://medium.com/... --class XSS --tech React
 ```
 
@@ -1369,4 +1387,4 @@ SUPPORTED BY:
   └── Continuous learning (cron feeds keep knowledge fresh)
 ```
 
-**Built with OpenCode. Powered by MCP. Designed for the world's best bug hunters.**
+**Built on Claude Code. Powered by MCP. Designed for the world's best bug hunters.**
