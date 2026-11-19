@@ -117,3 +117,22 @@ def test_coverage_module_has_no_write_or_tool_calls():
     tool_modules = ["tool_resolver", "job_runtime", "subprocess", "Popen", "scope_guard", "budget_guard"]
     for name in write_fns + tool_modules:
         assert name not in src, f"coverage.py must not reference {name!r}"
+
+
+# ---- evidence_backed_findings (#159 manifest join helper) -----------------
+
+def test_evidence_backed_findings_requires_evidence(tmp_path):
+    db = _db(tmp_path)
+    a = case_store.create_finding("SQLi", "/api/a", db_path=db)
+    case_store.add_evidence("response", "resp body", finding_id=a["id"], db_path=db)
+    case_store.create_finding("XSS", "/api/b", db_path=db)  # no evidence row
+    rows = coverage_signal.evidence_backed_findings(db_path=db)
+    # A (has evidence) is included, raw+unredacted; B (no evidence) is not.
+    assert {"id": a["id"], "endpoint": "/api/a", "vuln_class": "SQLi"} in rows
+    assert all(r["vuln_class"] != "XSS" for r in rows)
+
+
+def test_evidence_backed_findings_empty_when_no_case_db(tmp_path):
+    db = _db(tmp_path)
+    assert coverage_signal.evidence_backed_findings(db_path=db) == []
+    assert not os.path.exists(db)  # never materializes a db

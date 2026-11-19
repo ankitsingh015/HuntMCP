@@ -257,3 +257,28 @@ def compute_coverage_matrix(db_path: str | None = None) -> dict:
         "roles": sorted(roles),
         "role_gaps": role_gaps,
     }
+
+
+def evidence_backed_findings(db_path: str | None = None) -> list[dict]:
+    """Raw (unredacted) {id, endpoint, vuln_class} for every finding with >= 1
+    linked evidence row -- the SAME evidence-backed "covered" predicate
+    compute_coverage_matrix uses ("no evidence = not covered", so coverage
+    cannot be inflated by empty finding declarations), exposed for the #159
+    coverage-manifest join, which must match surface-map nodes on raw
+    endpoints/vuln_classes (not the redacted display cells). Read-only; returns
+    [] when no case.db exists yet (never materializes one -- same
+    resolve-then-isfile guard as the functions above)."""
+    resolved_db_path = case_store.resolve_db_path(db_path)
+    if not os.path.isfile(resolved_db_path):
+        return []
+    raw = json.loads(case_store.case_export(db_path=resolved_db_path))
+    evidence_counts: dict[int, int] = {}
+    for e in raw["evidence"]:
+        fid = e.get("finding_id")
+        if fid is not None:
+            evidence_counts[fid] = evidence_counts.get(fid, 0) + 1
+    return [
+        {"id": f["id"], "endpoint": f["endpoint"], "vuln_class": f["vuln_class"]}
+        for f in raw["findings"]
+        if evidence_counts.get(f["id"], 0) > 0
+    ]
