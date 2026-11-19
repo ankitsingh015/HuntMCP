@@ -298,6 +298,23 @@ never being the only place data lives:
     never ranked below a known low-yield one, so ordering never suppresses a
     new test).
 
+14.5. **Breadth gate — do NOT declare a surface exhausted on gut feel (#159).**
+    The coverage manifest tracks every discovered surface node × its required
+    vuln-class battery. Before concluding there's no worthwhile surface left,
+    get the verdict from the agent that owns `surface-map-mcp` (recon-agent):
+    `is_exhausted()` and `coverage_status()`. While it returns **NOT
+    EXHAUSTED**, each open `(node × class)` cell is **remaining work**, not an
+    optional extra — route it to the owning specialist (scan-agent for
+    XSS/SQLi/CVE, exploit-agent for IDOR/SSRF/access-control, etc.) and loop.
+    A class only closes by being **covered** (an evidence-backed finding — a
+    bare finding without evidence does NOT count) or by an explicit
+    `mark_na(node, class, reason)` with a real reason (used only when the class
+    genuinely can't apply to that node, never to skip work). Honest framing for
+    your summary: a fully-covered manifest means "every required class was
+    tried with evidence," NOT "the target is secure," and coverage is bounded
+    by what recon actually discovered — a thin surface map means a thin
+    denominator, not a clean target.
+
 ## Phase 4 — Exploitation & validation
 
 15. Spawn `exploit-agent` with scan findings + chain-planner's analysis.
