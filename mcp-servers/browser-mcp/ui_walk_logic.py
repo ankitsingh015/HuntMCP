@@ -210,3 +210,32 @@ def _default_scope_check(url: str) -> bool:
     except scope_guard.NoEngagementFile:
         return False
     return scope_guard.is_in_scope(host, eng)
+
+
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_MUTATING_GET_TYPES = frozenset({"document", "xhr", "fetch"})
+
+
+def route_decision(method: str, url: str, resource_type: str, is_main_nav: bool, *,
+                   scope_ok: bool, send_allowed: bool) -> tuple[str, str | None]:
+    """What the walker's network interceptor does with one request:
+    ("continue", None) or ("abort", reason). Order matters:
+    payment host (any method, every mode) > safe-method rules > non-GET rules.
+    reason in {"payment-host", "out-of-scope", "mutating-get", "pass1-non-get"}."""
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        return ("continue", None)
+    if is_payment_host(parts.hostname or ""):
+        return ("abort", "payment-host")
+    m = (method or "").upper()
+    if m in SAFE_METHODS:
+        if is_main_nav and not scope_ok:
+            return ("abort", "out-of-scope")
+        if resource_type in _MUTATING_GET_TYPES and is_mutating_get_url(url):
+            return ("abort", "mutating-get")
+        return ("continue", None)
+    if not scope_ok:
+        return ("abort", "out-of-scope")
+    if send_allowed:
+        return ("continue", None)
+    return ("abort", "pass1-non-get")

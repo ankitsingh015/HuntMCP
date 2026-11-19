@@ -194,9 +194,11 @@ def _make_handler(app: FixtureApp):
  <li><a href="{app.alt_base_url}/elsewhere">Partner site</a></li>
  <li><a href="/popup" target="_blank">Open popup</a></li>
 </ul>
+<button id="open-win">Open window</button>
 <button aria-label="" id="icon-del">&#128465;</button>
 <button id="loeschen">L&ouml;schen</button>"""
             script = """
+document.getElementById('open-win').onclick=()=>window.open('/popup?w=1');
 document.getElementById('icon-del').onclick=()=>fetch('/api/purge',{method:'POST'});
 document.getElementById('loeschen').onclick=()=>fetch('/api/purge',{method:'POST'});"""
             self._send(200, _render("Home", body, script))

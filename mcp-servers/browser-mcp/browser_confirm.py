@@ -83,7 +83,8 @@ async def _new_page(browser, url: str, cookie_header: str | None,
                      bearer_token: str | None = None,
                      local_storage: dict[str, str] | None = None,
                      session_file: str | None = None,
-                     session_storage: dict[str, str] | None = None):
+                     session_storage: dict[str, str] | None = None,
+                     context_options: dict | None = None):
     """Shared context/page setup for every function below -- an explicit
     BrowserContext (not the implicit one `browser.new_page()` creates) is
     required to seed cookies/headers at all, since Playwright's
@@ -147,6 +148,9 @@ async def _new_page(browser, url: str, cookie_header: str | None,
         state = _load_session_state(session_file)
         saved_session_storage = state.pop(SESSION_STORAGE_KEY, {}) or {}
         context_kwargs["storage_state"] = state
+    # #164: extra BrowserContext options (e.g. the UI-walker's
+    # service_workers="block" and fixed viewport) -- opt-in, no default change.
+    context_kwargs.update(context_options or {})
     context = await browser.new_context(**context_kwargs)
     # #164: restore sessionStorage (which Playwright's storage_state drops) and
     # apply an explicit session_storage seed, each guarded to its own origin so
