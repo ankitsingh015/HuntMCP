@@ -135,3 +135,67 @@ def _normalize_endpoint(s: str) -> str:
         return f"{scheme}://{host}{path}" if scheme or host else path
     # bare path (no scheme/host)
     return s.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+
+
+def _node_endpoint(node: dict) -> str:
+    """The endpoint a node joins on: meta['endpoint'] if set, else its label,
+    normalized. Empty string for nodes that carry no endpoint."""
+    meta = node.get("meta") or {}
+    return _normalize_endpoint(meta.get("endpoint") or node.get("label") or "")
+
+
+def compute_manifest(db_path: str | None = None, map_path: str | None = None) -> dict:
+    """Join the surface-map node inventory with case_store's evidence-backed
+    findings into a per-(node x required-class) coverage manifest + exhaustion
+    verdict. Offline, read-only.
+
+    A cell (node, class) is:
+      - na      iff the node records an N/A for a matching class WITH a
+                non-empty reason;
+      - covered iff some evidence-backed finding F matches the class AND is
+                linked to the node -- either F.id is in node['findings']
+                (an explicit attach_finding link, the robust join) OR F's
+                normalized endpoint equals the node's (the fallback join);
+      - open    otherwise.
+    exhausted = no open cell across all nodes (vacuously True for an empty map).
+    """
+    nodes_in = surface_map.load_map(map_path).get("nodes", [])
+    ebf = coverage_signal.evidence_backed_findings(db_path)
+
+    out_nodes: list[dict] = []
+    counts = {"covered": 0, "na": 0, "open": 0}
+    open_cells: list[dict] = []
+
+    for node in nodes_in:
+        nep = _node_endpoint(node)
+        fids = set(node.get("findings") or [])
+        na = node.get("na") or {}
+        cells = []
+        for cls in sorted(required_classes(node)):
+            reason = next(
+                (r for k, r in na.items() if isinstance(r, str) and r.strip() and _class_matches(k, cls)),
+                None,
+            )
+            if reason is not None:
+                state, extra = "na", {"reason": reason}
+            else:
+                covered = any(
+                    _class_matches(f["vuln_class"], cls)
+                    and (f["id"] in fids or (nep and _normalize_endpoint(f["endpoint"]) == nep))
+                    for f in ebf
+                )
+                state, extra = ("covered" if covered else "open"), {}
+            counts[state] += 1
+            cells.append({"vuln_class": cls, "state": state, **extra})
+            if state == "open":
+                open_cells.append({"node_id": node["id"], "vuln_class": cls})
+        out_nodes.append({
+            "node_id": node["id"], "kind": node["kind"], "label": node["label"], "cells": cells,
+        })
+
+    return {
+        "nodes": out_nodes,
+        "open_cells": open_cells,
+        "counts": counts,
+        "exhausted": not open_cells,
+    }
