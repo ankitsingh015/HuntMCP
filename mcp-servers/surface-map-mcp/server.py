@@ -15,6 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import coverage_manifest
 import surface_map
 from mcp.server.fastmcp import FastMCP
 
@@ -122,6 +123,52 @@ def next_untested(kind: str = "") -> str:
     if not nodes:
         return "No untested nodes."
     return "\n".join(_fmt(n) for n in nodes)
+
+
+def _fmt_open_cells(open_cells: list[dict]) -> list[str]:
+    return [f"  node #{c['node_id']} -- {c['vuln_class']}" for c in open_cells]
+
+
+@app.tool()
+def mark_na(node_id: int, vuln_class: str, reason: str) -> str:
+    """Exempt one (node, vuln_class) coverage cell with a recorded, auditable
+    reason (the #159 escape valve). An empty reason is rejected -- the gate
+    can't be closed with a bare rubber-stamp. Use only when the class genuinely
+    cannot apply to this node (e.g. SQLi on a static image), not to skip work."""
+    try:
+        ok = surface_map.mark_na(node_id, vuln_class, reason)
+    except ValueError as e:
+        return f"Error: {e}"
+    return (f"Marked node #{node_id} '{vuln_class}' N/A: {reason}"
+            if ok else f"No node #{node_id}.")
+
+
+@app.tool()
+def coverage_status() -> str:
+    """The coverage manifest: how many (node x required-class) cells are
+    covered (evidence-backed) / N/A / open, and the list of OPEN cells still to
+    test. Coverage means 'what we tried with evidence', NOT 'the target is
+    secure', and is bounded by what the surface map has discovered."""
+    m = coverage_manifest.compute_manifest()
+    c = m["counts"]
+    lines = [f"Coverage: {c['covered']} covered, {c['na']} N/A, {c['open']} open."]
+    if m["open_cells"]:
+        lines.append("Open (node x class) cells still to test or mark N/A:")
+        lines += _fmt_open_cells(m["open_cells"])
+    return "\n".join(lines)
+
+
+@app.tool()
+def is_exhausted() -> str:
+    """The breadth gate (#159): a surface is NOT exhausted while any required
+    (node x class) cell is still open. Consult this before declaring a surface
+    done -- an open cell is unfinished work, not an optional extra."""
+    m = coverage_manifest.compute_manifest()
+    if m["exhausted"]:
+        return "EXHAUSTED: every required (node x class) cell is covered or N/A."
+    lines = [f"NOT EXHAUSTED: {len(m['open_cells'])} open cell(s):"]
+    lines += _fmt_open_cells(m["open_cells"])
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

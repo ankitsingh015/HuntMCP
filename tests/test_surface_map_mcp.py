@@ -101,3 +101,32 @@ def test_mark_na_rejects_empty_reason(tmp_path):
 def test_mark_na_unknown_node_returns_false(tmp_path):
     p = str(tmp_path / "m.json")
     assert surface_map.mark_na(999, "sqli", "reason", path=p) is False
+
+
+# --- coverage gate tools (#159) --------------------------------------------
+
+def test_tool_is_exhausted_true_on_empty_map(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUNTMCP_SURFACE_MAP_PATH", str(tmp_path / "m.json"))
+    assert srv.is_exhausted().startswith("EXHAUSTED")
+
+
+def test_tool_coverage_status_lists_open_cell_after_add_node(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUNTMCP_SURFACE_MAP_PATH", str(tmp_path / "m.json"))
+    srv.add_node("endpoint", "/api/x", "ep:x")
+    status = srv.coverage_status()
+    assert "open" in status.lower()
+    assert "sqli" in status  # an endpoint-floor class shows as an open cell
+
+
+def test_tool_mark_na_then_cell_not_open(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUNTMCP_SURFACE_MAP_PATH", str(tmp_path / "m.json"))
+    nid = int(srv.add_node("endpoint", "/api/x", "ep:x").split("#")[1].split(":")[0])
+    for cls in ("xss", "sqli", "idor", "access-control", "ssrf", "open-redirect", "csrf"):
+        srv.mark_na(nid, cls, "test harness: no live backend in this unit test")
+    assert srv.is_exhausted().startswith("EXHAUSTED")  # all cells N/A -> exhausted
+
+
+def test_tool_mark_na_rejects_empty_reason(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUNTMCP_SURFACE_MAP_PATH", str(tmp_path / "m.json"))
+    nid = int(srv.add_node("endpoint", "/api/x", "ep:x").split("#")[1].split(":")[0])
+    assert srv.mark_na(nid, "sqli", "  ").startswith("Error:")
