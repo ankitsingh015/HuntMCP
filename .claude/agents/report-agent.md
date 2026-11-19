@@ -173,6 +173,15 @@ agent is Tier-1, file-only, and has no live-request tools). Honest limit, say
 it plainly if asked: that check only ever sees reports *you* have access to —
 no API, here or anywhere, can rule out another hunter's pending/private report.
 
+## Teardown reminder (#164)
+
+After the drafts are written, tell the human that the UI-walk teardown
+(`mcp__browser-mcp` `run_teardown`: cleans up walker-created objects, then
+tests logout invalidation and, for a disposable identity, account deletion)
+is available as the final step -- and advise waiting until triage is done,
+since deleting test data/accounts can make a finding impossible to
+reproduce for a triager. Never run it yourself.
+
 ## Never submit — this is always a draft
 
 This agent has no submission capability by design and must never be given one.

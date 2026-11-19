@@ -63,6 +63,13 @@ a fresh session before assuming a target hasn't been scanned yet.
 
 ## Phase 0 — Strategy
 
+0. **Page-first (#164).** If recon returned a UI-walk inventory path (from
+   `start_ui_walk`/`check_ui_walk`), `Read` it FIRST and test its real
+   inputs and actions before anything else: every `input` (incl. iframe /
+   modal / tab-revealed ones) and every recorded state-changing UI->API edge
+   (`action`) gets the relevant classes (XSS incl. stored, SQLi, SSTI, CSRF,
+   IDOR, business logic). URL/param reasoning from the crawl is secondary --
+   the unit of testing is the page and its inputs, not the URL.
 1. Identify tech stack from recon data.
 2. `mcp__writeup-mcp` query for relevant payloads/techniques for that stack.
 3. If a specific product/version was fingerprinted (e.g. from httpx's `-title`/tech

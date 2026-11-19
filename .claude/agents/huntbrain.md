@@ -268,6 +268,16 @@ never being the only place data lives:
 
 11. Spawn `recon-agent` with the target and the engagement scope.
 12. On no live hosts, try alternate hosts (www., api.) and respawn.
+12.5. **Page-first (#164).** Recon must return a UI-walk inventory
+   (`start_ui_walk` mode="map") for every in-scope app with a UI; pass that
+   inventory path to scan-agent and exploit-agent. After Pass 1 per app, if
+   the human has written `data/engagements/<slug>/ui-walk-authorized.yaml`
+   (you never create or edit it -- the scope-gate hook blocks it), have
+   exploit-agent run `start_ui_walk(url, mode="canary")` for that app (canary
+   submits, stored-XSS sinks, create->destroy->verify on walker-owned objects).
+   Teardown (`run_teardown`: cleanup, logout and account-deletion tests) is
+   NEVER run by you or on an agent's initiative -- only when the human says
+   the engagement is done.
 
 ## Phase 3 — Scan
 
