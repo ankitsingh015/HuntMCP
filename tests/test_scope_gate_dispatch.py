@@ -16,12 +16,8 @@ dispatch contract instead:
    Code's own PreToolUse dispatch uses (see the hook's own module
    docstring) -- not a mocked or imported call.
 
-.opencode/plugin/scope-gate.ts is OpenCode's port of the same dispatch
-contract; tests/test_scope_gate_plugin.mjs already drives IT end-to-end via
-a real python3 subprocess (only Bun.spawn's transport is shimmed, not the
-hook's logic) -- see that file's own header comment. Both are wired into
-CI (see .github/workflows/ci.yml's scope-gate-dispatch job) so a broken
-hook registration on either harness turns CI red.
+This is wired into CI (see .github/workflows/ci.yml's scope-gate-dispatch
+job) so a broken hook registration turns CI red.
 """
 
 import json
@@ -68,8 +64,7 @@ def _dispatch(payload: dict | None, raw_stdin: str | None = None, env_extra: dic
     spawn `python3 scripts/hooks/scope_gate_hook.py`, write the JSON
     payload to its stdin, close stdin, read the real exit code and
     stderr. No monkeypatching, no in-process import -- a genuine
-    subprocess boundary, same as the real harness and same as
-    .opencode/plugin/scope-gate.ts's Bun.spawn call."""
+    subprocess boundary, same as the real Claude Code PreToolUse harness."""
     env = dict(os.environ)
     env.update(env_extra or {})
     stdin_text = raw_stdin if raw_stdin is not None else json.dumps(payload)
