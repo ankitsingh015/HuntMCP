@@ -863,3 +863,34 @@ def test_main_blocks_bash_copy_of_grant_into_an_engagement_dir(monkeypatch, tmp_
     dest = str(tmp_path / "engagements" / "other-target") + "/"
     payload = {"tool_name": "Bash", "tool_input": {"command": f"cp /tmp/ui-walk-authorized.yaml {dest}"}}
     assert _run_main(monkeypatch, payload) == 2
+
+
+# ---- narrower rule: reading / merely mentioning the grant file is fine ------
+# The first version blocked ANY Bash command whose text named the grant file,
+# which also blocked `cat`-ing it and writing notes that mention it. Writes into
+# it (redirect/tee/sed -i/dd/cp/mv/install/rsync/ln/tar/unzip/git) and any
+# interpreter command naming it (python -c open(...,'w') etc.) stay blocked.
+def test_main_allows_reading_the_grant_file(monkeypatch, tmp_path):
+    path = _active_grant_path(monkeypatch, tmp_path)
+    for cmd in (f"cat {path}", f"grep canary_submit {path}", f"head -5 {path}", f"ls -la {path}"):
+        assert _run_main(monkeypatch, {"tool_name": "Bash", "tool_input": {"command": cmd}}) == 0, cmd
+
+
+def test_main_allows_notes_that_merely_mention_the_grant_file(monkeypatch, tmp_path):
+    _active_grant_path(monkeypatch, tmp_path)
+    notes = tmp_path / "notes.md"
+    cmd = f"echo 'the human writes ui-walk-authorized.yaml by hand' >> {notes}"
+    assert _run_main(monkeypatch, {"tool_name": "Bash", "tool_input": {"command": cmd}}) == 0
+
+
+@pytest.mark.parametrize("make_cmd", [
+    lambda p: f"tee {p} < /tmp/x",
+    lambda p: f"sed -i 's/false/true/' {p}",
+    lambda p: f"mv /tmp/x {p}",
+    lambda p: f"dd if=/tmp/x of={p}",
+    lambda p: f"python3 -c \"open('{p}','w').write('canary_submit: true')\"",
+    lambda p: f"bash -c 'printf x > {p}'",
+])
+def test_main_still_blocks_writes_into_the_grant_file(monkeypatch, tmp_path, make_cmd):
+    path = _active_grant_path(monkeypatch, tmp_path)
+    assert _run_main(monkeypatch, {"tool_name": "Bash", "tool_input": {"command": make_cmd(path)}}) == 2

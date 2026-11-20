@@ -805,6 +805,38 @@ def _sevenzip_directory_target(words: list[str]) -> str | None:
     return None
 
 
+# #164: commands that can write a file whose name only appears as a SOURCE or
+# inside a script (`cp /tmp/<grant> data/engagements/x/`, `python3 -c
+# "open('<grant>','w')"`, `bash -c 'printf x > <grant>'`) -- the per-word
+# destination checks below cannot see those. A piece of a command that names
+# the grant file AND starts with one of these is blocked. Reading it (cat,
+# grep, head, ls) or merely mentioning its name in text written ELSEWHERE is
+# not: explicit write targets (>, >>, tee, sed -i, dd of=) are still caught by
+# the destination checks via _grant_file_hit().
+_GRANT_NAME_WRITE_COMMANDS = frozenset({
+    "cp", "mv", "install", "rsync", "ln", "tar", "unzip", "7z", "git",
+    "python", "python3", "perl", "ruby", "node", "php",
+    "bash", "sh", "zsh", "dash", "fish", "env", "xargs", "find", "eval", "exec",
+})
+
+
+def _grant_name_write(command: str) -> Path | None:
+    name = ui_walk_grant.GRANT_FILENAME
+    if name not in command:
+        return None
+    for piece in _CHAIN_SPLIT_RE.split(command):
+        if name not in piece:
+            continue
+        try:
+            words = shlex.split(piece)
+        except ValueError:
+            words = piece.split()
+        words = _strip_prefix_words(words)
+        if words and words[0].rsplit("/", 1)[-1] in _GRANT_NAME_WRITE_COMMANDS:
+            return Path(engagement_paths.ENGAGEMENTS_ROOT) / "*" / name
+    return None
+
+
 def _writes_protected_path(command: str) -> Path | None:
     """S6 blanket, unconditional Bash-write detector -- same 'cheap word/
     arg scan, not a full shell parser' honesty as _reads_env_file()/
@@ -857,12 +889,9 @@ def _writes_protected_path(command: str) -> Path | None:
     tests asserting the python3 one-liner, zip-slip, bare-git-checkout,
     and git-reset-hard cases all do NOT get caught."""
     protected = _protected_paths()
-    if ui_walk_grant.GRANT_FILENAME in command:
-        # #164: the grant file's name anywhere in a command that writes is
-        # enough -- `cp /tmp/ui-walk-authorized.yaml data/engagements/x/` never
-        # spells out the destination file itself. Fail closed: the agent has no
-        # legitimate reason to touch this file at all (the walker only reads it).
-        return Path(engagement_paths.ENGAGEMENTS_ROOT) / "*" / ui_walk_grant.GRANT_FILENAME
+    grant_hit = _grant_name_write(command)
+    if grant_hit is not None:
+        return grant_hit
     for piece in _CHAIN_SPLIT_RE.split(command):
         try:
             words = shlex.split(piece)
