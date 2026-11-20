@@ -57,14 +57,27 @@ TEARDOWN_SUBMIT_CAP = 200
 MAX_AUTH_PROBES = 10
 
 
+def session_ref(session_file: str | None, cookie_header: str | None) -> str:
+    """A non-secret reference to the session teardown will act as -- bound into
+    the fingerprint and shown to the human, so an approval for "identity X"
+    cannot be replayed with some other account's session."""
+    if session_file:
+        return os.path.abspath(session_file)
+    if cookie_header:
+        return "cookie-header:sha256:" + hashlib.sha256(cookie_header.encode()).hexdigest()[:12]
+    return "(no session)"
+
+
 def teardown_fingerprint(slug: str, identity_label: str, base_url: str,
-                         cleanup_tokens: list[str], steps: list[str]) -> str:
+                         cleanup_tokens: list[str], steps: list[str], session_ref: str = "") -> str:
     blob = json.dumps({"slug": slug, "identity": identity_label, "base_url": base_url,
-                       "tokens": sorted(cleanup_tokens), "steps": list(steps)}, sort_keys=True)
+                       "tokens": sorted(cleanup_tokens), "steps": list(steps),
+                       "session": session_ref}, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
-def plan_teardown(base_url: str, identity_label: str, steps: list[str] | None = None) -> dict:
+def plan_teardown(base_url: str, identity_label: str, steps: list[str] | None = None,
+                  session: str = "(no session)") -> dict:
     wanted = list(steps) if steps else list(TEARDOWN_STEPS)
     unknown = [s for s in wanted if s not in TEARDOWN_STEPS]
     if unknown:
@@ -77,13 +90,15 @@ def plan_teardown(base_url: str, identity_label: str, steps: list[str] | None = 
                      "`disposable: true` in the test-identity roster")
     tokens = sorted(ui_walk_store.load_canaries())
     host = (urlsplit(base_url).hostname or "").lower()
-    fp = teardown_fingerprint(engagement_paths.get_active_target() or "", identity_label, base_url, tokens, ordered)
+    fp = teardown_fingerprint(engagement_paths.get_active_target() or "", identity_label, base_url, tokens,
+                              ordered, session)
     return {"host": host, "base_url": base_url, "identity": identity_label, "steps": ordered,
-            "notes": notes, "cleanup_tokens": tokens, "fingerprint": fp}
+            "notes": notes, "cleanup_tokens": tokens, "session": session, "fingerprint": fp}
 
 
 def _summary(plan: dict) -> str:
-    return (f"UI-walk TEARDOWN on {plan['base_url']} as {plan['identity']}: steps={plan['steps']}; "
+    return (f"UI-walk TEARDOWN on {plan['base_url']} as {plan['identity']} using session "
+            f"{plan.get('session')}: steps={plan['steps']}; "
             f"destroys {len(plan['cleanup_tokens'])} walker-created canary object(s) (only objects whose "
             "row/card shows a walker canary or whose id a walker create returned); logout test; "
             + ("ACCOUNT DELETION (irreversible); " if "account_delete" in plan["steps"] else "")
@@ -91,9 +106,13 @@ def _summary(plan: dict) -> str:
 
 
 class TeardownWalker(ui_walk_pass2.CanaryWalker):
-    def configure(self, grant=None) -> None:
+    def configure(self, grant=None, cleanup_tokens: list[str] | None = None) -> None:
         super().configure(ui_walk_pass2.ui_walk_grant.Grant(True, [], TEARDOWN_SUBMIT_CAP))
-        self.tokens = dict(ui_walk_store.load_canaries())
+        # ONLY the canaries the human confirmed (the fingerprinted set), never
+        # tokens registered after the confirmation.
+        confirmed = set(cleanup_tokens or [])
+        self.tokens = {t: r for t, r in ui_walk_store.load_canaries().items() if t in confirmed}
+        self.created_ids = {i for i, t in ui_walk_store.load_created_ids().items() if t in confirmed}
         self.steps: list[str] = []
         self.steps_run: list[str] = []
         self.notes: list[str] = []
@@ -103,7 +122,7 @@ class TeardownWalker(ui_walk_pass2.CanaryWalker):
         return self._allowed_get is not None and ui_walk._defrag(url) == self._allowed_get
 
     async def after_map(self) -> None:
-        pages = [p for p in self.inv["pages"] if p.get("auth_state") != "logged-out"]
+        pages = [p for p in self.inv["pages"] if p.get("auth_state", "ok") == "ok"]
         if "cleanup" in self.steps:
             await ui_walk_destroy.run(self, pages)
             self.steps_run.append("cleanup")
@@ -171,11 +190,11 @@ class TeardownWalker(ui_walk_pass2.CanaryWalker):
             for c in d["controls"]:
                 if L.classify_control(c) == classification:
                     before = self.sent
-                    self.submitting = True
+                    self.window = "teardown-control"
                     try:
                         await self._click(frame, c, L.control_signature(c, prec["template"]), {})
                     finally:
-                        self.submitting = False
+                        self.window = None
                     return self.sent > before
         return False
 
@@ -227,14 +246,15 @@ class TeardownWalker(ui_walk_pass2.CanaryWalker):
             "next_step": "human: re-register the same email and check whether old data/permissions reattach"})
 
 
-def gate(base_url: str, identity_label: str, steps: list[str] | None = None, scope_check=None) -> tuple[dict | None, dict | None]:
+def gate(base_url: str, identity_label: str, steps: list[str] | None = None, scope_check=None,
+         session: str = "(no session)") -> tuple[dict | None, dict | None]:
     """(plan, None) when a fresh human confirmation for exactly this plan was
     consumed; (None, refusal_or_blocked) otherwise. Synchronous and cheap, so
     the MCP tool can answer "blocked: run this command" immediately."""
     scope = scope_check or L._default_scope_check
     if not scope(base_url):
         return None, {"status": "refused", "error": "base URL is out of scope", "candidates": []}
-    plan = plan_teardown(base_url, identity_label, steps)
+    plan = plan_teardown(base_url, identity_label, steps, session)
     if state_change_confirm.consume_approval(plan["host"], TEARDOWN_METHODS, plan["fingerprint"]) is None:
         summary = _summary(plan)
         state_change_confirm.write_pending(plan["host"], TEARDOWN_METHODS, plan["fingerprint"], summary)
@@ -257,7 +277,9 @@ async def execute(plan: dict, session_file: str | None = None, *, cookie_header:
                        same_origin_only=True, wall_clock_s=1200, action_delay_s=ui_walk._default_delay(),
                        screenshot_dir=screenshot_dir, had_session=True, session_file=session_file,
                        auth={**auth, "identity_label": identity_label}, walk_id=os.urandom(6).hex())
-    w.configure()
+    if session_ref(session_file, cookie_header) != plan.get("session"):
+        return {"status": "refused", "error": "session differs from the one the human confirmed", "candidates": []}
+    w.configure(cleanup_tokens=plan["cleanup_tokens"])
     w.steps = plan["steps"]
     inv = await w.run(**auth)
     browser_confirm._log_call("browser-mcp:ui-walk-teardown", [base_url, identity_label, ",".join(plan["steps"])],
@@ -273,7 +295,7 @@ async def run_teardown(base_url: str, identity_label: str, session_file: str | N
                        steps: list[str] | None = None, *, cookie_header: str | None = None,
                        bearer_token: str | None = None, scope_check=None,
                        screenshot_dir: str | None = None, max_pages: int = 50) -> dict:
-    plan, stop = gate(base_url, identity_label, steps, scope_check)
+    plan, stop = gate(base_url, identity_label, steps, scope_check, session_ref(session_file, cookie_header))
     if stop is not None:
         return stop
     return await execute(plan, session_file, cookie_header=cookie_header, bearer_token=bearer_token,

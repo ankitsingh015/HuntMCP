@@ -638,7 +638,9 @@ def run_teardown(url: str, identity_label: str, session_file: str = "", cookie_h
     Returns a job id to poll with check_ui_walk. Requires scope-gate clearance
     first (Tier-2)."""
     try:
-        plan, stop = ui_walk_teardown.gate(url, identity_label, steps)
+        plan, stop = ui_walk_teardown.gate(url, identity_label, steps,
+                                           session=ui_walk_teardown.session_ref(session_file or None,
+                                                                                cookie_header or None))
     except ValueError as e:
         return f"Error: {e}"
     if stop is not None:

@@ -104,7 +104,7 @@ def _seed_canary_item(app, token):
 
 def _teardown(app, identity, tmp_path):
     cookie = app.login_cookie()
-    plan = T.plan_teardown(app.base_url + "/", identity)
+    plan = T.plan_teardown(app.base_url + "/", identity, session=T.session_ref(None, cookie))
     _human_confirms(plan)
     return asyncio.run(T.run_teardown(app.base_url + "/", identity, cookie_header=cookie, scope_check=_scope,
                                       screenshot_dir=str(tmp_path), max_pages=8))
@@ -150,3 +150,26 @@ def test_teardown_account_delete_for_disposable_identity(tmp_path):
     assert any(c["type"] == "account-deleted-session-survives" for c in r["candidates"])
     assert any(c["type"] == "reregistration-candidate" for c in r["candidates"])
     assert not any("stripe" in u for _, u in app.requests)
+
+
+def test_fingerprint_binds_the_session_used():
+    a = T.teardown_fingerprint("s", "keep", "http://h/", ["hm1"], ["cleanup"], session_ref="/x/a.json")
+    b = T.teardown_fingerprint("s", "keep", "http://h/", ["hm1"], ["cleanup"], session_ref="/x/main.json")
+    assert a != b
+
+
+def test_blocked_summary_names_the_session(monkeypatch):
+    monkeypatch.setattr(ui_walk._Walker, "run", lambda *a, **k: None)
+    r = asyncio.run(T.run_teardown("http://127.0.0.1:9/", "keep", session_file="/x/main.json", scope_check=_scope))
+    assert r["status"] == "blocked" and "/x/main.json" in r["summary"]
+
+
+def test_execute_uses_only_the_confirmed_tokens(monkeypatch):
+    ui_walk_store.register_canary("hmcccc0001", {"page": "/items"})
+    plan = T.plan_teardown("http://127.0.0.1:9/", "keep")
+    ui_walk_store.register_canary("hmcccc0002", {"page": "/items"})  # appears after confirmation
+    w = T.TeardownWalker("http://127.0.0.1:9/", "teardown", scope=_scope, max_pages=1, max_clicks_per_page=1,
+                         same_origin_only=True, wall_clock_s=10, action_delay_s=0, screenshot_dir=None,
+                         had_session=True, session_file=None, auth={}, walk_id="w")
+    w.configure(cleanup_tokens=plan["cleanup_tokens"])
+    assert set(w.tokens) == {"hmcccc0001"}
