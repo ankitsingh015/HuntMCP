@@ -132,7 +132,10 @@ class _Walker:
                  had_session: bool, session_file: str | None, auth: dict, walk_id: str):
         self.start_url = start_url
         self.mode = mode
-        self.scope = scope
+        # Scope is host-based; cache the verdict per host so the interceptor
+        # does not re-read engagement.yaml for every subresource request.
+        self._scope_fn = scope
+        self._scope_cache: dict[str, bool] = {}
         self.max_pages = max_pages
         self.max_clicks = max_clicks_per_page
         self.same_origin_only = same_origin_only
@@ -154,6 +157,12 @@ class _Walker:
         self.page = None
         self.browser = None
         self.get_log: list[dict] = []
+
+    def scope(self, url: str) -> bool:
+        key = (urlsplit(url).hostname or "").lower() or url
+        if key not in self._scope_cache:
+            self._scope_cache[key] = bool(self._scope_fn(url))
+        return self._scope_cache[key]
 
     # -- policy hooks (Pass 2 overrides) ------------------------------------
     def allow_send(self, method: str, url: str) -> bool:
@@ -297,12 +306,32 @@ class _Walker:
         page = self.page
         tmpl = endpoint_template(url)
         rec = {"url": url, "template": tmpl, "title": None, "screenshot": None, "auth_state": "ok",
+               "nav_error": None,
                "inputs": [], "controls": [], "api_edges": [], "ws_frames_blocked": 0,
                "third_party_hosts": []}
         self.cur_page = rec
         self.current_control = None
         await self._budget()
-        await page.goto(url, wait_until="domcontentloaded")
+        try:
+            await page.goto(url, wait_until="domcontentloaded")
+        except Exception as e:  # noqa: BLE001 -- e.g. a redirect to an out-of-scope host (SSO) was aborted
+            rec["nav_error"] = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
+            if is_start:
+                raise _Stop("auth_lost" if self.had_session else "error",
+                            f"start page did not load in scope: {rec['nav_error']}") from e
+            return rec
+        if not self.scope(page.url):
+            # Playwright follows HTTP redirects without routing the redirected
+            # request, so an in-scope URL can land on an out-of-scope host (an
+            # SSO login). Never map or click anything there.
+            host = urlsplit(page.url).hostname
+            rec["nav_error"] = f"redirected out of scope to {host}"
+            rec["auth_state"] = "out-of-scope-redirect"
+            await page.goto("about:blank")
+            if is_start:
+                raise _Stop("auth_lost" if self.had_session else "error",
+                            f"start page redirected out of scope to {host}")
+            return rec
         await self._settle(page, first=True)
         snap = await self._snapshot(page)
         main_controls = [c for f, d in snap if f is page.main_frame for c in d["controls"]]
@@ -386,7 +415,11 @@ class _Walker:
                 if self._enqueue_ok(landed) and landed not in queue:
                     queue.append(landed)
                 await self._budget()
-                await page.goto(page_url, wait_until="domcontentloaded")
+                try:
+                    await page.goto(page_url, wait_until="domcontentloaded")
+                except Exception as e:  # noqa: BLE001 -- page no longer reachable: keep what we mapped
+                    rec["nav_error"] = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
+                    break
                 await self._settle(page)
             for other in list(self.context.pages):
                 if other is not page:

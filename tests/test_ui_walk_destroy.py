@@ -25,13 +25,13 @@ def _scope(u):
     return urlsplit(u).hostname == "127.0.0.1"
 
 
-def _run(vulnerable, factory):
+def _run(vulnerable, factory, start="/items"):
     mp = pytest.MonkeyPatch()
     mp.setattr(browser_confirm, "_enforce_budget", lambda *_a, **_k: {})
     mp.setenv("HUNTMCP_UI_WALK_DIR", str(factory.mktemp("uw")))
     app = serve(vulnerable=vulnerable)
     alice_id = app.seed_item(ALICE)
-    inv = asyncio.run(ui_walk.walk(app.base_url + "/items", "canary", cookie_header=app.login_cookie(),
+    inv = asyncio.run(ui_walk.walk(app.base_url + start, "canary", cookie_header=app.login_cookie(),
                                    scope_check=_scope, grant=Grant(True, [], 200), max_pages=4,
                                    screenshot_dir=str(factory.mktemp("shots"))))
     mp.undo()
@@ -98,3 +98,29 @@ def test_destroy_hard_delete_no_candidate(patched):
     assert any(m == "DELETE" for m, _ in app.non_get_requests())
     assert not [c for c in inv["candidates"] if c["type"] == "broken-delete"]
     assert alice in app.items
+
+
+@pytest.fixture(scope="module")
+def cards(tmp_path_factory):
+    app, inv, alice = _run(True, tmp_path_factory, start="/cards")
+    yield app, inv, alice
+    app.close()
+
+
+@requires_browser
+def test_destroy_list_level_card_wrapper_does_not_make_every_row_owned(cards):
+    # /cards wraps EVERY row in one .card: one walker canary inside it must not
+    # make Alice's row "owned" (it did before the fix -> Alice was deleted).
+    app, inv, alice = cards
+    assert inv["status"] == "complete", inv["error"]
+    assert ("DELETE", f"/api/items/{alice}") not in app.non_get_requests()
+    assert app.items[alice]["deleted"] is False
+    card_logs = [d for d in inv["destroy_log"] if urlsplit(d["page"]).path == "/cards"]
+    assert card_logs
+    assert any(d["skipped_reason"] == "ownership-unproven" for d in card_logs)
+
+
+def test_destroy_reach_path_ids_are_segment_exact():
+    import ui_walk_destroy
+    assert ui_walk_destroy._mentions_id("http://h/api/items/1", {"1"})
+    assert not ui_walk_destroy._mentions_id("http://h/api/items/10", {"1"})

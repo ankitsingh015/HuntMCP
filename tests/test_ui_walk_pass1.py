@@ -179,7 +179,10 @@ def test_pass1_dedups_row_controls(walked):
 def test_pass1_screenshot_per_page(walked):
     _, inv = walked
     assert inv["pages"]
-    assert all(p["screenshot"] and os.path.isfile(p["screenshot"]) for p in inv["pages"])
+    rendered = [p for p in inv["pages"] if not p.get("nav_error")]
+    assert rendered and all(p["screenshot"] and os.path.isfile(p["screenshot"]) for p in rendered)
+    # a page that never rendered in scope (blocked / redirected out of scope) is never captured
+    assert all(not p["screenshot"] for p in inv["pages"] if p.get("nav_error"))
 
 
 @requires_browser
@@ -228,3 +231,26 @@ def test_pass1_budget_enforced(tmp_path, monkeypatch):
 def test_walk_refuses_out_of_scope_start():
     inv = asyncio.run(ui_walk.walk("https://unlisted.example.org/", "map", scope_check=lambda u: False))
     assert inv["status"] == "refused"
+
+
+@requires_browser
+def test_pass1_out_of_scope_redirect_does_not_kill_walk(walked):
+    _, inv = walked
+    assert inv["status"] == "complete"
+    sso = _page(inv, "/sso-protected")
+    assert sso and sso[0]["nav_error"]
+    assert _page(inv, "/cards")  # pages after it in the queue still mapped
+
+
+def test_scope_verdict_cached_per_host():
+    calls = []
+
+    def scope(u):
+        calls.append(u)
+        return True
+    w = ui_walk._Walker("http://127.0.0.1:1/", "map", scope=scope, max_pages=1, max_clicks_per_page=1,
+                        same_origin_only=True, wall_clock_s=10, action_delay_s=0, screenshot_dir=None,
+                        had_session=False, session_file=None, auth={}, walk_id="w")
+    for i in range(50):
+        w.scope(f"http://127.0.0.1:1/a{i}.js")
+    assert len(calls) == 1

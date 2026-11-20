@@ -137,3 +137,25 @@ def test_default_scope_check_external_without_engagement_is_false():
 
 def test_canary_value_contenteditable_is_textlike():
     assert "hm1234abcd" in L.canary_value("hm1234abcd", "contenteditable", None)
+
+
+# ---- review fixes ------------------------------------------------------------
+def test_url_has_segment_is_exact():
+    assert L.url_has_segment("https://x.test/api/items/1", "1")
+    assert L.url_has_segment("https://x.test/api/items?id=1", "1")
+    assert not L.url_has_segment("https://x.test/api/items/10", "1")
+    assert not L.url_has_segment("https://x.test/api/items/1abc", "1")
+
+
+def test_make_canary_short_length_for_maxlength_fields():
+    t = L.make_canary(6)
+    assert t.startswith("hm") and len(t) == 6
+    assert L.canary_value(t, "text", 6) == t
+
+
+def test_form_is_unsafe_to_submit():
+    assert L.form_unsafe_reason([{"tag": "button", "type": "submit", "text": "Close account"}], "") == "account-delete"
+    assert L.form_unsafe_reason([{"tag": "button", "text": "Place order"}], "") == "payment"
+    assert L.form_unsafe_reason([{"tag": "button", "text": "Delete project"}], "") == "destructive"
+    assert L.form_unsafe_reason([{"tag": "button", "text": "Save"}], "https://x.test/u?action=delete") == "mutating-action"
+    assert L.form_unsafe_reason([{"tag": "button", "text": "Save"}], "https://x.test/api/p1") is None

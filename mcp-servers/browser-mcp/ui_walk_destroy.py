@@ -40,12 +40,28 @@ import ui_walk_logic as L  # noqa: E402
 from redact import redact_text  # noqa: E402
 
 MAX_REACH_PATHS = 20
-_REVOKE_RE = re.compile(r"\b(revoke|cancel|unshare|disconnect|unlink|leave|disable|deactivate)\b", re.I)
+_REVOKE_RE = re.compile(r"\b(revoke|cancel|unshare|disconnect|unlink|leave|disable|deactivate)\b", re.IGNORECASE)
 
+# The ownership container is the control's OWN row/card: the nearest of
+# tr/li/[role=row]/article/.card/[data-id] -- but only if it holds no other
+# control with the same label (otherwise it is a list wrapper, e.g. a .card
+# around every row, and one canary inside it would make every row "owned");
+# then fall back to the control's own parent element.
 _CONTAINER_JS = r"""
-(e) => { const c = e.closest('tr, li, [role=row], article, .card, [data-id]') || e.parentElement;
+(e) => { const label = (e.innerText || e.value || '').trim();
+  const sameLabel = c => [...c.querySelectorAll('button, a, [role=button], input[type=submit]')]
+      .filter(x => (x.innerText || x.value || '').trim() === label).length;
+  let c = e.closest('tr, li, [role=row], article, .card, [data-id]');
+  if (c && sameLabel(c) > 1) c = null;
+  if (!c) c = e.parentElement;
   return {text: c ? (c.innerText || '') : '', links: c ? [...c.querySelectorAll('a[href]')].map(a => a.href) : []}; }
 """
+
+
+def _mentions_id(url: str, ids: set[str]) -> bool:
+    """An id appears as an exact path segment / query value (never a substring:
+    id "1" must not match /items/10)."""
+    return any(L.url_has_segment(url, i) for i in ids)
 
 
 def _excerpt(text: str) -> str:
@@ -124,6 +140,12 @@ async def _one(walker, prec, tokens, frame, c, cont) -> None:
         log["skipped_reason"] = "ownership-unproven"
         return
     log["owned"] = True
+    log["ownership_basis"] = "created-id" if (req and any(
+        L.is_walker_owned(req, {i}, "", set()) for i in walker.created_ids)) else "canary-in-row"
+    if req is None:
+        # No request captured on the dry run: nothing to pin the real click to.
+        log["skipped_reason"] = "no-request-captured"
+        return
     ids_here = {i for i in walker.created_ids if req and L.is_walker_owned(req, {i}, "", set())}
     # 3. reach paths, proven BEFORE the delete.
     candidates = []
@@ -132,11 +154,11 @@ async def _one(walker, prec, tokens, frame, c, cont) -> None:
         if link not in candidates and walker.scope(link) and not L.is_mutating_get_url(link):
             candidates.append(link)
     before = len(walker.get_log)
-    for link in list(candidates):
+    for link in candidates[:]:
         await walker._open_page(link)
     for entry in walker.get_log[before:] + walker.get_log[:before]:
         u = entry["url"]
-        if u not in candidates and (any(f"/{i}" in u for i in ids_here) or any(t in u for t in tok_here)):
+        if u not in candidates and (_mentions_id(u, ids_here) or any(t in u for t in tok_here)):
             candidates.append(u)
     reach = []
     for u in candidates[:MAX_REACH_PATHS]:
@@ -155,11 +177,13 @@ async def _one(walker, prec, tokens, frame, c, cont) -> None:
         log["skipped_reason"] = "control-not-relocated"
         return
     sent_before = walker.sent
-    walker.submitting = True
+    # Only the exact request the dry run captured (and proved ownership with)
+    # may be sent -- a mis-located control firing a different delete is aborted.
+    walker.window = ("exact", req["method"], req["url"])
     try:
         await walker._click(live[0], live[1], L.control_signature(live[1], prec["template"]), {})
     finally:
-        walker.submitting = False
+        walker.window = None
     if walker.sent == sent_before:
         log["skipped_reason"] = "delete-not-sent"
         return

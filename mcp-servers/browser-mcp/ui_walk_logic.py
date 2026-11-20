@@ -127,8 +127,12 @@ def is_payment_host(host: str) -> bool:
     return any(h == s or h.endswith("." + s) for s in PAYMENT_HOST_SUFFIXES)
 
 
-def make_canary() -> str:
-    return "hm" + secrets.token_hex(4)
+def make_canary(length: int = 10) -> str:
+    """'hm' + random hex, `length` chars total (min 4) -- shorter tokens exist
+    so a maxlength-limited field still carries a token that is REGISTERED
+    exactly as typed (a truncated token could never be matched to a sink)."""
+    length = max(4, length)
+    return "hm" + secrets.token_hex((length - 1) // 2)[: length - 2]
 
 
 _TEXTLIKE = {"", "text", "textarea", "search", "contenteditable"}
@@ -239,3 +243,26 @@ def route_decision(method: str, url: str, resource_type: str, is_main_nav: bool,
     if send_allowed:
         return ("continue", None)
     return ("abort", "pass1-non-get")
+
+
+def url_has_segment(url: str, value: str) -> bool:
+    """value is an exact path segment or query value of url (so id "1" does
+    not match /items/10 or /items/1abc)."""
+    parts = urlsplit(url)
+    segs = [seg for seg in parts.path.split("/") if seg]
+    vals = [v for _, v in parse_qsl(parts.query, keep_blank_values=True)]
+    return value in segs or value in vals
+
+
+def form_unsafe_reason(submit_controls: list[dict], action: str) -> str | None:
+    """Why a form must NOT be really submitted in Pass 2 (None = safe): its
+    submit control is logout / account-delete / payment / destructive (those
+    are never submitted -- destructive ones only via the ownership-checked
+    destroy phase), or its action URL looks state-changing."""
+    for c in submit_controls or []:
+        cls = classify_control(c)
+        if cls in NEVER_CLICK or cls == "destructive":
+            return cls
+    if action and is_mutating_get_url(action):
+        return "mutating-action"
+    return None

@@ -190,6 +190,8 @@ def _make_handler(app: FixtureApp):
  <li><a href="/settings">Settings</a></li><li><a href="/checkout">Checkout</a></li>
  <li><a href="/activity">Activity</a></li><li><a href="/app">App</a></li>
  <li><a href="/cal?d=1">Calendar</a></li><li><a href="/tall">Tall</a></li>
+ <li><a href="/sso-protected">Reports</a></li><li><a href="/danger">Account options</a></li>
+ <li><a href="/profile2">Profile 2</a></li><li><a href="/cards">Cards</a></li>
  <li><a href="/logout">Sign out</a></li>
  <li><a href="{app.alt_base_url}/elsewhere">Partner site</a></li>
  <li><a href="/popup" target="_blank">Open popup</a></li>
@@ -315,6 +317,42 @@ document.getElementById('del-account').onclick=()=>{ if(confirm('Delete your acc
         def _get_tall(self, path, q):
             self._send(200, _render("Tall", '<div style="height:10000px;background:#eee">tall</div>'))
 
+        def _get_sso_protected(self, path, q):
+            # an in-scope page that bounces to a third-party SSO host
+            self._redirect(f"{app.alt_base_url}/login?next=/sso-protected")
+
+        def _get_danger(self, path, q):
+            body = """
+<form id="close" action="/api/account/close" method="post"><label>Why are you leaving? <textarea name="reason"></textarea></label>
+<button type="submit">Close account</button></form>
+<form id="order" action="/api/orders" method="post"><label>Order notes <input name="notes"></label>
+<button type="submit">Place order</button></form>"""
+            self._send(200, _render("Account options", body))
+
+        def _get_profile2(self, path, q):
+            body = """
+<form id="f1"><label>Nickname <input name="nickname"></label><button type="submit">Save nickname</button></form>
+<form id="f2"><label>Bio <input name="bio"></label><button type="submit">Save bio</button></form>"""
+            script = """
+document.getElementById('f1').onsubmit=(e)=>{e.preventDefault();
+  fetch('/api/items/1',{method:'DELETE'});
+  fetch('/api/p1',{method:'PUT',body:new URLSearchParams(new FormData(e.target))});};
+document.getElementById('f2').onsubmit=(e)=>{e.preventDefault();
+  fetch('/api/p2',{method:'PUT',body:new URLSearchParams(new FormData(e.target))});};"""
+            self._send(200, _render("Profile 2", body, script))
+
+        def _get_cards(self, path, q):
+            script = """
+fetch('/api/items').then(r=>r.json()).then(items=>{
+  const list=document.getElementById('list');
+  for(const it of items){ const row=document.createElement('div'); row.className='row';
+    const n=document.createElement('span'); n.textContent=it.name; row.appendChild(n);
+    const b=document.createElement('button'); b.textContent='Remove';
+    b.onclick=()=>fetch('/api/items/'+it.id,{method:'DELETE'}).then(()=>location.reload());
+    row.appendChild(b); list.appendChild(row); }
+});"""
+            self._send(200, _render("Cards", '<div class="card" id="list"></div>', script))
+
         def _get_elsewhere(self, path, q):
             self._send(200, _render("Partner", "<p>partner</p>"))
 
@@ -372,7 +410,8 @@ else { const n=JSON.parse(u).name; const p=document.createElement('p'); p.textCo
                 if not app.vulnerable:
                     app.valid_sids.clear()
                 return self._json(200, {"deleted": True})
-            if path in ("/api/profile", "/api/keys", "/api/purge", "/api/popup-post"):
+            if path in ("/api/profile", "/api/keys", "/api/purge", "/api/popup-post",
+                        "/api/account/close", "/api/orders", "/api/p1", "/api/p2"):
                 if path == "/api/purge":
                     for it in app.items.values():
                         it["deleted"] = True

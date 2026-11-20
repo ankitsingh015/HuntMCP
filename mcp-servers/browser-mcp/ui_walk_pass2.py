@@ -43,6 +43,16 @@ _SINK_JS = r"""
         raw: [...document.querySelectorAll('[onerror]')].map(e => e.getAttribute('onerror') || '')})
 """
 
+_FORM_JS = r"""
+(e) => { const f = e.form || e.closest('form'); if (!f) return null;
+  if (!f.dataset.hmForm) { window.__hmForm = (window.__hmForm || 0) + 1; f.dataset.hmForm = String(window.__hmForm); }
+  const subs = [...f.querySelectorAll('button, input[type=submit], input[type=image]')]
+    .filter(b => (b.getAttribute('type') || 'submit').toLowerCase() === 'submit' || b.tagName === 'BUTTON')
+    .map(b => ({tag: b.tagName.toLowerCase(), type: (b.getAttribute('type') || 'submit').toLowerCase(),
+                text: (b.innerText || b.value || '').trim().slice(0, 80), aria_label: b.getAttribute('aria-label') || ''}));
+  return {key: f.dataset.hmForm, action: f.action || '', controls: subs}; }
+"""
+
 _SUBMIT_JS = r"""
 (e) => { const f = e.form || e.closest('form'); if (!f) return false;
   if (f.requestSubmit) f.requestSubmit(); else f.submit(); return true; }
@@ -79,26 +89,68 @@ def _created_id(body: str | None) -> str | None:
 
 
 def _fillable(inp: dict) -> bool:
-    return L.canary_value("hm00000000", inp.get("type"), inp.get("maxlength")) != ""
+    return _token_for(inp, probe=True) is not None
+
+
+def _token_for(inp: dict, probe: bool = False) -> str | None:
+    """A fresh canary token sized for the field (None = field cannot carry a
+    registrable token). A maxlength shorter than the default token gets a
+    shorter token, never a truncated one that would not match the registry."""
+    maxlength = inp.get("maxlength")
+    length = 10 if not maxlength or maxlength >= 10 else maxlength
+    if length < 4:
+        return None
+    tok = "hm" + "0" * (length - 2) if probe else L.make_canary(length)
+    return tok if L.canary_value(tok, inp.get("type"), maxlength) != "" else None
 
 
 class CanaryWalker(ui_walk._Walker):
     def configure(self, grant=None) -> None:
         g = grant if grant is not None else ui_walk_grant.load_grant()
+        self.grant = g
         self.cap = g.real_submit_cap_per_walk if g else 0
         self.sent = 0
-        self.submitting = False
+        # What may be SENT right now: None (nothing), "submit" (a deliberate
+        # canary form submit: POST/PUT/PATCH only, never DELETE, never a
+        # state-changing-looking URL), or ("exact", METHOD, URL) (an
+        # ownership-proven delete: only the very request the dry run captured).
+        self.window = None
+        self.submit_tokens: list[str] = []
         self.budget_hit = False
         self.tokens: dict[str, dict] = {}
         self.created_ids: set[str] = set()
         self.dialog_msgs: list[str] = []
         self.inv["pass2_edges"] = []
         self.inv["destroy_log"] = []
+        self.inv["skipped_forms"] = []
         self.last_aborted: dict | None = None
 
     # -- policy -------------------------------------------------------------
+    @property
+    def submitting(self) -> bool:
+        return self.window is not None
+
+    @submitting.setter
+    def submitting(self, value: bool) -> None:
+        # Back-compat for callers that only toggle a plain submit window.
+        self.window = "submit" if value else None
+
+    def _window_allows(self, method: str, url: str) -> bool:
+        if not ui_walk_grant.grant_allows(self.grant, urlsplit(url).hostname or ""):
+            return False
+        if self.window == "submit":
+            return method != "DELETE" and not L.is_mutating_get_url(url)
+        if self.window == "teardown-control":
+            # Teardown only: the one human-confirmed logout / account-delete control.
+            return True
+        if isinstance(self.window, tuple) and self.window[0] == "exact":
+            return method == self.window[1] and ui_walk._defrag(url) == ui_walk._defrag(self.window[2])
+        return False
+
     def allow_send(self, method: str, url: str) -> bool:
-        if not self.submitting or self.sent >= self.cap or self.budget_hit:
+        if self.window is None or self.sent >= self.cap or self.budget_hit:
+            return False
+        if not self._window_allows(method, url):
             return False
         try:
             browser_confirm._enforce_budget("browser-mcp")
@@ -109,11 +161,14 @@ class CanaryWalker(ui_walk._Walker):
         return True
 
     def refine_block_reason(self, method, url, reason):
-        if reason == "pass1-non-get" and self.submitting:
+        if reason == "pass1-non-get" and self.window is not None:
             if self.budget_hit:
                 return "budget"
             if self.sent >= self.cap:
                 return "cap-reached"
+            if not ui_walk_grant.grant_allows(self.grant, urlsplit(url).hostname or ""):
+                return "host-not-granted"
+            return "outside-submit-window"
         return reason
 
     async def forward_sent(self, route, method, url, post) -> None:
@@ -127,6 +182,8 @@ class CanaryWalker(ui_walk._Walker):
             rec["created_id"] = _created_id(body)
             if rec["created_id"]:
                 self.created_ids.add(rec["created_id"])
+                for tok in self.submit_tokens:
+                    ui_walk_store.register_created_id(tok, rec["created_id"])
         except Exception as e:  # noqa: BLE001 -- recorded; the walk goes on
             rec["error"] = f"{type(e).__name__}: {e}"
             try:
@@ -142,6 +199,9 @@ class CanaryWalker(ui_walk._Walker):
             pass
 
     # -- helpers --------------------------------------------------------------
+    def _granted(self, url: str) -> bool:
+        return self.scope(url) and ui_walk_grant.grant_allows(self.grant, urlsplit(url).hostname or "")
+
     def _p2(self, url: str) -> dict:
         """A scratch page record whose edges go to inv['pass2_edges']."""
         return {"url": url, "api_edges": self.inv["pass2_edges"], "third_party_hosts": [],
@@ -151,7 +211,15 @@ class CanaryWalker(ui_walk._Walker):
         self.cur_page = self._p2(url)
         self.current_control = None
         await self._budget()
-        await self.page.goto(url, wait_until="domcontentloaded")
+        try:
+            await self.page.goto(url, wait_until="domcontentloaded")
+        except Exception:  # noqa: BLE001 -- blocked/unreachable: leave a blank page, nothing to act on
+            await self.page.goto("about:blank")
+            return
+        if not self.scope(self.page.url):
+            # followed redirect left scope: never act on that page
+            await self.page.goto("about:blank")
+            return
         await self._settle(self.page, first=True)
 
     async def _reveal(self, signature: str, tmpl: str) -> None:
@@ -163,9 +231,9 @@ class CanaryWalker(ui_walk._Walker):
 
     # -- phases ----------------------------------------------------------------
     async def after_map(self) -> None:
-        pages = [p for p in self.inv["pages"] if p.get("auth_state") != "logged-out"]
+        pages = [p for p in self.inv["pages"] if p.get("auth_state", "ok") == "ok"]
         for prec in pages:
-            if any(_fillable(i) and self.scope(i["frame_origin"] + "/") for i in prec["inputs"]):
+            if any(_fillable(i) and self._granted(i["frame_origin"] + "/") for i in prec["inputs"]):
                 await self._submit_page(prec)
             if self.budget_hit:
                 raise ui_walk._Stop("budget_exhausted", "budget exhausted during canary submits")
@@ -184,7 +252,7 @@ class CanaryWalker(ui_walk._Walker):
     async def _submit_page(self, prec: dict) -> None:
         groups: dict = {}
         for i in prec["inputs"]:
-            if _fillable(i) and self.scope(i["frame_origin"] + "/"):
+            if _fillable(i) and self._granted(i["frame_origin"] + "/"):
                 groups.setdefault(i.get("revealed_by"), []).append(i)
         for revealed_by in sorted(groups, key=lambda k: (k is not None, k or "")):
             wanted = {(i["frame_origin"], i["form_action"], i["name"], i["id"], i["type"]): i
@@ -199,18 +267,31 @@ class CanaryWalker(ui_walk._Walker):
                     inp = wanted.get(key)
                     if inp is None:
                         continue
-                    tok = L.make_canary()
+                    tok = _token_for(live)
+                    if tok is None:
+                        continue
+                    try:
+                        form = await frame.locator(f'[data-hm-idx="{live["idx"]}"]').first.evaluate(_FORM_JS)
+                    except Exception:  # noqa: BLE001
+                        form = None
+                    if form is not None:
+                        unsafe = L.form_unsafe_reason(form["controls"], form["action"])
+                        if unsafe:
+                            self.inv["skipped_forms"].append({"page": prec["url"], "action": form["action"],
+                                                              "reason": unsafe})
+                            continue
                     try:
                         await frame.locator(f'[data-hm-idx="{live["idx"]}"]').first.fill(
                             L.canary_value(tok, live["type"], live["maxlength"]), timeout=3000)
                     except Exception:  # noqa: BLE001 -- not fillable after all
                         continue
                     rec = {"token": tok, "page": prec["url"], "input": inp["name"] or inp["id"],
-                           "form_action": inp["form_action"], "walk_id": self.inv["walk_id"]}
+                           "form_action": inp["form_action"], "walk_id": self.inv["walk_id"],
+                           "form_key": form["key"] if form else None}
                     self.tokens[tok] = rec
                     self.inv["canaries"].append(rec)
                     ui_walk_store.register_canary(tok, rec)
-                    filled.append((frame, live, d))
+                    filled.append((frame, live, d, form["key"] if form else None))
             if not filled:
                 continue
             await self._submit(filled, prec)
@@ -218,13 +299,15 @@ class CanaryWalker(ui_walk._Walker):
     async def _submit(self, filled: list, prec: dict) -> None:
         page_url = ui_walk._defrag(self.page.url)
         done_forms: set = set()
-        self.submitting = True
         try:
-            for frame, live, d in filled:
-                form_key = (id(frame), live["form_action"])
+            for frame, live, d, fkey in filled:
+                form_key = (id(frame), fkey if fkey is not None else f"noform:{live['idx']}")
                 if form_key in done_forms:
                     continue
                 done_forms.add(form_key)
+                self.submit_tokens = [t for t, r in self.tokens.items()
+                                      if r["page"] == prec["url"] and r.get("form_key") == fkey]
+                self.window = "submit"
                 submitted = False
                 try:
                     submitted = await frame.locator(f'[data-hm-idx="{live["idx"]}"]').first.evaluate(_SUBMIT_JS)
@@ -236,8 +319,10 @@ class CanaryWalker(ui_walk._Walker):
                             await self._click(frame, c, L.control_signature(c, prec["template"]), {})
                             break
                 await self._settle(self.page)
+                self.window = None
         finally:
-            self.submitting = False
+            self.window = None
+            self.submit_tokens = []
         if ui_walk._defrag(self.page.url) != page_url:
             await self._budget()
             await self.page.goto(page_url, wait_until="domcontentloaded")

@@ -26,8 +26,16 @@ CANARY_REGISTRY = "canaries.json"
 _WALK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
+def _unscoped(name: str) -> str:
+    """Where engagement-scoped output goes when NO engagement is active: still
+    under the (gitignored) engagements root, never a bare path relative to the
+    process cwd (which is usually the repo root)."""
+    return os.path.join(engagement_paths.ENGAGEMENTS_ROOT, "_no-active-engagement", name)
+
+
 def walk_dir() -> str:
-    return engagement_paths.resolve_dir("ui-walk", override_env="HUNTMCP_UI_WALK_DIR")
+    return engagement_paths.resolve_dir("ui-walk", override_env="HUNTMCP_UI_WALK_DIR",
+                                        legacy_default=_unscoped("ui-walk"))
 
 
 def _atomic_write_json(path: str, data) -> None:
@@ -78,6 +86,33 @@ def load_canaries() -> dict[str, dict]:
         return {}
 
 
+CREATED_IDS = "created-ids.json"
+
+
+def _created_path() -> str:
+    return os.path.join(walk_dir(), CREATED_IDS)
+
+
+def load_created_ids() -> dict[str, str]:
+    """{created object id: canary token of the submit that created it}."""
+    try:
+        with open(_created_path()) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def register_created_id(token: str, created_id: str) -> None:
+    """Persist an id a walker create returned, so a later teardown can prove
+    ownership by id (the strong basis), not only by a canary in the row."""
+    path = _created_path()
+    with file_lock.locked(path):
+        reg = load_created_ids()
+        reg[str(created_id)] = token
+        _atomic_write_json(path, reg)
+
+
 def register_canary(token: str, record: dict) -> None:
     path = _registry_path()
     with file_lock.locked(path):
@@ -95,7 +130,7 @@ def emit_nodes(inv: dict, map_path: str | None = None) -> dict[str, int]:
     counts = {"page": 0, "input": 0, "action": 0}
     walk_id = inv.get("walk_id")
     for page in inv.get("pages") or []:
-        if page.get("auth_state") == "logged-out":
+        if page.get("auth_state", "ok") != "ok":
             continue
         tmpl = page.get("template") or endpoint_template(page["url"])
         pid = surface_map.add_node("page", page.get("title") or page["url"], f"page:{tmpl}",

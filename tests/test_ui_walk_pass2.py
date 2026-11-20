@@ -139,3 +139,46 @@ def test_pass2_escaped_render_not_executing(patched):
 def test_registry_written(tmp_path):
     ui_walk_store.register_canary("hmabcdef12", {"page": "/x"})
     assert "hmabcdef12" in ui_walk_store.load_canaries()
+
+
+@requires_browser
+def test_pass2_never_submits_account_close_or_order_forms(vuln):
+    app, _ = vuln
+    sent = set(app.non_get_requests())
+    assert ("POST", "/api/account/close") not in sent
+    assert ("POST", "/api/orders") not in sent
+
+
+@requires_browser
+def test_pass2_submits_every_form_with_same_action(vuln):
+    app, _ = vuln
+    sent = set(app.non_get_requests())
+    assert ("PUT", "/api/p1") in sent and ("PUT", "/api/p2") in sent
+
+
+@requires_browser
+def test_pass2_submit_window_never_sends_a_delete(vuln):
+    app, _ = vuln
+    assert ("DELETE", "/api/items/1") not in set(app.non_get_requests())
+
+
+@requires_browser
+def test_pass2_grant_hosts_enforced_on_every_send(tmp_path, monkeypatch):
+    monkeypatch.setattr(browser_confirm, "_enforce_budget", lambda *_a, **_k: {})
+    app = serve()
+    try:
+        inv = asyncio.run(ui_walk.walk(app.base_url + "/contact", "canary", cookie_header=app.login_cookie(),
+                                       scope_check=lambda u: urlsplit(u).hostname in ("127.0.0.1", "localhost"),
+                                       grant=Grant(True, ["127.0.0.1"], 200), same_origin_only=False,
+                                       max_pages=3, screenshot_dir=str(tmp_path)))
+    finally:
+        app.close()
+    assert inv["status"] == "complete", inv["error"]
+    assert ("POST", "/api/contact") not in app.non_get_requests()  # localhost iframe form: not granted
+
+
+def test_short_maxlength_field_gets_registered_short_token():
+    import ui_walk_pass2
+    tok = ui_walk_pass2._token_for({"type": "text", "maxlength": 6})
+    assert tok and len(tok) <= 6
+    assert ui_walk_pass2._token_for({"type": "text", "maxlength": 3}) is None

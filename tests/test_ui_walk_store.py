@@ -102,3 +102,25 @@ def test_inventory_file_is_valid_json_with_schema_version():
     path = S.save_inventory(_inv())
     with open(path) as fh:
         assert json.load(fh)["schema_version"] == 1
+
+
+def test_walk_dir_without_active_engagement_is_not_repo_relative(monkeypatch, tmp_path):
+    import engagement_paths
+    monkeypatch.delenv("HUNTMCP_UI_WALK_DIR", raising=False)
+    monkeypatch.setattr(engagement_paths, "ACTIVE_POINTER", str(tmp_path / "none"))
+    d = S.walk_dir()
+    assert os.path.isabs(d)
+    assert d.startswith(os.path.abspath(engagement_paths.ENGAGEMENTS_ROOT))
+
+
+def test_screenshot_dir_without_active_engagement_is_not_repo_relative(monkeypatch, tmp_path):
+    import browser_confirm
+    import engagement_paths
+    monkeypatch.setattr(engagement_paths, "ACTIVE_POINTER", str(tmp_path / "none"))
+    d = browser_confirm._screenshot_dir()
+    assert os.path.isabs(d) and d.startswith(os.path.abspath(engagement_paths.ENGAGEMENTS_ROOT))
+
+
+def test_register_canary_records_created_ids():
+    S.register_created_id("hm1234abcd", "42")
+    assert "42" in S.load_created_ids()

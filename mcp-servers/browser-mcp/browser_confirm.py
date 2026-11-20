@@ -750,7 +750,9 @@ SCREENSHOT_JPEG_QUALITY = 70
 def _screenshot_dir() -> str:
     import engagement_paths
 
-    return engagement_paths.resolve_dir("screenshots")
+    return engagement_paths.resolve_dir(
+        "screenshots",
+        legacy_default=os.path.join(engagement_paths.ENGAGEMENTS_ROOT, "_no-active-engagement", "screenshots"))
 
 
 async def _capture_jpeg(page, out_dir: str) -> dict:
