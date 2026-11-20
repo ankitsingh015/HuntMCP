@@ -77,7 +77,7 @@ DEV_INFRA_HOSTS = {
     "registry.npmjs.org", "nodejs.org",
     "golang.org", "proxy.golang.org", "go.dev",
     "deb.debian.org", "archive.ubuntu.com", "security.ubuntu.com",
-    "opencode.ai", "docs.anthropic.com", "modelcontextprotocol.io",
+    "docs.anthropic.com", "modelcontextprotocol.io",
     # Disposable/temp-mail API hosts -- supporting infrastructure for the
     # standard VDP practice of provisioning a throwaway inbox to complete an
     # app's own public signup (identical category to interactsh OOB: these are

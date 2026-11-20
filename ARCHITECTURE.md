@@ -2,7 +2,7 @@
 
 ## Philosophy
 
-HuntMCP is not a script that chains tools in a fixed order. It is a **multi-level AI agent orchestration system** running inside OpenCode that:
+HuntMCP is not a script that chains tools in a fixed order. It is a **multi-level AI agent orchestration system** running inside Claude Code that:
 
 1. Uses **Level 1 Orchestrator** (HuntBrain) to decide strategy
 2. Spawns **Level 2 Specialist Agents** (Recon, Scan, Exploit, Report + unlimited dynamic specialists)
@@ -13,12 +13,22 @@ HuntMCP is not a script that chains tools in a fixed order. It is a **multi-leve
 
 ## Current Implementation Status
 
+> **Note (2026-11-19, #160): OpenCode removed — Claude Code is the single source of truth.**
+> The dual OpenCode + Claude Code harness was consolidated to Claude Code only
+> (`.claude/agents`, `.mcp.json`, `.claude/settings.json`). Every OpenCode-only
+> capability was first ported into the Claude path (3+1 MCP servers wired, agents
+> reconciled, slash commands ported, `mcp_connectivity` moved to `claude mcp list`,
+> scope-gate already shared). The **Build Plan changelog further down is retained as
+> dated history** — its `✅ Done — … OpenCode …` entries describe the system as it was
+> at the time they were written; references there to `.opencode/`, `opencode.jsonc`, or
+> a second harness are historical, not current wiring.
+
 This doc describes the target design. As of 2026-08, actual build status (see the full
 phase-by-phase "Build Plan" further down for detail):
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| Phase 1 — Local system (agents, MCP servers, knowledge base) | ✅ Built | 6 agents (incl. chain-planner), 22 MCP servers, dual OpenCode + Claude Code harness, payloads/wordlists seeded, 202-test pytest suite in CI |
+| Phase 1 — Local system (agents, MCP servers, knowledge base) | ✅ Built | 6 agents (incl. chain-planner), 35 MCP servers, Claude Code harness (single source of truth; OpenCode removed 2026-11-19, #160), payloads/wordlists seeded, pytest suite in CI |
 | Phase 2 — Go backend (API, auth, pgvector) | ✅ Built | See `backend/` — Gin + PostgreSQL/pgvector, JWT auth, `/mcp` endpoint. Not yet wired to the local agent system — see "World-project integration map" |
 | Phase 2.5-2.7 — Methodology depth, harness/safety hardening, knowledge/model backlog | ✅ Built | Scope gate, reactive rate limiting, model gateway, lessons registry, CVE search index — see Build Plan below |
 | Phase 2.8 — claude-bug-bounty-derived backlog | ✅ All 4 High-priority items done and live-tested | scope hook, `oob-mcp`, `waf-bypass-mcp` done; `hackerone-mcp` was the last untested-against-a-live-account item — confirmed working 2026-08-25 against a real HackerOne account's credentials (`sync_program_scope("security")` against HackerOne's own public program correctly returned real structured scope: 20 in-scope domains split from 5 out-of-scope via the `eligible_for_submission` field, formatted as an `engagement.yaml`-ready snippet), so Basic Auth header construction, the `/hackers/programs/{handle}/structured_scopes` call, and the response-parsing/formatting logic are all confirmed correct end-to-end, not just written-and-hoped. Medium: secrets scanning, audit log, pytest suite (117 tests) all done; skills-as-Claude-Code-Skills restructuring ✅ done (47 skills, all 59 original phases plus 3 new ones — see its own note below). Lower priority (SAST/static-code-scanning tooling, web3/DeFi, an actual mobile-analysis MCP tool — not just the `mobile-app-security` methodology skill) still open — new domains, larger scope commitment |
@@ -116,7 +126,7 @@ Orchestrator (1 file)
   │     Recon, Scan, Exploit, Report
   │
   ├── 50+ dynamic agents (created as .md files)
-  │     Each = one file in .opencode/agents/
+  │     Each = one file in .claude/agents/
   │     Each = specific instructions + specific MCPs
   │     Each = spawned only when HuntBrain detects the need
   │     Examples:
@@ -178,13 +188,19 @@ Two independent axes, and both must stay swappable — neither the runtime nor t
 
 ### Harness (how agents actually run)
 
-| Harness | What it is | When to use it |
-|---------|-----------|-----------------|
-| **Claude Code native** (✅ built) | `.claude/agents/*.md` + `.claude/commands/audit.md` + `.mcp.json`, mirroring `.opencode/agents/` — the same dual-install pattern Claude-BugHunter uses across Claude Code/OpenCode/Codex CLI/Hermes | Interactive use, when the operator wants to watch/steer an engagement live, billed through the operator's own Claude Code / Claude API access. Model is always Claude here — picked per-agent via each file's `model:` field, not via the provider gateway below. |
-| **OpenCode** (✅ existing, now gateway-wired) | Current `.opencode/agents/` + `opencode.jsonc`. `scripts/select-model.sh` runs the provider gateway and patches `opencode.jsonc`'s `"model"` field before launch — this is the harness the multi-provider chain below actually controls today. | Any run where you want a non-Claude model, or automatic fallback across whichever key you have set |
-| **Direct multi-provider API runner** (planned) | Lightweight headless script for scheduled/CI/`watch` mode use with any model | Continuous monitoring, unattended runs, or when the operator wants a non-Claude model driving without OpenCode at all |
+HuntMCP runs inside **Claude Code** — the single source of truth (OpenCode
+removed 2026-11-19, #160). HuntBrain and every Level 2 specialist are native
+Claude Code subagents (`.claude/agents/*.md`) with locked-down `tools:`
+allowlists; MCP servers are registered in `.mcp.json` and enabled in the
+committed `.claude/settings.json`; slash commands live in `.claude/commands/`;
+the scope-gate runs as a `PreToolUse` hook. The model is Claude, picked
+per-agent via each file's `model:` field.
 
-All three harnesses read and write the **same** `knowledge/`, `mcp-servers/`, and `chat-logs/` — the harness is just the front door, never the source of truth.
+The harness is just the front door — `knowledge/`, `mcp-servers/`, and
+`chat-logs/` are the source of truth. (A direct multi-provider API runner for
+unattended/scheduled runs with a non-Claude model remains a possible future
+addition; the model gateway below already exists to serve the cross-model
+tooling and would serve such a runner.)
 
 ### Model provider (which LLM actually answers)
 
@@ -197,9 +213,9 @@ Ordered fallback chain, one env var per provider — first one with a key set wi
 5. `OPENROUTER_API_KEY` — catch-all gateway to 100+ more providers/models through one key
 6. `OLLAMA_HOST` — local, no key required; also the slot for a purpose-built open-weight security model (e.g. WhiteRabbitNeo) for agents that need to avoid hosted-model refusal friction on legitimate, already-scope-confirmed PoC generation
 
-**Built**: `mcp-servers/model_gateway.py` (`select_provider()`), tested against all six chain entries plus the explicit-override and per-role-override paths. `scripts/select-model.sh` wires it into OpenCode by patching `opencode.jsonc`'s `"model"` field in place (`--apply`, targeted regex replace — never a full JSON round-trip, so `//` comments survive). Run it before `opencode run`; a plain `python3 mcp-servers/model_gateway.py [role]` with no `--apply` is always a dry-run preview, never writes anything.
+**Built**: `mcp-servers/model_gateway.py` (`select_provider()`, `PROVIDER_CHAIN`), tested against all six chain entries plus the explicit-override and per-role-override paths. It now drives the **cross-model tooling** — `second-opinion-mcp`'s independent review and `research_manifest`'s provider selection — rather than patching a harness config. `python3 mcp-servers/model_gateway.py [role]` is a read-only preview of which provider/model would be used (it never writes anything).
 
-Per-agent overrides (`HUNTMCP_MODEL_EXPLOIT=whiterabbitneo`, etc.) work in `select_provider()` today, but OpenCode itself only has one *global* model — there's no per-agent model in `opencode.jsonc`. Per-role selection only becomes meaningful once the direct multi-provider API runner exists (each agent's own call would carry its own role). Recommended per-agent assignment once that lands: cheap/fast model for Recon-agent (high call volume, low reasoning need), strongest available model for Exploit-agent/chain-planner/Report-agent (low volume, high stakes).
+Claude Code subagents pin their own harness model per-agent in each `.claude/agents/*.md` file's `model:` frontmatter. The gateway's per-agent overrides (`HUNTMCP_MODEL_EXPLOIT=…`, etc.) apply to the cross-model tooling, and would carry each agent's own role once a direct multi-provider API runner exists. Recommended assignment there: cheap/fast model for Recon-agent (high call volume, low reasoning need), strongest available model for Exploit-agent/chain-planner/Report-agent (low volume, high stakes).
 
 **The authorization gate never lives in the model.** Regardless of which harness or provider answers a given call, the Scope & Authorization check (target confirmed in-scope, engagement details on file) happens in HuntMCP's own agent logic before any Tier-2 (execution-capable) action — matching the Tier 1/Tier 2 split from `pentest-ai-agents`. A model refusing or not refusing a request is never the control; the scope-guard is.
 
@@ -546,7 +562,7 @@ What HuntMCP borrows from each project researched, and current status:
   --bounty "$2500" \
   --author "jane_doe"
 
-# Or via OpenCode command
+# Or via the /ingest slash command in Claude Code
 /ingest https://medium.com/... --class IDOR --tech React
 ```
 
@@ -617,11 +633,11 @@ Step 4: Save findings → "This target also had SSTI"
 ```
 HuntMCP/
 ├── mcp-servers/           ← YES push to GitHub (your code)
-├── .opencode/             ← YES push (agent configs)
+├── .claude/               ← YES push (agents, commands, skills, rules, settings.json)
+├── .mcp.json              ← YES push (MCP server registration)
 ├── scripts/               ← YES push (ingestion scripts)
 ├── knowledge/             ← YES push (payloads, wordlists, skill)
 ├── backend/               ← YES push (Go API code)
-├── opencode.jsonc         ← YES push
 ├── AGENTS.md              ← YES push
 ├── README.md              ← YES push
 │
@@ -776,25 +792,26 @@ HuntMCP/
 │       ├── db.py                          SQLite schema + queries
 │       └── requirements.txt
 │
-├── .opencode/
+├── .claude/
 │   ├── agents/
 │   │   ├── huntbrain.md                   LEVEL 1: Orchestrator
 │   │   ├── recon-agent.md                 LEVEL 2: Recon specialist
 │   │   ├── scan-agent.md                  LEVEL 2: Scan specialist
 │   │   ├── exploit-agent.md               LEVEL 2: Exploit specialist
 │   │   ├── report-agent.md                LEVEL 2: Report specialist
-│   │   ├── graphql-agent.md               DYNAMIC: spawned on demand
-│   │   ├── jwt-agent.md                   DYNAMIC: spawned on demand
-│   │   ├── oauth-agent.md                 DYNAMIC: spawned on demand
-│   │   └── cloud-agent.md                 DYNAMIC: spawned on demand
+│   │   ├── chain-planner.md               Attack-chain planner
+│   │   └── <dynamic>-agent.md             DYNAMIC: spawned on demand (graphql/jwt/oauth/cloud/…)
 │   │
-│   └── commands/
-│       ├── audit.md                        /audit <target> [--deep]
-│       ├── ingest.md                       /ingest <url> [--class XSS] [--tech React]
-│       ├── watch.md                        /watch <target> [--interval 6h]
-│       ├── report.md                       /report <scan-id>
-│       ├── chain.md                        /chain <scan-id>
-│       └── learn.md                        /learn <query> (query writeup DB)
+│   ├── commands/
+│   │   ├── audit.md                        /audit <target> [--deep]
+│   │   ├── ingest.md                       /ingest <url> [--class XSS] [--tech React]
+│   │   ├── watch.md                        /watch <target> [--interval 6h]
+│   │   ├── chain.md                        /chain <scan-id>
+│   │   └── learn.md                        /learn <query> (query writeup DB)
+│   │
+│   ├── skills/                             52 technique skills (SKILL.md each)
+│   ├── rules/                              engineering rules (autonomous/security/testing/…)
+│   └── settings.json                       hook registration + MCP enable/disable
 │
 ├── scripts/
 │   ├── ingest-writeup.sh                   Manual writeup ingestion
@@ -823,8 +840,9 @@ HuntMCP/
 │   ├── hunt-*.log                          Per-hunt logs
 │   └── cron-ingestion.log                  Writeup ingestion logs
 │
-├── opencode.jsonc                          Complete MCP config + permissions
-├── AGENTS.md                               Project-level instructions
+├── .mcp.json                               MCP server registration (Claude Code)
+├── CLAUDE.md                               Project-level instructions (single source of truth)
+├── AGENTS.md                               Pointer to CLAUDE.md (cross-tool convention)
 └── README.md                               Full documentation
 ```
 
@@ -880,7 +898,7 @@ CREATE INDEX idx_writeups_embedding ON writeups
 
 ### Local MCP servers vs. Go backend — current gap
 
-**Not yet wired up:** the Python MCP servers (`mcp-servers/writeup-mcp`, `mcp-servers/memory-mcp`) currently talk only to local ChromaDB/SQLite — there is no `HUNTMCP_BACKEND_URL`-style dual mode calling the Go API yet. Until that's built, the Go backend and the local OpenCode agent system are two independent, unconnected implementations of the same knowledge layer. Wiring the local MCP servers to optionally call the Go `/api/v1/query` and `/api/v1/hunts` endpoints (falling back to local storage when `HUNTMCP_BACKEND_URL` is unset) is the concrete next step to make Phase 2 actually useful to the Phase 1 agents, rather than a parallel backend nobody calls.
+**Not yet wired up:** the Python MCP servers (`mcp-servers/writeup-mcp`, `mcp-servers/memory-mcp`) currently talk only to local ChromaDB/SQLite — there is no `HUNTMCP_BACKEND_URL`-style dual mode calling the Go API yet. Until that's built, the Go backend and the local Claude Code agent system are two independent, unconnected implementations of the same knowledge layer. Wiring the local MCP servers to optionally call the Go `/api/v1/query` and `/api/v1/hunts` endpoints (falling back to local storage when `HUNTMCP_BACKEND_URL` is unset) is the concrete next step to make Phase 2 actually useful to the Phase 1 agents, rather than a parallel backend nobody calls.
 
 ### When to route through the Go backend instead of local storage
 
@@ -1183,6 +1201,7 @@ agent graph isn't worth it at HuntMCP's current scale).
 | **Extension (2026-08-29) — true concurrent multi-target sessions** | ✅ Done — `scripts/new-target-session.sh`. The row above closes on-disk state mixing and one-CHAT-two-targets narration, but the active-target POINTER itself (`data/.active-engagement`) was still a single file shared by every session on the machine — two separate opencode/claude sessions genuinely hunting two different targets at the same time would each overwrite it, so session A's next tool call could silently start reading/writing session B's target's state even though the underlying `data/engagements/<slug>/` directories were never touched. `engagement_paths.py` already supported `HUNTMCP_ACTIVE_POINTER` as an env-var override (same pattern as every other `HUNTMCP_*_PATH` override) but nothing wired it into an actual workflow. This script, meant to be **sourced** in the user's own shell before launching opencode/claude (not called mid-session by an agent — an env var set inside one of the agent's own Bash tool calls would not persist to the next, per this row's own note above, and more fundamentally a child process cannot alter its already-running parent's environment anyway), exports a per-target `HUNTMCP_ACTIVE_POINTER` and calls `switch-engagement.sh set <target>` under it. Every subprocess that session's opencode/claude process spawns for its whole lifetime inherits that env var, giving the session a private "active target" no other concurrent session can see or overwrite, while both still read/write the exact same shared `data/engagements/<slug>/` directories underneath — no data duplication, purely a pointer-isolation fix. `.gitignore`'s `data/.active-engagement` entry widened to `data/.active-engagement*` to cover the per-session pointer files this produces. Verified live: two sequential `bash -c 'source ...; switch-engagement.sh current'` invocations for two different targets, each reporting only its own active slug, with the first target's pointer file confirmed untouched after the second ran | Direct answer to "can multiple targets really run at once" — the previous row's own "known remaining limitation" note (watch-mcp resolving against whichever target is active at cron-fire time) is the same root cause; this is the general-purpose fix, watch-mcp's cron-specific case still needs its own follow-up if it's ever pointed at a session using a non-default pointer |
 | **Extension (2026-08-29) — report-agent: one file per finding, not one combined file** | ✅ Done — `report-agent.md` (both harnesses) changed from writing every finding from a report run into a single `data/reports/<target-slug>/<date>.md` to writing `data/reports/<target-slug>/<date>/NN-<severity>-<short-slug>.md` (one file per finding, most-severe first) plus a `README.md` index (Title/Severity/Confidence/File table, confirmed chains listed separately since a chain spans multiple findings and doesn't belong under any single finding's number). Matches the file-per-finding shape already used by hand in real report output this session (`reports/wibmo-2026-08-26/`'s `01-p2-...`/`02-p3-...`/`03-p4-...` numbering) — codifies it into the agent's own instructions instead of leaving it to be reinvented each time | A single combined file meant a reviewer had to scroll through every finding to find the one they cared about, and editing one finding's writeup risked touching unrelated ones in the same file/diff |
 | Aggregated bounty-scope + disclosed-report lookup tools | ✅ Done — `mcp-servers/bounty_scope.py` (3 new `target-discovery-mcp` tools: `refresh_bounty_scope`/`lookup_bounty_scope`/`list_new_bounty_scope`) caches and flattens all 5 platforms' scope from `arkadiyt/bounty-targets-data` (github.com/arkadiyt/bounty-targets-data, 3.9k★, synced every 30 min) into one domain→program index with wildcard matching, credential-free — complements (does not replace) `hackerone-mcp`'s `sync_program_scope`, which needs live H1 API credentials and only covers H1; if that third-party repo ever goes dark, `hackerone-mcp`'s direct-API path still works for HackerOne specifically. `mcp-servers/disclosed_reports.py` (2 new `writeup-mcp` tools: `search_disclosed_reports`/`refresh_disclosed_reports`) caches and filters 11k+ real disclosed reports from bug-bounty-disclosures.vercel.app by vuln class/platform/keyword — this dataset's own "#api" section describes a REST API that does not actually exist (verified by curl: `/api/reports`, `/api/stats` all 404); the real mechanism is a static `data/catalog.js` file assigning a JSON array to `window.DISCLOSURE_REPORTS`, which is what's actually cached/parsed here. Systematizes the "cite real disclosed reports" pattern already used by hand in `auth-and-session`/`access-control-and-idor`/`injection-and-rce` — future skill citations can query this instead of one-off `WebSearch` calls. Both use only stdlib (`urllib`/`json`), no new dependencies. Unit tested with mocked network calls (`test_bounty_scope.py`, `test_disclosed_reports.py`) | User-supplied research links (bug-bounty-disclosures.vercel.app, arkadiyt/bounty-targets-data) |
+| Page-first UI-walk (`browser-mcp`, #164) | ✅ Done — `ui_walk.py` (driver), `ui_walk_logic.py` (pure decisions), `ui_walk_pass2.py` (canary submits + render-sink detection), `ui_walk_destroy.py` (create→destroy→verify on walker-owned objects), `ui_walk_teardown.py` (human-gated cleanup/logout/account-deletion tests), `ui_walk_store.py` (inventory + canary registry + `page`/`input`/`action` surface-map nodes counted by `coverage_manifest`), `mcp-servers/ui_walk_grant.py` (hook-protected, human-only Pass-2 grant). Tools `start_ui_walk`/`check_ui_walk`/`list_ui_walks`/`run_teardown`. Pass 1 aborts every non-GET, payment-provider request, out-of-scope navigation and mutating-looking GET at the network layer (context-level, so popups too), blocks service workers and WebSocket client frames, never clicks logout/account-delete/payment. Also: sessionStorage is now persisted in `session_file` (origin-guarded) — the cause of authenticated SPAs rendering their logged-out shell — and `screenshot()` saves a viewable JPEG by default. Black-box tested against `tests/fixtures/ui_walk_target/` (vulnerable + patched variants). Spec: `docs/superpowers/specs/2026-11-19-page-comprehension-ui-walk-design.md` | Live engagement finding (bentley-com): the agent reasoned link-to-link and never comprehended the rendered page (a lazy-loaded Marketo form was invisible to crawling) |
 | Real-browser JS/DOM execution confirmation (`browser-mcp`) | ✅ Done — `mcp-servers/browser-mcp/` (`browser_confirm.py` + `server.py`), 5 tools: `check_js_execution(url, marker)` (the core one — distinguishes a marker that fired a JS dialog/changed `document.title`, confirmed execution, from one merely present in raw HTML, reflection only), `render_dom()` (rendered vs. raw HTML diff), `extract_page_content(url)` (general-purpose rendered text + links for reading a page's actual content/listings — added 2026-08-28, see correction below), `fill_and_submit()` (stored-XSS via a real form submission), `screenshot()` (base64 PoC evidence). Closes a gap `exploit-agent.md`'s own Phase 1.5 rationalizations-to-reject table already named but had no tool behind: "the payload appears in the raw HTTP response... not XSS until it executes in an actual browser context" — now actually checkable instead of taken on faith. Idea taken (explicitly NOT the code) from `bugbase/pentest-copilot`'s (github.com/bugbasesecurity/pentest-copilot, 1.3k★, real open-source repo, confirmed via the GitHub API after initially — incorrectly — assuming the product was closed-source with nothing to study) `magnitude-browser.ts`, which wraps a natural-language-"goal"-driven browser agent with its own nested LLM loop; deliberately built as low-level deterministic primitives instead (navigate, check-marker, screenshot), consistent with every other MCP server in this repo, since the calling agent (exploit-agent, already an LLM) is the reasoning layer, not something that needs a second nested agent inside the tool. Uses Playwright, defaulting to an existing system Chrome/Chromium install if found (checked common paths) rather than forcing a `playwright install` browser download — verified working against `/usr/bin/google-chrome` in this environment. Wired into both `exploit-agent.md` files' rationalizations-to-reject step, `scope_gate_hook.py`'s `TIER2_MCP_SERVERS` (so the PreToolUse hook structurally enforces scope on it, not just documented convention), and registered in `opencode.jsonc`/`.mcp.json`. No formal pytest suite (Playwright isn't in CI's minimal `pytest`+`pyyaml` install, matching the existing precedent of not unit-testing `writeup-mcp`'s chromadb-dependent pieces either) — instead functionally verified against a local test HTTP server: a real firing `alert()` correctly returns `dialog_fired=True`, an escaped/non-executing reflection of the same marker correctly returns `dialog_fired=False` despite `raw_html_contains_marker=True` in both cases, form-fill-and-submit and screenshot both confirmed working end-to-end | `bugbase/pentest-copilot` (user-supplied link); this is the concrete, bounded piece of that survey worth building, flagged in an earlier pass and confirmed once the real repo (not just the marketing page) was actually checked |
 | **Correction (2026-08-28) — two bugs that made every `browser-mcp`/`playwright-mcp` tool call fail, undetected by the "functionally verified" claim above** | The above verification actually called `browser_confirm.py`'s functions directly in a standalone script, never through a real MCP tool call — which hid two real, live-blocking bugs. **(1)** `opencode.jsonc`'s MCP server entries used `"command": "<string>", "args": [...]`, which is not valid per OpenCode's actual schema (`McpLocalConfig` requires `"command"` as a single array combining binary + args, no `"args"` key at all, `additionalProperties: false`) — every one of the 23 registered MCP servers silently failed with `Ignoring MCP config entry without type` and was completely unreachable from any OpenCode agent, not just `browser-mcp`. Fixed by converting every entry to `"command": ["./.venv/bin/python", "mcp-servers/X/server.py"]`. **(2)** Once that was fixed, every `browser-mcp`/`playwright-mcp` tool call still failed with `It looks like you are using Playwright Sync API inside the asyncio loop` — FastMCP dispatches `@app.tool()` handlers on its own already-running asyncio event loop, and Playwright's sync API (`sync_playwright()`, used by all 5 `browser-mcp` functions and `playwright-mcp`'s `solve_js_challenge`) cannot start a second event loop inside it. Fixed by converting every function to Playwright's async API (`async_playwright()`, `async def`, `await` on every page/browser call) end to end, matching FastMCP's own async-native dispatch model. Both bugs were caught only by an actual live `opencode run` → `task` → subagent → real tool-call chain (`extract_page_content` against `https://example.com` returning genuine title/text/links; `solve_js_challenge` against the same host returning a genuine `challenge_type: None`), not by any prior unit test or the standalone-script "functional verification" above — neither exercises the real dispatch path a live agent actually uses. `tests/test_browser_mcp.py` (new, 6 cases) covers the one piece of new pure logic (`_normalize_links`'s href resolution/dedup/cap); the async conversion itself has no unit-test coverage for the same reason `check_js_execution` never did (no Playwright in CI's minimal install) — live-verified instead | This is the second time this session a "verified live" claim turned out not to have exercised the real path (see the OpenCode skill-discovery correction above) — the pattern worth internalizing: verifying a tool's *logic* by calling it directly is not the same as verifying it *works as an actual tool call* through the real dispatch mechanism the agent will use |
 | **Extension (2026-08-29) — `browser-mcp` session seeding: cookies, then Bearer/localStorage** | ✅ Done, in two passes from real engagement feedback (post-hoc review of a `19pine.ai` engagement, verified against code before acting — the review also claimed two gaps that turned out to already exist, see the `oob-mcp`/`case-mcp` corrections in the relevant rows below, corrected rather than rebuilt). Every `browser-mcp` tool could previously only ever drive a page as a logged-out visitor. **Pass 1**: `cookie_header` param (`"name=value; name2=value2"`, the same shape `playwright-mcp`'s `solve_js_challenge` already outputs a clearance cookie in) threaded through all 5 tools via a new shared `_new_page()` helper using an explicit `BrowserContext` (`context.add_cookies()` is context-level, not page-level). **Pass 2**, same day, closing what pass 1 didn't: a modern SPA storing its JWT in `localStorage` and sending it as `Authorization: Bearer` (the actual `19pine.ai` shape) has no cookie and no server-set header to seed — added `bearer_token` (`context.set_extra_http_headers()`) and `local_storage` (`context.add_init_script()`, runs before any page script so the SPA's own boot-time code reads the seeded values as if really logged in), independent and combinable with `cookie_header`. Unlocks two things at once: authenticated SPA/API flow testing, and a role-diff IDOR check (call `render_dom`/`extract_page_content` on the same url once per role's credentials, compare). Live-verified against local HTTP servers echoing back the `Cookie`/`Authorization` headers received and a page script reading back `localStorage` — all three arrived exactly as seeded. `tests/test_browser_launch.py` (new, 7 cases) covers `parse_cookie_header()`'s parsing logic; the Bearer/localStorage additions are single Playwright API calls with no branching logic, live-verified instead of unit-tested, same precedent as this module's other Playwright-dependent code | Direct, code-verified feedback from a real engagement this session; the two false-positive "gaps" in the same review (OOB multi-listener support, INCONCLUSIVE follow-up) were checked against the actual code and corrected back to the source rather than rebuilt — `oob-mcp`'s `generate_payload_url(label)` already supports N independently-correlatable labeled URLs, and `case-mcp`'s `suggest_next_action()` already prioritizes INCONCLUSIVE findings above fresh DISCOVERED ones |
@@ -1323,7 +1342,7 @@ pip install sqlmap
   --tech React \
   --bounty 500
 
-# Or from the OpenCode prompt
+# Or via the /ingest slash command in Claude Code
 /ingest https://medium.com/... --class XSS --tech React
 ```
 
@@ -1369,4 +1388,4 @@ SUPPORTED BY:
   └── Continuous learning (cron feeds keep knowledge fresh)
 ```
 
-**Built with OpenCode. Powered by MCP. Designed for the world's best bug hunters.**
+**Built on Claude Code. Powered by MCP. Designed for the world's best bug hunters.**

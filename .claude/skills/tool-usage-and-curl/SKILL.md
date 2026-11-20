@@ -15,7 +15,7 @@ in exploit-agent, a WAF-bypass variant, or any manual verification step.
 
 - **Target testing** (live requests against the target): the MCP tool
   servers (`subfinder-mcp`, `httpx-mcp`, `nuclei-mcp`, etc.), direct
-  HTTPS via curl, and Burp/Caido if configured (see `AGENTS.md`'s runtime
+  HTTPS via curl, and Burp/Caido if configured (see `CLAUDE.md`'s runtime
   dependencies). Only these touch the target.
 - **Research / learning** (never sent to the target): reading CVEs,
   writeups, skill files, WAF-bypass ideas, framework weaknesses. Research

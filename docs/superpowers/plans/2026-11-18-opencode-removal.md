@@ -1,0 +1,154 @@
+# OpenCode Stack Removal Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Remove the OpenCode stack and make Claude Code the single source of truth, porting every OpenCode-only capability into the Claude path first so nothing is silently dropped.
+
+**Architecture:** Wire the 3 OpenCode-only MCP servers into `.mcp.json` + `.claude/settings.local.json`; reconcile the 6 drifted agent copies into `.claude/agents`; port/drop the 4 OpenCode slash commands; confirm scope-gate parity; then delete `.opencode/` + `opencode.jsonc` and sweep every reference; rewrite the 5 tests that read `opencode.jsonc` to make `.mcp.json` (+ settings.local) the single registration source (which also closes #163's drift blind spot).
+
+**Tech Stack:** Python 3.12, FastMCP servers, pytest, Claude Code `.mcp.json`/`.claude/settings.local.json`, GitHub Actions CI, JSONC.
+
+**Spec:** [docs/superpowers/specs/2026-11-18-opencode-removal-design.md](../specs/2026-11-18-opencode-removal-design.md)
+
+## Global Constraints
+
+- **No silent capability drop:** every OpenCode-only capability must be proven reachable in the Claude path BEFORE any deletion; if one can't be preserved, STOP and ask the maintainer.
+- Branch: `fix/wiring-and-testing-159-164`. Commit per concern. No AI-attribution lines in commits/PRs. Do not push/PR without an explicit in-the-moment ask.
+- `.mcp.json` entry shape (copy verbatim from existing entries): `{"command": "${CLAUDE_PROJECT_DIR:-.}/scripts/venv-python.sh", "args": ["${CLAUDE_PROJECT_DIR:-.}/mcp-servers/<name>/server.py"]}`.
+- Editing `.claude/settings.json`, `.claude/settings.local.json` and hook files triggers `confirm-hook-edit.sh` — expected, not an error.
+- **Enablement home (decided 2026-11-18):** the committed, shared `.claude/settings.json` holds `enabledMcpjsonServers`/`disabledMcpjsonServers` — NOT the gitignored, per-user `.claude/settings.local.json`. `settings.local.json` is gitignored, so enablement there never ships; the committed `settings.json` is the single source of truth that ships + works in CI. `settings.local.json` remains a valid optional per-user override.
+- MCP servers load only at Claude Code startup; in-session verification of the 3 new servers requires a maintainer-triggered restart (Task 1 ends in that checkpoint).
+- Protected security-detection benchmarks and their ground truth must not be weakened (`.claude/rules/benchmarks.md`). This plan touches only registration/wiring tests, not detection benchmarks.
+- 6 MCP servers are intentionally disabled in `.claude/settings.json` (`second-opinion-mcp`, `azure-postexploit-mcp`, `aws-postexploit-mcp`, `gcp-postexploit-mcp`, `local-privesc-mcp`, `ad-recon-mcp`) — a documented disabled-exception set, present in `.mcp.json` but not enabled.
+
+## Review Focus
+
+- **A `mcp-servers/<name>` dir added later but never put in `.mcp.json`** (the exact #161/#163 bug): drift test Task 2 must FAIL for this, not pass.
+- **An agent frontmatter `tools:` referencing a server disabled in settings.local**: tool-scoping test Task 3 must flag it (tool-blind at runtime).
+- **A dynamic specialist agent `.md` with an empty/missing `tools:` allowlist**: Task 3 must fail (born tool-blind).
+- **A High/Critical detecting server dropped from its owning agent during the fold**: Task 3's coverage-mapping test must catch it.
+- **The scope-gate hook no longer protecting a security-critical Claude-path file after `.opencode` deletion**: Task 8 must re-point protections to `.mcp.json`/`.claude/settings.json`/`scope_gate_hook.py`, with Task 8's test asserting it.
+
+---
+
+### Task 1: Wire the 3 OpenCode-only MCP servers into the Claude path (closes #161)
+
+**Files:**
+- Modify: `.mcp.json` (add `surface-map-mcp`, `discspec-mcp`, `ws-rpc-mcp`)
+- Modify: `.claude/settings.json` (committed; add `enabledMcpjsonServers`/`disabledMcpjsonServers` with the 3 enabled) — replaces the gitignored `settings.local.json` as the enablement home.
+
+**Interfaces:**
+- Produces: 3 servers registered + enabled in the committed Claude path; relied on by Task 2's drift test and the whole deletion.
+
+- [x] **Step 1:** Add the 3 entries to `.mcp.json` `mcpServers` using the exact entry shape above. DONE (commit 9852fa68).
+- [x] **Step 2:** Add the full `enabledMcpjsonServers` (28, incl. the 3) + `disabledMcpjsonServers` (6) lists to the committed `.claude/settings.json`. DONE (commit 9852fa68; enablement-home decision recorded in 1d6b6bd0).
+- [x] **Step 3 (out-of-session smoke):** DONE — MCP stdio initialize+tools/list: surface-map-mcp→6 tools, discspec-mcp→2, ws-rpc-mcp→2. All boot clean.
+- [x] **Step 4: Commit** DONE (`.mcp.json` + `.claude/settings.json`, commit 9852fa68).
+- [x] **Step 5: RESTART CHECKPOINT** DONE — after restart all 3 loaded + called in-session: surface-map `next_untested`→"No untested nodes"; ws-rpc `enumerate_ddp_methods`→parsed fixture; discspec `discover_from_openapi`→correctly blocked by live scope gate (proves tool + hook wiring). #161 closed. — pause and ask the maintainer to restart the session. On restart, call a real tool on each and capture the response:
+  - `mcp__surface-map-mcp__next_untested` (local sqlite; safe — returns nodes or empty).
+  - `mcp__ws-rpc-mcp__enumerate_ddp_methods` on a tiny local JS fixture (safe — no network).
+  - `mcp__discspec-mcp__discover_from_openapi` with a dummy/out-of-scope URL (safe — a graceful scope/validation error response still proves the tool is loaded and callable).
+  Expected: each returns a real MCP response (success or graceful error), proving in-session loading. This is the #161 close.
+
+### Task 2: Rewrite the drift test — `.mcp.json` is the single registration source (closes #163 blind spot)
+
+**Files:**
+- Modify: `tests/test_agent_mcp_registry_drift.py`
+
+**Interfaces:**
+- Consumes: Task 1's wiring (the 3 servers now in `.mcp.json`).
+- Produces: the drift contract every later task relies on.
+
+- [ ] **Step 1: Write the failing/updated tests.** Replace `_registered_server_names()` so "registered" = a key in `.mcp.json` `mcpServers` (drop the `opencode.jsonc` read). Keep `_claude_agent_mcp_refs`. Delete `_opencode_agent_mcp_refs` and `test_opencode_agent_mcp_refs_all_registered_or_known_exception` (no `.opencode/agents` post-removal). Add:
+  - `test_every_mcp_servers_dir_is_registered_in_mcp_json()` — every `mcp-servers/<name>-mcp` directory is a key in `.mcp.json` (this is the bug that let surface-map stay orphaned). Allow `_KNOWN_UNTRACKED_PERSONAL_SERVERS` (obscura-mcp, burp).
+  - `test_every_registered_server_is_enabled_or_documented_disabled()` — every `.mcp.json` server is in `enabledMcpjsonServers` of the committed `.claude/settings.json`, except the documented `_KNOWN_DISABLED` set (the 6 above), asserting that set is not stale (none of the 6 are also enabled). Reads `.claude/settings.json` (committed), never the gitignored `settings.local.json`.
+  - Keep `test_claude_agent_mcp_refs_all_registered_or_known_exception()`, now resolving against the `.mcp.json`-based registry.
+- [x] **Step 2: Run** `pytest tests/test_agent_mcp_registry_drift.py -v`. DONE — RED first (caught `schemathesis-mcp` as a real orphan, proving the #163 fix has teeth), then GREEN after wiring schemathesis (maintainer-approved 4th server; its `server.py` was missing an `app.run()` entry point — fixed). 141 in-scope tests pass.
+- [x] **Step 3: Commit** DONE (schemathesis wiring + run-block fix, then drift test rewrite).
+
+### Task 3: Rewrite the tool-scoping test against the Claude path
+
+**Files:**
+- Modify: `tests/test_agent_tool_scoping.py`
+
+- [ ] **Step 1: Rewrite.** `AGENTS_DIR` → `.claude/agents`. Replace `_load_opencode_config()` with a reader of the committed `.claude/settings.json` `enabledMcpjsonServers` for the enabled set. Replace `_reenabled_servers(fm)` with a parser of the comma-separated `tools:` string that extracts `mcp__<name>` tokens (reuse the drift test's `_claude_agent_mcp_refs` logic). Then:
+  - DROP `test_global_disable_covers_every_enabled_mcp_server` and `test_global_tools_map_only_disables_never_enables` (no central "global tools map" exists in Claude Code).
+  - KEEP, retargeted to `.claude/agents` + settings.local enabled set: `test_every_agent_declares_a_nonempty_scoped_allowlist`, `test_agent_allowlists_reference_only_real_enabled_servers`, `test_no_agent_reenables_all_servers`, `test_orchestrator_is_tightly_scoped` (huntbrain's 7-server set), `test_no_orphan_mcp_server` (every ENABLED server reachable by ≥1 agent), `test_high_critical_detection_tools_available_to_owning_agent` (the `HIGH_CRIT_COVERAGE` map unchanged).
+- [x] **Step 2: Run** `pytest tests/test_agent_tool_scoping.py -v`. DONE — RED first (`test_no_orphan_enabled_server` flagged discspec-mcp + schemathesis-mcp as enabled-but-no-agent-references them), then GREEN after wiring discspec→recon-agent, schemathesis→scan-agent frontmatter allowlists. Two opencode-global-map tests dropped (no such construct in Claude Code).
+- [x] **Step 3: Commit** DONE (agent allowlist wiring, then scoping-test rewrite).
+- NOTE (Task 5 follow-up): discspec/schemathesis now have frontmatter ACCESS; add agent-BODY usage instructions (when recon calls discspec on a discovered spec; when scan runs schemathesis on an API) during the agent reconciliation so they genuinely fire, not just allowlisted.
+
+### Task 4: Rewrite surface-map test + fix sandbox_runner test's opencode reference
+
+**Files:**
+- Modify: `tests/test_surface_map_mcp.py`, `tests/test_sandbox_runner.py`
+
+- [x] **Step 1:** DONE — surface-map test now asserts registration in `.mcp.json` + enabled in `.claude/settings.json`; sandbox_runner docstring updated to reference `.mcp.json` launch configs. No opencode reads remain in either.
+- [x] **Step 2: Run** DONE — 49 passed.
+- [x] **Step 3: Commit** DONE.
+
+### Task 5: Reconcile the 6 drifted agents — fold `.opencode`-only logic into `.claude`
+
+**Files:**
+- Modify: `.claude/agents/{huntbrain,recon-agent,scan-agent,exploit-agent,report-agent,chain-planner}.md`
+
+- [ ] **Step 1:** For each agent, `diff .claude/agents/<a>.md .opencode/agents/<a>.md`. Identify content present ONLY in the `.opencode` copy that is genuine capability/instruction (not OpenCode-runtime syntax, not stylistic). Fold that into the `.claude` copy. The `.claude` copy stays authoritative for format and for Claude-Code-specific mechanics.
+- [ ] **Step 2:** Re-run `pytest tests/test_agent_tool_scoping.py tests/test_agent_mcp_registry_drift.py -v` after edits (frontmatter `tools:` must still satisfy scoping + drift). Expected: PASS.
+- [x] **Step 3:** Per-agent fold record (for PR parity table):
+  - **scan-agent** — folded the batch-nuclei section (`scan_batch_target`/`scan_batch_with_templates`/`check_batch`), absent from `.claude`; added a schemathesis API-schema-fuzzing phase (Task 3 follow-up).
+  - **report-agent** — folded the disclosed-report precedent step (`writeup-mcp search_disclosed_reports`); the self-duplicate step (`hackerone-mcp check_my_duplicates`, a live call) was relocated to huntbrain, since report-agent is Tier-1 file-only (NOT a drop — capability preserved, better scoped).
+  - **huntbrain** — added the HackerOne self-duplicate pre-check in Phase 5 (it owns `hackerone-mcp`).
+  - **recon-agent** — added discspec `discover_from_openapi`/`discover_from_graphql` usage in endpoint discovery (Task 3 follow-up).
+  - **exploit-agent** — restored `writeup-mcp` tool + the `query_rag(...)` precedent step before validation (dropped in `.claude`, present in `.opencode`).
+  - **chain-planner** — no fold: all tool tokens already present in `.claude`, the extra `.opencode` lines were prose/casing only.
+  - Only remaining cross-stack tool delta: report-agent's `hackerone-mcp` (intentional, relocated to huntbrain).
+- [x] **Step 4: Commit** DONE.
+
+### Task 6: Port or consciously drop the 4 slash commands + confirm scope-gate parity
+
+**Files:**
+- Create (per port decision): `.claude/commands/{chain,ingest,learn,watch}.md`
+- Reference: `.opencode/commands/*.md`, `.opencode/plugin/scope-gate.ts`, `scripts/hooks/scope_gate_hook.py`
+
+- [x] **Step 1 (commands):** DONE — all 4 ported to `.claude/commands/` (none dropped; each backs a live `.claude` MCP server: chainer-mcp, writeup-mcp×2, watch-mcp). Cleaned OpenCode-isms: chain's `@chain-planner` spawn → "invoke the chain-planner agent"; watch's stale `/openwatch` examples → `/watch`. They register as Claude Code slash commands.
+- [x] **Step 2 (scope-gate parity):** DONE — parity holds trivially. `scope-gate.ts` is NOT a separate implementation: it's a thin OpenCode adapter that shells out to `scripts/hooks/scope_gate_hook.py` (its own header calls that the single source of truth). All `_is_rm_command`/scope/secret/RCE logic already lives in the Python hook, which Claude Code calls directly via `.claude/settings.json`. Deleting the `.ts` loses only OpenCode's bridge — nothing to port.
+- [x] **Step 3:** commands are markdown; no shell/python touched.
+- [x] **Step 4: Commit** DONE.
+
+### Task 7: Delete `.opencode/` + `opencode.jsonc` and sweep every reference
+
+**Files:**
+- Delete: `.opencode/` (entire tree), `opencode.jsonc`
+- Modify: the 67 files referencing `opencode` outside `.opencode/` — docs (`README.md`, `ARCHITECTURE.md`, `CLAUDE.md`, `AGENTS.md`→fold uniques into `CLAUDE.md` then remove, `PHASE1*.md`, `IMPLEMENTATION-TASK-TRACKER.md`, `docs/**`, `knowledge/master-pentest-prompt.md`), code (`mcp-servers/*.py`, `mcp-servers/{httpx,target-discovery,surface-map,playwright}-mcp/server.py`, `scripts/*.sh`), CI (`.github/workflows/ci.yml`), ignore (`.gitignore`, `.dockerignore`), and `internal-research/**` per the spec (superseded-note for pure history, content edit elsewhere).
+
+- [ ] **Step 1:** Delete the two targets.
+- [ ] **Step 2:** `grep -rniE 'opencode' . | grep -v node_modules` and update every live reference so the repo describes one stack. Fold AGENTS.md uniques into CLAUDE.md. Remove the OpenCode `validate-config` CI job; **re-point `ci.yml`'s enablement assertion (currently `assert data['mcp'][name].get('enabled')` reading `opencode.jsonc`, ~L333) to read `.claude/settings.json` `enabledMcpjsonServers` + `.mcp.json`**; ensure the drift/scoping tests run in CI.
+- [ ] **Step 3: Verify no dangling refs:** `grep -rniE 'opencode\.jsonc|\.opencode/' . | grep -v node_modules | grep -v docs/superpowers/specs/2026-11-18 | grep -v internal-research/.*history` returns only intentional historical/superseded notes. Expected: no live wiring reference remains.
+- [ ] **Step 4:** `bash -n scripts/*.sh`; `ruff check mcp-servers/ --ignore E402,F811 --target-version py312`; `python -m py_compile` touched servers. Expected: clean.
+- [ ] **Step 5: Commit:** "refactor!: remove OpenCode stack; Claude Code is the single source of truth (#160)".
+
+### Task 8: Re-point the scope-gate tamper protection + fix its test
+
+**Files:**
+- Modify: `scripts/hooks/scope_gate_hook.py` (or `confirm-hook-edit.sh` — whichever holds the protected-path list), `tests/test_hook_tamper_resistance.py`
+
+**Interfaces:**
+- Consumes: Task 7's deletion (the old protected paths `.opencode/plugin/scope-gate.ts` and `opencode.jsonc` no longer exist).
+
+- [ ] **Step 1:** Find where the hook enumerates protected paths (currently includes `.opencode/plugin/scope-gate.ts`, `opencode.jsonc`). Replace those with the Claude-path security-critical files: `scripts/hooks/scope_gate_hook.py` itself, `.claude/settings.json`, and `.mcp.json`. Rewrite `test_main_blocks_edit_of_opencode_dispatch_plugin`/`test_main_blocks_edit_of_opencode_jsonc` to assert edits to the new protected paths are blocked; update the line-697 curl-write case.
+- [ ] **Step 2: Run** `pytest tests/test_hook_tamper_resistance.py -v`. Expected: PASS.
+- [ ] **Step 3: Commit:** "fix: scope-gate hook protects Claude-path config after OpenCode removal (#160)".
+
+### Task 9: Full #160 verification + parity table
+
+- [ ] **Step 1:** Run the focused suite: `pytest tests/test_agent_mcp_registry_drift.py tests/test_agent_tool_scoping.py tests/test_surface_map_mcp.py tests/test_sandbox_runner.py tests/test_hook_tamper_resistance.py -v`. Expected: all PASS.
+- [ ] **Step 2:** Run the broader suite `pytest tests/ -q` (or the repo's CI-equivalent subset). Record failures + causes.
+- [ ] **Step 3:** `review and audit` (both /code-review + /security-review) on the #160 diff. Fix findings.
+- [ ] **Step 4:** Assemble the capability-parity table (each OpenCode-only capability → where it now lives in the Claude path → how proven reachable) for the final PR. #161 marked closed (surface-map proven in-session at Task 1 restart).
+
+## Self-Review notes
+
+- **Spec coverage:** servers (Task 1), agents (Task 5), commands+scope-gate (Task 6), deletion+sweep (Task 7), 5 test rewrites (Tasks 2,3,4,8), verification/parity (Tasks 1,9). All spec sections mapped.
+- **#163 blind-spot** is Task 2's new `test_every_mcp_servers_dir_is_registered_in_mcp_json` — the one assertion that would have caught surface-map's orphaning.
+- **Ordering:** all ports/folds/test-rewrites precede deletion (Task 7); you cannot fold from deleted files, and tests must be deletion-safe first. Task 8 follows deletion because it re-points away from now-deleted paths.
+- **Not weakening tests:** the dropped tests (opencode-agent drift, global-tools-map) assert OpenCode-only constructs that cease to exist; they are replaced by stronger Claude-path contracts, not removed to pass.

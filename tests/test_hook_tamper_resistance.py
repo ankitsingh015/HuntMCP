@@ -84,17 +84,21 @@ def test_main_blocks_write_of_settings_local_json(monkeypatch):
     assert _run_main(monkeypatch, payload) == 2
 
 
-def test_main_blocks_edit_of_opencode_dispatch_plugin(monkeypatch):
+def test_main_blocks_edit_of_claude_settings_json(monkeypatch):
+    # .claude/settings.json registers the PreToolUse hook -- editing it could
+    # drop the scope gate, so it's a protected boundary path.
     payload = {"tool_name": "Edit", "tool_input": {
-        "file_path": ".opencode/plugin/scope-gate.ts",
+        "file_path": ".claude/settings.json",
         "old_string": "x", "new_string": "y",
     }}
     assert _run_main(monkeypatch, payload) == 2
 
 
-def test_main_blocks_edit_of_opencode_jsonc(monkeypatch):
+def test_main_blocks_edit_of_mcp_json(monkeypatch):
+    # .mcp.json decides which MCP servers load -- a tamper vector now in the
+    # protected boundary (replacing the removed opencode.jsonc entry).
     payload = {"tool_name": "Edit", "tool_input": {
-        "file_path": "opencode.jsonc",
+        "file_path": ".mcp.json",
         "old_string": "x", "new_string": "y",
     }}
     assert _run_main(monkeypatch, payload) == 2
@@ -694,11 +698,11 @@ def test_main_blocks_curl_remote_name_deriving_a_protected_filename(monkeypatch)
     filename from the URL's own last path segment, saved in the
     process's cwd (assumed repo-root, same honest limit
     _resolve_maybe_relative already documents for every relative
-    Bash-write target). opencode.jsonc is the one protected path that's
-    a bare repo-root filename, so it's the meaningful positive case for
-    this specific derivation mechanism."""
+    Bash-write target). .mcp.json is a protected path that's a bare
+    repo-root filename, so it's the meaningful positive case for this
+    specific derivation mechanism."""
     payload = {"tool_name": "Bash", "tool_input": {
-        "command": "curl -O https://example.com/opencode.jsonc",
+        "command": "curl -O https://example.com/.mcp.json",
     }}
     assert _run_main(monkeypatch, payload) == 2
 
@@ -805,3 +809,88 @@ def test_main_allows_7z_extraction_into_an_unrelated_directory(monkeypatch):
         "command": "7z x /tmp/x.7z -o/tmp/scratch/",
     }}
     assert _run_main(monkeypatch, payload) == 0
+
+
+# ---- #164: the Pass-2 UI-walk grant file is human-only ---------------------
+def _active_grant_path(monkeypatch, tmp_path):
+    pointer = tmp_path / ".active-for-grant"
+    pointer.write_text("grant-target")
+    monkeypatch.setattr(engagement_paths, "ACTIVE_POINTER", str(pointer))
+    monkeypatch.setattr(engagement_paths, "ENGAGEMENTS_ROOT", str(tmp_path / "engagements"))
+    return str(tmp_path / "engagements" / "grant-target" / "ui-walk-authorized.yaml")
+
+
+def test_main_blocks_agent_write_of_ui_walk_grant_file(monkeypatch, tmp_path):
+    path = _active_grant_path(monkeypatch, tmp_path)
+    payload = {"tool_name": "Write", "tool_input": {"file_path": path, "content": "canary_submit: true\n"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_bash_write_of_ui_walk_grant_file(monkeypatch, tmp_path):
+    path = _active_grant_path(monkeypatch, tmp_path)
+    payload = {"tool_name": "Bash", "tool_input": {"command": f"printf 'canary_submit: true\\n' > {path}"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_edit_of_ui_walk_grant_module(monkeypatch):
+    payload = {"tool_name": "Edit", "tool_input": {
+        "file_path": os.path.join(REPO_ROOT, "mcp-servers", "ui_walk_grant.py"),
+        "old_string": "a", "new_string": "b"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_no_active_engagement_still_works(monkeypatch, tmp_path):
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(tmp_path / "unrelated.txt"), "content": "x"}}
+    assert _run_main(monkeypatch, payload) == 0
+
+
+def test_main_blocks_write_of_grant_file_for_a_non_active_engagement(monkeypatch, tmp_path):
+    _active_grant_path(monkeypatch, tmp_path)  # "grant-target" is active
+    other = str(tmp_path / "engagements" / "some-other-target" / "ui-walk-authorized.yaml")
+    payload = {"tool_name": "Write", "tool_input": {"file_path": other, "content": "canary_submit: true\n"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_grant_write_with_no_active_engagement(monkeypatch, tmp_path):
+    monkeypatch.setattr(engagement_paths, "ENGAGEMENTS_ROOT", str(tmp_path / "engagements"))
+    path = str(tmp_path / "engagements" / "future-target" / "ui-walk-authorized.yaml")
+    payload = {"tool_name": "Write", "tool_input": {"file_path": path, "content": "canary_submit: true\n"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_bash_copy_of_grant_into_an_engagement_dir(monkeypatch, tmp_path):
+    _active_grant_path(monkeypatch, tmp_path)
+    dest = str(tmp_path / "engagements" / "other-target") + "/"
+    payload = {"tool_name": "Bash", "tool_input": {"command": f"cp /tmp/ui-walk-authorized.yaml {dest}"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+# ---- narrower rule: reading / merely mentioning the grant file is fine ------
+# The first version blocked ANY Bash command whose text named the grant file,
+# which also blocked `cat`-ing it and writing notes that mention it. Writes into
+# it (redirect/tee/sed -i/dd/cp/mv/install/rsync/ln/tar/unzip/git) and any
+# interpreter command naming it (python -c open(...,'w') etc.) stay blocked.
+def test_main_allows_reading_the_grant_file(monkeypatch, tmp_path):
+    path = _active_grant_path(monkeypatch, tmp_path)
+    for cmd in (f"cat {path}", f"grep canary_submit {path}", f"head -5 {path}", f"ls -la {path}"):
+        assert _run_main(monkeypatch, {"tool_name": "Bash", "tool_input": {"command": cmd}}) == 0, cmd
+
+
+def test_main_allows_notes_that_merely_mention_the_grant_file(monkeypatch, tmp_path):
+    _active_grant_path(monkeypatch, tmp_path)
+    notes = tmp_path / "notes.md"
+    cmd = f"echo 'the human writes ui-walk-authorized.yaml by hand' >> {notes}"
+    assert _run_main(monkeypatch, {"tool_name": "Bash", "tool_input": {"command": cmd}}) == 0
+
+
+@pytest.mark.parametrize("make_cmd", [
+    lambda p: f"tee {p} < /tmp/x",
+    lambda p: f"sed -i 's/false/true/' {p}",
+    lambda p: f"mv /tmp/x {p}",
+    lambda p: f"dd if=/tmp/x of={p}",
+    lambda p: f"python3 -c \"open('{p}','w').write('canary_submit: true')\"",
+    lambda p: f"bash -c 'printf x > {p}'",
+])
+def test_main_still_blocks_writes_into_the_grant_file(monkeypatch, tmp_path, make_cmd):
+    path = _active_grant_path(monkeypatch, tmp_path)
+    assert _run_main(monkeypatch, {"tool_name": "Bash", "tool_input": {"command": make_cmd(path)}}) == 2

@@ -58,6 +58,8 @@ from budget_guard import BudgetExceeded  # noqa: E402
 from budget_guard import enforce as _enforce_budget  # noqa: E402
 import hook_confirm  # noqa: E402
 import rce_confirm  # noqa: E402
+import engagement_paths  # noqa: E402
+import ui_walk_grant  # noqa: E402
 from scope_guard import NoEngagementFile, is_in_scope, load_engagement  # noqa: E402
 from scope_guard import is_safe_test_host as _is_safe_test_host  # noqa: E402
 
@@ -495,8 +497,8 @@ def _reads_env_file(command: str) -> bool:
 # See mcp-servers/rce_confirm.py's own module docstring for why the "ask"
 # side of this has to be a separate, human-run interactive script rather
 # than a declarative bash permission (same reason as the rm-block's own
-# comment above: opencode.jsonc's declarative "ask"/deny was empirically
-# not enforced under `opencode run --auto`).
+# comment above: a static declarative "ask"/deny permission can't inspect
+# the actual command, so enforcement has to be this hook).
 _PERSISTENT_RCE_FLAGS = {"--os-shell", "--os-pwn", "--os-cmd", "--os-bof"}
 
 
@@ -545,15 +547,15 @@ def _is_persistent_rce_command(command: str) -> bool:
 # S6 (hook tamper-resistance): the files that constitute the scope-gate
 # enforcement boundary itself -- scope_gate_hook.py, every module it
 # imports to do real enforcement (scope/budget/audit/RCE-confirm/sandbox/
-# secrets), both harnesses' hook registration (.claude/settings.json for
-# Claude Code, .opencode/plugin/scope-gate.ts + opencode.jsonc for
-# OpenCode), .claude/settings.local.json (gitignored but still carries
-# permission allows / the disabled-MCP-servers list), and both confirm
-# scripts. *Why this file exists at all*: without this, an agent with
-# ordinary Edit/Write/Bash access could simply overwrite scope_gate_hook.py
-# (or drop its registration) to silently neutralize every S1-S5 control
-# mid-session -- see MASTER-ROADMAP-FINAL-v3.md's Phase-S Tier-2 spec
-# ("hook neutralizable mid-session").
+# secrets), the Claude Code hook registration (.claude/settings.json), the
+# MCP server registration (.mcp.json -- which servers load, a tamper
+# vector of its own), .claude/settings.local.json (gitignored but still
+# carries permission allows / the disabled-MCP-servers list), and both
+# confirm scripts. *Why this file exists at all*: without this, an agent
+# with ordinary Edit/Write/Bash access could simply overwrite
+# scope_gate_hook.py (or drop its registration) to silently neutralize
+# every S1-S5 control mid-session -- see MASTER-ROADMAP-FINAL-v3.md's
+# Phase-S Tier-2 spec ("hook neutralizable mid-session").
 _PROTECTED_RELATIVE_PATHS = (
     "scripts/hooks/scope_gate_hook.py",
     "mcp-servers/scope_guard.py",
@@ -566,11 +568,13 @@ _PROTECTED_RELATIVE_PATHS = (
     "mcp-servers/state_change_confirm.py",
     ".claude/settings.json",
     ".claude/settings.local.json",
-    ".opencode/plugin/scope-gate.ts",
-    "opencode.jsonc",
+    ".mcp.json",
     "scripts/confirm-os-shell.sh",
     "scripts/confirm-hook-edit.sh",
     "scripts/confirm-state-change.sh",
+    # #164: decides how the human-only UI-walk Pass-2 grant file is parsed --
+    # an agent editing it could make load_grant() always return a grant.
+    "mcp-servers/ui_walk_grant.py",
 )
 
 
@@ -605,6 +609,12 @@ def _protected_paths() -> frozenset[Path]:
     paths = {_resolve_maybe_relative(rel) for rel in _PROTECTED_RELATIVE_PATHS}
     paths.add(Path(rce_confirm._token_path()).resolve())
     paths.add(Path(hook_confirm._token_path()).resolve())
+    # #164: the human-owned Pass-2 grant for the ACTIVE engagement -- if an
+    # agent could write it, it could grant itself real canary submits.
+    try:
+        paths.add(Path(ui_walk_grant.grant_path()).resolve())
+    except RuntimeError:
+        pass  # no active engagement: no grant file to protect
     return frozenset(p for p in paths if p is not None)
 
 
@@ -633,6 +643,26 @@ def _protected_hit(candidate: Path | None, protected: frozenset[Path]) -> Path |
     for p in protected:
         if candidate in p.parents:
             return p
+    grant = _grant_file_hit(candidate)
+    if grant is not None:
+        return grant
+    return None
+
+
+def _grant_file_hit(candidate: Path) -> Path | None:
+    """#164: the human-only UI-walk Pass-2 grant is protected for EVERY
+    engagement, not just the active one -- otherwise an agent could write
+    data/engagements/<other>/ui-walk-authorized.yaml (or pre-plant one for a
+    future slug) and then point the active-engagement pointer at it. Matches a
+    write to the grant file itself, or a copy/move INTO an engagement directory
+    (or the engagements root) whose destination basename-join would land on it
+    -- the same conservative directory-destination stance as above."""
+    try:
+        root = Path(engagement_paths.ENGAGEMENTS_ROOT).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if candidate.name == ui_walk_grant.GRANT_FILENAME and candidate.parent.parent == root:
+        return candidate
     return None
 
 
@@ -654,7 +684,9 @@ def _protected_path_from_edit_tool(tool_name: str, tool_input: dict) -> Path | N
     resolved = _resolve_maybe_relative(raw)
     if resolved is None:
         return None
-    return resolved if resolved in _protected_paths() else None
+    if resolved in _protected_paths():
+        return resolved
+    return _grant_file_hit(resolved)
 
 
 # Bash commands whose LAST non-flag positional argument is the write
@@ -773,6 +805,38 @@ def _sevenzip_directory_target(words: list[str]) -> str | None:
     return None
 
 
+# #164: commands that can write a file whose name only appears as a SOURCE or
+# inside a script (`cp /tmp/<grant> data/engagements/x/`, `python3 -c
+# "open('<grant>','w')"`, `bash -c 'printf x > <grant>'`) -- the per-word
+# destination checks below cannot see those. A piece of a command that names
+# the grant file AND starts with one of these is blocked. Reading it (cat,
+# grep, head, ls) or merely mentioning its name in text written ELSEWHERE is
+# not: explicit write targets (>, >>, tee, sed -i, dd of=) are still caught by
+# the destination checks via _grant_file_hit().
+_GRANT_NAME_WRITE_COMMANDS = frozenset({
+    "cp", "mv", "install", "rsync", "ln", "tar", "unzip", "7z", "git",
+    "python", "python3", "perl", "ruby", "node", "php",
+    "bash", "sh", "zsh", "dash", "fish", "env", "xargs", "find", "eval", "exec",
+})
+
+
+def _grant_name_write(command: str) -> Path | None:
+    name = ui_walk_grant.GRANT_FILENAME
+    if name not in command:
+        return None
+    for piece in _CHAIN_SPLIT_RE.split(command):
+        if name not in piece:
+            continue
+        try:
+            words = shlex.split(piece)
+        except ValueError:
+            words = piece.split()
+        words = _strip_prefix_words(words)
+        if words and words[0].rsplit("/", 1)[-1] in _GRANT_NAME_WRITE_COMMANDS:
+            return Path(engagement_paths.ENGAGEMENTS_ROOT) / "*" / name
+    return None
+
+
 def _writes_protected_path(command: str) -> Path | None:
     """S6 blanket, unconditional Bash-write detector -- same 'cheap word/
     arg scan, not a full shell parser' honesty as _reads_env_file()/
@@ -825,6 +889,9 @@ def _writes_protected_path(command: str) -> Path | None:
     tests asserting the python3 one-liner, zip-slip, bare-git-checkout,
     and git-reset-hard cases all do NOT get caught."""
     protected = _protected_paths()
+    grant_hit = _grant_name_write(command)
+    if grant_hit is not None:
+        return grant_hit
     for piece in _CHAIN_SPLIT_RE.split(command):
         try:
             words = shlex.split(piece)
@@ -1294,9 +1361,9 @@ def main() -> int:
     # call this hook is the sole enforcement point for. Block instead --
     # this stops only the ONE gated tool call that produced the malformed
     # payload (exit 2, clear stderr reason), not the session itself. In real
-    # operation Claude Code/OpenCode construct this JSON themselves from the
-    # tool call already in flight, so this is not expected to fire on
-    # ordinary Read/Edit/git-status traffic.
+    # operation Claude Code constructs this JSON itself from the tool call
+    # already in flight, so this is not expected to fire on ordinary
+    # Read/Edit/git-status traffic.
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
@@ -1314,11 +1381,10 @@ def main() -> int:
     # the tool call as the parse-failure case above -- same reasoning, same
     # fail-closed response. Found live during review: e.g. `echo null |
     # ...` previously crashed on payload.get() with an uncaught
-    # AttributeError (exit 1), which both real callers (.claude/
-    # settings.json's PreToolUse dispatch and .opencode/plugin/
-    # scope-gate.ts's `exitCode === 2` check) treat as an implicit allow --
-    # the exact fail-open gap S1 exists to close, just reachable one step
-    # earlier than the Tier-2 evaluation below.
+    # AttributeError (exit 1), which the real caller (.claude/settings.json's
+    # PreToolUse dispatch, which treats a non-2 exit as an implicit allow)
+    # would let through -- the exact fail-open gap S1 exists to close, just
+    # reachable one step earlier than the Tier-2 evaluation below.
     if not isinstance(payload, dict):
         return _block(
             "BLOCKED by scope gate: hook payload is not a JSON object. "
@@ -1423,19 +1489,14 @@ def main() -> int:
     # Blanket rm block -- unconditional, independent of scope/engagement
     # state entirely (this is a "never run rm, never ask" rule, not a
     # target-scope rule). .claude/settings.json's `Bash(rm *)`/`Bash(rm)`
-    # permissions.deny already enforces this for Claude Code before the
-    # call even reaches this hook; this check is what makes it real for
-    # OpenCode too (via .opencode/plugin/scope-gate.ts, which invokes this
-    # same script for every Bash call) -- opencode.jsonc's declarative
-    # `permission.bash` glob deny (`"rm **": "deny"` alongside `"*":
-    # "allow"`) was tested live and did not actually block rm across
-    # several pattern/ordering attempts, so this hook is the real
-    # enforcement point on that harness, same as it already is for scope.
+    # permissions.deny already enforces this before the call even reaches
+    # this hook; this check is the defense-in-depth backstop in case that
+    # permission is ever edited away or a command slips past the glob.
     if tool_name == "Bash" and _is_rm_command(command):
         return _block(
-            "BLOCKED: rm is disabled by default in this repo (both Claude "
-            "Code and OpenCode) -- ask the user to delete the file "
-            "themselves, or move it aside instead of removing it."
+            "BLOCKED: rm is disabled by default in this repo -- ask the user "
+            "to delete the file themselves, or move it aside instead of "
+            "removing it."
         )
 
     # S3 (secrets scoped out of untrusted execution) -- same blanket,

@@ -13,17 +13,16 @@ looking different depending on when it was written.
 ## Why this conversion exists
 
 `knowledge/master-pentest-prompt.md` is a single ~1800-line file with 59
-`[PHASE N]`-indexed sections that agents currently reach with `grep`. That
-still works — the OpenCode harness keeps using it exactly this way, since
-Skills are a Claude-Code-native feature with no OpenCode equivalent — but
-in Claude Code, a proper Skill lets the agent find the right technique by
-matching the skill's `description` against what it's currently doing,
-instead of the agent having to already know the right grep pattern.
+`[PHASE N]`-indexed sections, historically reached with `grep`. In Claude
+Code, a proper Skill lets the agent find the right technique by matching the
+skill's `description` against what it's currently doing, instead of having to
+already know the right grep pattern — so Skills are the front door onto that
+technique content.
 
-**`master-pentest-prompt.md` stays the source of truth for OpenCode and is
-never deleted.** `.claude/skills/` is an additional, Claude-Code-only
-front door onto the same technique content — converting a phase means
-writing a new skill file, not removing the phase from the master prompt.
+**`master-pentest-prompt.md` is retained as the single-document historical
+reference and is never deleted.** `.claude/skills/` is the live front door
+onto the same technique content — converting a phase means writing a new
+skill file, not removing the phase from the master prompt.
 
 ## Where skills actually live (get this right first)
 

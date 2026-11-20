@@ -54,7 +54,7 @@ try:
 except ImportError:  # datetime.UTC was added in Python 3.11; README's
     # documented minimum is 3.10 -- without this shim, the whole module
     # fails to import on 3.10 and the server crashes before it even
-    # starts, which OpenCode/Claude Code just report as "connection
+    # starts, which Claude Code just reports as "connection
     # closed"/"not working" with the real ImportError never surfaced.
     from datetime import datetime, timezone
     UTC = timezone.utc

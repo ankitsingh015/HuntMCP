@@ -73,7 +73,7 @@ def load_roster(path: str | None = None) -> dict:
 
 
 def list_identities(path: str | None = None) -> list[dict]:
-    """Agent-facing roster listing: [{"label", "note", "has_mailbox"}] only.
+    """Agent-facing roster listing: [{"label", "note", "has_mailbox", "disposable"}] only.
 
     Deliberately omits profile_dir and the entire mailbox block (host,
     username, password_env) so nothing that could narrow a secret reaches the
@@ -85,9 +85,19 @@ def list_identities(path: str | None = None) -> list[dict]:
             "label": label,
             "note": (entry or {}).get("note", ""),
             "has_mailbox": bool((entry or {}).get("mailbox")),
+            # #164: only an identity the human marked disposable may run the
+            # UI-walk teardown's account-deletion test.
+            "disposable": (entry or {}).get("disposable") is True,
         }
         for label, entry in identities.items()
     ]
+
+
+def is_disposable(label: str, path: str | None = None) -> bool:
+    """True only if the roster marks this identity `disposable: true` (the
+    YAML boolean) -- the gate for the irreversible account-deletion test."""
+    entry = (load_roster(path).get("identities", {}) or {}).get(label) or {}
+    return isinstance(entry, dict) and entry.get("disposable") is True
 
 
 def roster_entry(label: str, path: str | None = None) -> dict:

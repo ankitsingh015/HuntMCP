@@ -17,10 +17,10 @@ Chain vulnerabilities together for maximum severity impact.
 
 ## How it works
 
-1. Spawn @chain-planner agent with the findings
-2. chainer-mcp analyzes findings against known chain templates
-3. Returns ranked list of possible attack chains
-4. HuntBrain integrates the top chain into the exploitation phase
+1. Invoke the `chain-planner` agent with the findings ($ARGUMENTS).
+2. chainer-mcp analyzes findings against known chain templates.
+3. Returns a ranked list of possible attack chains.
+4. huntbrain integrates the top chain into the exploitation phase.
 
 ## Example findings JSON format
 

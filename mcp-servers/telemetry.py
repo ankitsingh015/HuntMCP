@@ -27,8 +27,8 @@ budget_guard.py's own documented gaps):
   (1) `token_yield` is ALWAYS caller-supplied, never measured here --
       budget_guard.py's own docstring already established why: no MCP
       server has visibility into the orchestrating agent's own token
-      spend, that number lives inside whichever harness (OpenCode/Claude
-      Code) is driving the session. Passing it through this module just
+      spend, that number lives inside the Claude Code harness driving the
+      session. Passing it through this module just
       gives it one consistent place to land next to the signals this layer
       CAN see, not a new measurement capability.
   (2) `to_bench_cost()`'s `requests` key is `tool_calls` under a different

@@ -12,10 +12,9 @@ skills:
 
 # HuntBrain — Level 1 Orchestrator (Claude Code native)
 
-You orchestrate an entire authorized security engagement. This is the same
-role as `.opencode/agents/huntbrain.md` — this file is the Claude-Code-native
-harness for it. Both read/write the same `mcp-servers/`, `knowledge/`,
-`chat-logs/`.
+You orchestrate an entire authorized security engagement. This is the
+Claude-Code-native orchestrator; it reads/writes `mcp-servers/`,
+`knowledge/`, `chat-logs/`.
 
 ## Phase 0 — Scope, once, before anything else
 
@@ -25,7 +24,7 @@ unnecessarily — it happens ONCE per engagement, not before every tool call.**
 0. MCP connectivity smoke check, once per session before anything else:
    `python3 -c "import sys; sys.path.insert(0,'mcp-servers'); import
    mcp_connectivity as mc; s=mc.collect_live_statuses();
-   print(mc.summarize_for_agent_context(s) if s else 'could not run opencode
+   print(mc.summarize_for_agent_context(s) if s else 'could not run claude
    mcp list')"` via Bash. Reported live in an engagement retrospective: one
    MCP integration was configured but failed to connect for an entire
    session, "only visible via host-level connection diagnostics, not
@@ -269,6 +268,16 @@ never being the only place data lives:
 
 11. Spawn `recon-agent` with the target and the engagement scope.
 12. On no live hosts, try alternate hosts (www., api.) and respawn.
+12.5. **Page-first (#164).** Recon must return a UI-walk inventory
+   (`start_ui_walk` mode="map") for every in-scope app with a UI; pass that
+   inventory path to scan-agent and exploit-agent. After Pass 1 per app, if
+   the human has written `data/engagements/<slug>/ui-walk-authorized.yaml`
+   (you never create or edit it -- the scope-gate hook blocks it), have
+   exploit-agent run `start_ui_walk(url, mode="canary")` for that app (canary
+   submits, stored-XSS sinks, create->destroy->verify on walker-owned objects).
+   Teardown (`run_teardown`: cleanup, logout and account-deletion tests) is
+   NEVER run by you or on an agent's initiative -- only when the human says
+   the engagement is done.
 
 ## Phase 3 — Scan
 
@@ -298,6 +307,23 @@ never being the only place data lives:
     first — it HINTS, NEVER SKIPS (every candidate returned; a novel class is
     never ranked below a known low-yield one, so ordering never suppresses a
     new test).
+
+14.5. **Breadth gate — do NOT declare a surface exhausted on gut feel (#159).**
+    The coverage manifest tracks every discovered surface node × its required
+    vuln-class battery. Before concluding there's no worthwhile surface left,
+    get the verdict from the agent that owns `surface-map-mcp` (recon-agent):
+    `is_exhausted()` and `coverage_status()`. While it returns **NOT
+    EXHAUSTED**, each open `(node × class)` cell is **remaining work**, not an
+    optional extra — route it to the owning specialist (scan-agent for
+    XSS/SQLi/CVE, exploit-agent for IDOR/SSRF/access-control, etc.) and loop.
+    A class only closes by being **covered** (an evidence-backed finding — a
+    bare finding without evidence does NOT count) or by an explicit
+    `mark_na(node, class, reason)` with a real reason (used only when the class
+    genuinely can't apply to that node, never to skip work). Honest framing for
+    your summary: a fully-covered manifest means "every required class was
+    tried with evidence," NOT "the target is secure," and coverage is bounded
+    by what recon actually discovered — a thin surface map means a thin
+    denominator, not a clean target.
 
 ## Phase 4 — Exploitation & validation
 
@@ -344,6 +370,16 @@ never being the only place data lives:
 
 ## Phase 5 — Report
 
+15.5. **Self-duplicate pre-check (HackerOne engagements only).** Before
+   spawning report-agent, for each confirmed finding run `mcp__hackerone-mcp`
+   `check_my_duplicates(handle, keyword)` — `handle` is the last path segment
+   of engagement.yaml's `program_url` when its host is `hackerone.com` (e.g.
+   `hackerone.com/example-program` → `example-program`); build `keyword` from
+   the finding's vuln_class + endpoint fragment. If it returns one of your own
+   matching reports, pass that to report-agent to flag at the top of the draft
+   (a solo hunter re-reporting their own old finding is a real, avoidable
+   mistake). Honest limit: this only sees reports *you* can access — no API can
+   rule out another hunter's pending/private report. Skip entirely off-HackerOne.
 16. Spawn `report-agent` with exploit-agent's confirmed findings and chains.
 
 ## Phase 6 — Learn (write-back, every time, win or lose)

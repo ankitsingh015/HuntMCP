@@ -3,7 +3,7 @@ Tier-2 tool-call volume per engagement (ARCHITECTURE.md Phase 2.9).
 
 Why call-count, not literal LLM $ cost: no MCP server has visibility into
 the orchestrating agent's own token spend -- that number lives inside
-whichever harness (OpenCode / Claude Code) is driving the session, and
+the Claude Code harness driving the session, and
 isn't exposed to a subprocess-launching tool server. Tier-2 tool-call
 volume is the actual mechanism that would burn unlimited spend in practice
 (a stuck retry loop, runaway recon against a huge attack surface) and IS

@@ -22,8 +22,8 @@ Two layers, both exercised here:
 
 Attacker-style bypass attempts (omitted/empty/mismatched/malformed `url`,
 casing, ports, userinfo, alternate host reps, missing engagement, stored
-state, local-helper reroute, OpenCode tool-name translation) are all pinned
-below with BLOCKED/ALLOWED + why.
+state, local-helper reroute, colon-delimited tool-name normalization) are all
+pinned below with BLOCKED/ALLOWED + why.
 """
 import importlib.util
 import io
@@ -177,10 +177,10 @@ def test_existing_server_level_tier2_servers_unchanged(monkeypatch, tmp_path):
                      {"target": OOS, "note": "x"}) == 0
 
 
-def test_opencode_translated_tool_name_gates_sender_but_not_local(monkeypatch, tmp_path):
-    """.opencode/plugin/scope-gate.ts turns OpenCode's `case-mcp:determinism_gate`
-    into `mcp__case-mcp__determinism_gate` before invoking this hook -- verify the
-    translated form hits the same tool-level decision."""
+def test_mcp_tool_name_gates_sender_but_not_local(monkeypatch, tmp_path):
+    """A `mcp__case-mcp__determinism_gate` tool call (the Claude Code MCP
+    tool-name form) hits the same tool-level scope decision -- the sender
+    (a real out-of-scope URL) is gated, a local-only call is not."""
     _with_engagement(tmp_path, monkeypatch)
     assert _run_hook(monkeypatch, "mcp__case-mcp__determinism_gate",
                      {"finding_id": 1, "url": f"https://{OOS}/"}) == 2

@@ -23,17 +23,21 @@ def test_mcp_add_then_next_untested(tmp_path, monkeypatch):
     assert "file upload" in out
 
 
-def _opencode_cfg():
-    raw = open(os.path.join(ROOT, "opencode.jsonc")).read()
-    clean = "\n".join(ln for ln in raw.split("\n") if not ln.strip().startswith("//"))
-    return json.loads(clean)
+def _mcp_json_servers():
+    return set(json.load(open(os.path.join(ROOT, ".mcp.json")))["mcpServers"].keys())
 
 
-def test_mcp_registration_present_and_not_force_enabled():
-    cfg = _opencode_cfg()
-    assert "surface-map-mcp" in cfg["mcp"]
-    # disabled-by-default: hidden in the global tools block, opt-in per agent
-    assert cfg["tools"].get("surface-map-mcp*") is False
+def _enabled_servers():
+    d = json.load(open(os.path.join(ROOT, ".claude", "settings.json")))
+    return set(d.get("enabledMcpjsonServers", []))
+
+
+def test_mcp_registration_present_and_enabled():
+    # Claude Code single source of truth (#160/#161): surface-map-mcp is
+    # registered in .mcp.json and enabled by default in the committed
+    # .claude/settings.json, so it loads in every engagement.
+    assert "surface-map-mcp" in _mcp_json_servers()
+    assert "surface-map-mcp" in _enabled_servers()
 
 
 # --- Task 4: bind_precedent ----------------------------------------------
@@ -72,3 +76,57 @@ def test_retrieve_loads_writeup_server_only_once(monkeypatch):
     assert srv._retrieve("ssrf:x") == "plan for ssrf:x"
     srv._retrieve("xss:y")
     assert calls["n"] == 1
+
+
+# --- mark_na (#159 coverage N/A escape valve) ------------------------------
+
+import surface_map  # noqa: E402
+
+
+def test_mark_na_stores_reason(tmp_path, monkeypatch):
+    p = str(tmp_path / "m.json")
+    nid = surface_map.add_node("endpoint", "/x", "ep:x", path=p)
+    assert surface_map.mark_na(nid, "sqli", "no backend DB on this route", path=p) is True
+    assert surface_map.get_node(nid, path=p)["na"]["sqli"] == "no backend DB on this route"
+
+
+def test_mark_na_rejects_empty_reason(tmp_path):
+    p = str(tmp_path / "m.json")
+    nid = surface_map.add_node("endpoint", "/x", "ep:x", path=p)
+    import pytest
+    with pytest.raises(ValueError):
+        surface_map.mark_na(nid, "sqli", "   ", path=p)
+
+
+def test_mark_na_unknown_node_returns_false(tmp_path):
+    p = str(tmp_path / "m.json")
+    assert surface_map.mark_na(999, "sqli", "reason", path=p) is False
+
+
+# --- coverage gate tools (#159) --------------------------------------------
+
+def test_tool_is_exhausted_true_on_empty_map(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUNTMCP_SURFACE_MAP_PATH", str(tmp_path / "m.json"))
+    assert srv.is_exhausted().startswith("EXHAUSTED")
+
+
+def test_tool_coverage_status_lists_open_cell_after_add_node(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUNTMCP_SURFACE_MAP_PATH", str(tmp_path / "m.json"))
+    srv.add_node("endpoint", "/api/x", "ep:x")
+    status = srv.coverage_status()
+    assert "open" in status.lower()
+    assert "sqli" in status  # an endpoint-floor class shows as an open cell
+
+
+def test_tool_mark_na_then_cell_not_open(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUNTMCP_SURFACE_MAP_PATH", str(tmp_path / "m.json"))
+    nid = int(srv.add_node("endpoint", "/api/x", "ep:x").split("#")[1].split(":")[0])
+    for cls in ("xss", "sqli", "idor", "access-control", "ssrf", "open-redirect", "csrf"):
+        srv.mark_na(nid, cls, "test harness: no live backend in this unit test")
+    assert srv.is_exhausted().startswith("EXHAUSTED")  # all cells N/A -> exhausted
+
+
+def test_tool_mark_na_rejects_empty_reason(tmp_path, monkeypatch):
+    monkeypatch.setenv("HUNTMCP_SURFACE_MAP_PATH", str(tmp_path / "m.json"))
+    nid = int(srv.add_node("endpoint", "/api/x", "ep:x").split("#")[1].split(":")[0])
+    assert srv.mark_na(nid, "sqli", "  ").startswith("Error:")

@@ -852,9 +852,9 @@ def test_main_fails_closed_when_rce_confirm_raises_internal_error(monkeypatch, t
     sat OUTSIDE main()'s fail-closed try/except net -- an internal error
     here (a permissions error, a disk-full write, a lock-file problem)
     would propagate uncaught out of main(), and since only exit 2 is this
-    harness's documented block signal, both real callers (Claude Code's
-    PreToolUse dispatch and OpenCode's scope-gate.ts) would treat that as
-    an implicit ALLOW -- letting a persistent-RCE command straight through
+    harness's documented block signal, the real caller (Claude Code's
+    PreToolUse dispatch) would treat that as an implicit ALLOW,
+    letting a persistent-RCE command straight through
     on an internal error, the exact fail-open class S1 exists to close."""
     monkeypatch.setenv("HUNTMCP_RCE_CONFIRM_PATH", str(tmp_path / "os-shell-confirm.json"))
     monkeypatch.chdir(tmp_path)
@@ -1133,8 +1133,8 @@ def test_main_fails_closed_on_malformed_json(monkeypatch, capsys):
     TASK-TRACKER.md S1): 'internal error blocks the gated call, not the
     session' -- this blocks only the one tool call the hook was invoked
     for (exit 2, with a clear stderr reason), it does not crash or hang
-    the session. In real operation Claude Code/OpenCode always construct
-    this payload themselves as well-formed JSON, so this path is not
+    the session. In real operation Claude Code always constructs
+    this payload itself as well-formed JSON, so this path is not
     expected to fire on ordinary Read/Edit/git-status traffic -- it exists
     for the tamper/corruption/hook-invocation-bug case, where failing
     closed is the safe default."""
@@ -1187,9 +1187,9 @@ def test_main_ignores_non_bash_non_mcp_tools(monkeypatch, tool_name):
 # wrong *shape* (a bare `null`/list/string at the top level, a non-string
 # tool_name, a non-dict tool_input, a non-string command on a Bash call)
 # reached past the new try/except entirely and crashed with an uncaught
-# AttributeError/TypeError -- exit code 1, which both real callers
-# (.claude/settings.json's PreToolUse dispatch and .opencode/plugin/
-# scope-gate.ts) treat as an implicit allow. Verified live before this fix:
+# AttributeError/TypeError -- exit code 1, which the real caller
+# (.claude/settings.json's PreToolUse dispatch) treats as an implicit
+# allow. Verified live before this fix:
 # `echo 'null' | python3 scripts/hooks/scope_gate_hook.py` exited 1 with an
 # unhandled traceback. These tests close that gap without widening the gate
 # to non-Tier2 tools -- a malformed tool_input on a tool_name this hook

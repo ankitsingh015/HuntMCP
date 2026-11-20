@@ -279,9 +279,9 @@ behavior — do not weaken them.
 
 ## 5. End‑to‑end usage (worked example)
 
-CEM is an **MCP tool surface**. `case-mcp` is registered in `opencode.jsonc` and enabled for
-`exploit-agent`, `huntbrain`, and `report-agent` (`"case-mcp*": true`); an agent invokes the
-six tools by name. The example below shows the tool name and its JSON arguments/response at
+CEM is an **MCP tool surface**. `case-mcp` is registered in `.mcp.json`, enabled in
+`.claude/settings.json`, and in the `tools:` allowlist of `exploit-agent`, `huntbrain`, and
+`report-agent`; an agent invokes the six tools by name. The example below shows the tool name and its JSON arguments/response at
 each step — the same shapes whether the caller is an agent or a test.
 
 Assume finding `42` is already `CONFIRMED` (IDOR at `GET /svc/alpha/99?trace=1`, requires a

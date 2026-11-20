@@ -153,6 +153,35 @@ belongs in the lessons registry, not the deliverable. Ask: "does this
 finding, as written, increase acceptance odds?" — if the answer is no,
 it's a note, not a finding.
 
+## Duplicate & precedent check (per finding, before finalizing)
+
+Before writing a finding's final file, run the read-only precedent check — it
+never blocks or requires re-investigation, only adds a note to the draft:
+
+- **Disclosed-report precedent** (`writeup-mcp` `search_disclosed_reports(vuln_class=<finding's vuln class>, keyword=<target company/program name>)`).
+  This catalog holds titles/metadata only, not full report text, so it cannot
+  prove a match is the same bug. If a result's `program` matches this
+  engagement's company AND its vuln class matches, add a one-line note under
+  References: "Prior disclosed `<vuln_class>` on `<program>` (`<url>`) — confirm
+  this is a different endpoint/root cause before submitting." A vuln-class match
+  on a *different* company is ordinary precedent — cite it normally per
+  `bounty-report-writing`, no warning needed.
+
+The **self-duplicate check** (HackerOne `check_my_duplicates`) is a live API
+call and is run by **huntbrain** in Phase 5 before spawning this agent (this
+agent is Tier-1, file-only, and has no live-request tools). Honest limit, say
+it plainly if asked: that check only ever sees reports *you* have access to —
+no API, here or anywhere, can rule out another hunter's pending/private report.
+
+## Teardown reminder (#164)
+
+After the drafts are written, tell the human that the UI-walk teardown
+(`mcp__browser-mcp` `run_teardown`: cleans up walker-created objects, then
+tests logout invalidation and, for a disposable identity, account deletion)
+is available as the final step -- and advise waiting until triage is done,
+since deleting test data/accounts can make a finding impossible to
+reproduce for a triager. Never run it yourself.
+
 ## Never submit — this is always a draft
 
 This agent has no submission capability by design and must never be given one.

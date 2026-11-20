@@ -84,9 +84,9 @@ def test_build_argv_never_passes_env_host():
 
 def test_build_argv_never_sets_a_network_flag_by_default(monkeypatch):
     """The core guarantee for every real hunt: with HUNTMCP_BENCH_NETWORK
-    unset (true for every production launch config -- it's never set in
-    opencode.jsonc), build_argv() must never add a --network flag at all,
-    preserving today's default per-container isolated network exactly."""
+    unset (true for every production launch config -- it's never set in the
+    .mcp.json server launch configs), build_argv() must never add a --network
+    flag at all, preserving today's default per-container isolated network."""
     monkeypatch.delenv("HUNTMCP_BENCH_NETWORK", raising=False)
     argv = sandbox_runner.build_argv("curl", ["https://example.com"], "/tmp/scratch", env={})
     assert not any(a.startswith("--network") for a in argv)

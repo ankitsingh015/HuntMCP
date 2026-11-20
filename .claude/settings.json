@@ -2,6 +2,46 @@
   "permissions": {
     "deny": ["Bash(rm *)", "Bash(rm)"]
   },
+  "enableAllProjectMcpServers": false,
+  "enabledMcpjsonServers": [
+    "writeup-mcp",
+    "memory-mcp",
+    "lessons-mcp",
+    "subfinder-mcp",
+    "httpx-mcp",
+    "katana-mcp",
+    "nmap-mcp",
+    "nuclei-mcp",
+    "sqlmap-mcp",
+    "dalfox-mcp",
+    "ffuf-mcp",
+    "chainer-mcp",
+    "oob-mcp",
+    "watch-mcp",
+    "waf-bypass-mcp",
+    "browser-mcp",
+    "playwright-mcp",
+    "hackerone-mcp",
+    "target-discovery-mcp",
+    "osint-mcp",
+    "github-security-mcp",
+    "secrets-mcp",
+    "burp-import-mcp",
+    "case-mcp",
+    "idor-mcp",
+    "surface-map-mcp",
+    "discspec-mcp",
+    "ws-rpc-mcp",
+    "schemathesis-mcp"
+  ],
+  "disabledMcpjsonServers": [
+    "second-opinion-mcp",
+    "azure-postexploit-mcp",
+    "aws-postexploit-mcp",
+    "gcp-postexploit-mcp",
+    "local-privesc-mcp",
+    "ad-recon-mcp"
+  ],
   "hooks": {
     "PreToolUse": [
       {

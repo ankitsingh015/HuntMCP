@@ -1,13 +1,20 @@
-"""Option A (per-agent MCP tool scoping) invariants.
+"""Per-agent MCP tool-scoping invariants (Claude Code single source of truth).
 
-The global config (opencode.jsonc) disables ALL MCP tool schemas; each agent
-re-enables only the MCP servers it actually uses via a `tools:` allowlist in
-its .opencode/agents/*.md frontmatter. These tests lock in that architecture and
--- critically -- guard the dynamic-specialist case: ANY agent .md present (a
-future jwt-agent/graphql-agent written on demand included) MUST declare a
-non-empty, scoped `tools:` allowlist, or it would be born tool-blind under the
-global disable. They also assert that no High/Critical detection/validation tool
-is hidden from the agent that owns it (finding-coverage preservation).
+Claude Code model (after OpenCode removal, #160): the project MCP servers are
+registered in `.mcp.json`, enabled/disabled for the project in the committed
+`.claude/settings.json`, and each agent re-enables only the servers it needs
+via an `mcp__<name>` allowlist in its `.claude/agents/*.md` `tools:`
+frontmatter string. These tests lock in that architecture and guard the
+dynamic-specialist case: ANY agent .md present (a future jwt-agent/
+graphql-agent included) MUST declare a non-empty, scoped `tools:` allowlist.
+They also assert no enabled MCP server is unreachable by every agent, and that
+no High/Critical detection/validation tool is hidden from the agent that owns
+it (finding-coverage preservation).
+
+Replaces the old opencode.jsonc-based version: there is no central "global
+tools map that disables everything" in Claude Code, so the two tests that
+asserted that construct are gone; the remaining invariants are retargeted to
+`.mcp.json` + `.claude/settings.json` + `.claude/agents`.
 """
 from __future__ import annotations
 
@@ -18,18 +25,20 @@ import re
 import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-AGENTS_DIR = os.path.join(ROOT, ".opencode", "agents")
+AGENTS_DIR = os.path.join(ROOT, ".claude", "agents")
+
+# Personal, --scope local servers the operator opts into via connect-*.sh;
+# their own binary/extension is the server, not a mcp-servers/*/server.py.
+_KNOWN_UNTRACKED_PERSONAL_SERVERS = {"obscura-mcp", "burp"}
 
 
-def _load_opencode_config() -> dict:
-    # opencode.jsonc is JSONC: strip //-comment lines (same as CI validate-config).
-    raw = open(os.path.join(ROOT, "opencode.jsonc")).read()
-    clean = "\n".join(l for l in raw.split("\n") if not l.strip().startswith("//"))
-    return json.loads(clean)
+def _registered_servers() -> set[str]:
+    return set(json.load(open(os.path.join(ROOT, ".mcp.json")))["mcpServers"].keys())
 
 
-def _enabled_mcp_servers(cfg: dict) -> set[str]:
-    return {name for name, v in cfg.get("mcp", {}).items() if v.get("enabled")}
+def _enabled_servers() -> set[str]:
+    d = json.load(open(os.path.join(ROOT, ".claude", "settings.json")))
+    return set(d.get("enabledMcpjsonServers", []))
 
 
 def _agent_files() -> list[str]:
@@ -43,87 +52,82 @@ def _frontmatter(path: str) -> dict:
     return yaml.safe_load(m.group(1)) or {}
 
 
-def _reenabled_servers(fm: dict) -> set[str]:
-    """MCP server names an agent re-enables (keys like 'nuclei-mcp*': true)."""
-    out = set()
-    for key, val in (fm.get("tools") or {}).items():
-        if val is True and key.endswith("*"):
-            out.add(key[:-1])  # strip trailing glob '*'
-    return out
-
-
-# ---------------------------------------------------------------- global disable
-
-def test_global_disable_covers_every_enabled_mcp_server():
-    cfg = _load_opencode_config()
-    disabled = {k[:-1] for k, v in cfg.get("tools", {}).items()
-                if v is False and k.endswith("*")}
-    enabled = _enabled_mcp_servers(cfg)
-    missing = enabled - disabled
-    assert not missing, f"MCP servers enabled but not globally disabled (leak into every agent): {missing}"
-
-
-def test_global_tools_map_only_disables_never_enables():
-    cfg = _load_opencode_config()
-    bad = {k: v for k, v in cfg.get("tools", {}).items() if v is not False}
-    assert not bad, f"global tools map must only contain '<server>*: false' entries, found: {bad}"
+def _agent_mcp_servers(fm: dict) -> set[str]:
+    """MCP server names an agent re-enables (mcp__<name> tokens in the
+    comma-separated tools: string)."""
+    tools = fm.get("tools", "")
+    if not isinstance(tools, str):
+        return set()
+    return {
+        tok.strip()[len("mcp__"):]
+        for tok in tools.split(",")
+        if tok.strip().startswith("mcp__")
+    }
 
 
 # ------------------------------------------------ per-agent allowlist invariants
 
 def test_every_agent_declares_a_nonempty_scoped_allowlist():
-    """Dynamic-specialist guard: any agent .md (incl. a future on-demand one) must
-    declare a non-empty tools: allowlist, else it is tool-blind under global disable."""
+    """Dynamic-specialist guard: any agent .md (incl. a future on-demand one)
+    must declare a non-empty MCP tools: allowlist, else it is tool-blind."""
     for path in _agent_files():
-        fm = _frontmatter(path)
-        servers = _reenabled_servers(fm)
+        servers = _agent_mcp_servers(_frontmatter(path))
         assert servers, (
-            f"{os.path.basename(path)}: no MCP servers re-enabled -- under the global "
-            f"disable this agent would have ZERO MCP tools. Add a scoped `tools:` allowlist."
+            f"{os.path.basename(path)}: no MCP servers in its tools: allowlist -- "
+            f"this agent would have ZERO MCP tools. Add a scoped `tools:` allowlist."
         )
 
 
-def test_agent_allowlists_reference_only_real_enabled_servers():
-    cfg = _load_opencode_config()
-    enabled = _enabled_mcp_servers(cfg)
+def test_agent_allowlists_reference_only_registered_servers():
+    """An agent may reference a registered server that is currently DISABLED in
+    settings.json (operator opts in per engagement, e.g. the post-exploit
+    servers exploit-agent owns) -- but never a server that is not registered in
+    .mcp.json at all (that is real drift)."""
+    registered = _registered_servers()
     for path in _agent_files():
-        servers = _reenabled_servers(_frontmatter(path))
-        unknown = servers - enabled
-        assert not unknown, f"{os.path.basename(path)}: re-enables unknown/disabled MCP servers {unknown}"
+        servers = _agent_mcp_servers(_frontmatter(path))
+        unknown = servers - registered - _KNOWN_UNTRACKED_PERSONAL_SERVERS
+        assert not unknown, (
+            f"{os.path.basename(path)}: references MCP server(s) not registered "
+            f"in .mcp.json (and not a known personal server): {sorted(unknown)}"
+        )
 
 
 def test_no_agent_reenables_all_servers():
-    """Scoping must be real -- no agent (orchestrator or dynamic specialist) gets the
-    full fleet by default."""
-    cfg = _load_opencode_config()
-    total = len(_enabled_mcp_servers(cfg))
+    """Scoping must be real -- no agent gets the full fleet by default."""
+    total = len(_registered_servers())
     for path in _agent_files():
-        servers = _reenabled_servers(_frontmatter(path))
+        servers = _agent_mcp_servers(_frontmatter(path))
         assert len(servers) < total, (
             f"{os.path.basename(path)}: re-enables all {total} MCP servers -- scoping defeated."
         )
 
 
 def test_orchestrator_is_tightly_scoped():
-    """huntbrain (default primary orchestrator, the long-lived context) must be small."""
-    fm = _frontmatter(os.path.join(AGENTS_DIR, "huntbrain.md"))
-    servers = _reenabled_servers(fm)
-    # huntbrain only calls 7 MCP servers directly; everything else is delegated.
+    """huntbrain (default primary orchestrator, the long-lived context) must be
+    small; everything else is delegated to specialists."""
+    servers = _agent_mcp_servers(_frontmatter(os.path.join(AGENTS_DIR, "huntbrain.md")))
     assert servers == {
         "memory-mcp", "writeup-mcp", "lessons-mcp", "hackerone-mcp",
         "case-mcp", "target-discovery-mcp", "watch-mcp",
     }, f"unexpected orchestrator MCP scope: {sorted(servers)}"
 
 
-def test_no_orphan_mcp_server():
-    """Every enabled MCP server must be reachable by at least one agent."""
-    cfg = _load_opencode_config()
-    enabled = _enabled_mcp_servers(cfg)
+def test_no_orphan_enabled_server():
+    """Every ENABLED MCP server must be reachable by at least one agent. A
+    server enabled in settings.json but in no agent's allowlist loads but can
+    never be invoked in the engagement flow (the agent-level analogue of the
+    #161/#163 orphan bug)."""
+    enabled = _enabled_servers()
     covered: set[str] = set()
     for path in _agent_files():
-        covered |= _reenabled_servers(_frontmatter(path))
+        covered |= _agent_mcp_servers(_frontmatter(path))
     orphan = enabled - covered
-    assert not orphan, f"MCP servers no agent can use (unreachable): {orphan}"
+    assert not orphan, (
+        "enabled MCP server(s) no agent can invoke (loaded but unreachable in "
+        f"the flow): {sorted(orphan)}. Add each to the owning agent's tools:, "
+        "or disable it in .claude/settings.json if intentionally not yet used."
+    )
 
 
 # ------------------------------------------------ High/Critical coverage mapping
@@ -145,13 +149,11 @@ HIGH_CRIT_COVERAGE = {
 
 
 def test_high_critical_detection_tools_available_to_owning_agent():
-    cfg = _load_opencode_config()
-    enabled = _enabled_mcp_servers(cfg)
+    enabled = _enabled_servers()
     for finding, (server, agent) in HIGH_CRIT_COVERAGE.items():
-        assert server in enabled, f"{finding}: {server} not an enabled MCP server"
-        fm = _frontmatter(os.path.join(AGENTS_DIR, f"{agent}.md"))
-        servers = _reenabled_servers(fm)
+        assert server in enabled, f"{finding}: {server} not enabled in .claude/settings.json"
+        servers = _agent_mcp_servers(_frontmatter(os.path.join(AGENTS_DIR, f"{agent}.md")))
         assert server in servers, (
             f"COVERAGE REGRESSION: {finding} detected by {server}, but {agent} does not "
-            f"re-enable it under scoping -- this High/Critical class could be missed."
+            f"re-enable it -- this High/Critical class could be missed."
         )

@@ -95,13 +95,4 @@ browser_screenshot) don't take a url param, so they aren't independently
 re-gated. Always browser_navigate to the exact in-scope URL you mean to
 test; don't rely on in-page navigation (a clicked link, a redirect) to stay
 in scope.
-
-Driving HuntMCP via OpenCode instead? \`opencode mcp add\` has no
-non-interactive way to register a local stdio server like this one, so add
-it by hand to your personal (untracked) ~/.config/opencode/opencode.jsonc:
-
-  "obscura-mcp": {
-    "type": "local",
-    "command": ["obscura", "mcp"]
-  }
 EOF

@@ -4,13 +4,13 @@
 
 [![CI](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/ankitsingh015/HuntMCP/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-![Harness](https://img.shields.io/badge/harness-OpenCode%20%2B%20Claude%20Code-purple)
-![MCP Count](https://img.shields.io/badge/MCP%20servers-33-orange)
+![Harness](https://img.shields.io/badge/harness-Claude%20Code-purple)
+![MCP Count](https://img.shields.io/badge/MCP%20servers-35-orange)
 ![Skills](https://img.shields.io/badge/technique%20skills-52-blueviolet)
 ![Model Providers](https://img.shields.io/badge/models-no%20lock--in-yellow)
 ![Last Commit](https://img.shields.io/github/last-commit/ankitsingh015/HuntMCP?color=blue)
 
-<img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&size=18&pause=1200&color=8B5CF6&center=true&vCenter=true&width=750&lines=Recon+%E2%86%92+Scan+%E2%86%92+Chain+%E2%86%92+Exploit+%E2%86%92+Report;Runs+on+OpenCode+or+native+Claude+Code;Any+model+provider+%E2%80%94+no+lock-in;Scope-gated.+Self-improving.+For+authorized+testing+only." alt="Typing SVG"/>
+<img src="https://readme-typing-svg.demolab.com/?font=Fira+Code&size=18&pause=1200&color=8B5CF6&center=true&vCenter=true&width=750&lines=Recon+%E2%86%92+Scan+%E2%86%92+Chain+%E2%86%92+Exploit+%E2%86%92+Report;Runs+on+Claude+Code+%2B+MCP;Any+model+provider+%E2%80%94+no+lock-in;Scope-gated.+Self-improving.+For+authorized+testing+only." alt="Typing SVG"/>
 
 </div>
 
@@ -89,7 +89,7 @@ the next hunt on a similar stack starts smarter than the last one did.
 | | |
 |---|---|
 | 🤖 **Multi-Level AI Orchestration** | Level 1 HuntBrain delegates to Level 2 specialists (Recon, Scan, Exploit, Chain-Planner, Report). Not a fixed pipeline — the AI decides what to run next based on what recon actually finds. |
-| 🔀 **Dual Harness, Zero Lock-In** | Run the exact same agent roster two ways: [OpenCode](https://opencode.ai) (`.opencode/agents/`, any model provider) or native [Claude Code](https://claude.com/claude-code) subagents (`.claude/agents/`, `.mcp.json`). Same MCP servers, same knowledge layer, pick your harness. |
+| 🧩 **Claude Code Native** | The agent roster runs as native [Claude Code](https://claude.com/claude-code) subagents (`.claude/agents/`), MCP servers wired through `.mcp.json` + `.claude/settings.json`, skills in `.claude/skills/`, commands in `.claude/commands/`. One source of truth, no dual-stack drift. |
 | 🌐 **No Model Lock-In** | `model_gateway.py` resolves a provider per agent role from an explicit override or an automatic fallback chain: Anthropic → OpenAI → DeepSeek → Groq → OpenRouter → local Ollama. Bring whichever API key you have. |
 | 🔒 **Scope-Gated by Design** | A deterministic domain check runs before every Tier-2 tool call — see [Scope & Authorization](#scope--authorization). |
 | ⚡ **Reactive Rate Limiting** | No blanket per-request delay — `tool_resolver.run_tool()` only reacts when it detects a real block. See [How It Works](#how-it-works). |
@@ -143,8 +143,8 @@ flowchart TB
 
 *Dynamic specialists (GraphQL, JWT, OAuth, Cloud…) spawn on demand when HuntBrain detects
 relevant technology — plain markdown files with locked-down tool access, not persistent
-processes. Both harnesses (OpenCode and Claude Code) drive the same MCP servers and knowledge
-layer underneath; only the orchestration layer on top differs.*
+processes. Claude Code drives the MCP servers and knowledge layer underneath; the
+orchestration layer on top is the `.claude/agents/` roster.*
 
 Every Tier-2 tool call (anything that touches the live target) runs through the same
 deterministic gate, regardless of which specialist calls it:
@@ -180,7 +180,7 @@ phase-by-phase build status.
 - Python 3.10+ (3.12 used in CI)
 - Go tools: `subfinder`, `httpx`, `nuclei`, `katana`, `ffuf`, `dalfox`, plus `nmap`
 - At least one model provider API key (Anthropic, OpenAI, DeepSeek, Groq, OpenRouter) — or a local Ollama install
-- [OpenCode](https://opencode.ai) v1.17+ **or** [Claude Code](https://claude.com/claude-code) — pick one harness, or install both
+- [Claude Code](https://claude.com/claude-code) — the harness that loads `.mcp.json`, `.claude/agents`, `.claude/skills`, `.claude/commands` and the scope-gate hook
 
 </details>
 
@@ -237,10 +237,7 @@ $EDITOR engagement.yaml   # set target, in_scope, program_url, authorized_on
 <summary><b>5. Run it</b></summary>
 
 ```bash
-# Verify setup (OpenCode)
-opencode run "HuntMCP audit testphp.vulnweb.com --quick"
-
-# ...or verify with Claude Code
+# Verify setup with Claude Code
 claude
 > /audit testphp.vulnweb.com
 ```
@@ -251,30 +248,27 @@ claude
 
 ## Usage
 
-### OpenCode
-```bash
-opencode run "HuntMCP audit example.com"                # full autonomous audit
-opencode run "HuntMCP audit example.com --quick"         # recon + nuclei only
-opencode run "HuntMCP watch example.com --interval 6h"   # continuous monitoring
-opencode run "HuntMCP report <scan-id>"
-opencode run "HuntMCP chain <scan-id>"                   # vulnerability chaining analysis
-opencode run "HuntMCP ingest <url> --class XSS --tech React"
-opencode run "HuntMCP learn --query 'XSS in React apps'"
-```
+Run inside a Claude Code session. The slash commands live in `.claude/commands/`;
+HuntBrain and every Level 2 specialist are registered as native subagents
+(`.claude/agents/*.md`) with locked-down tool allowlists, spawned automatically as the
+engagement progresses.
 
-**Running multiple targets at once?** `source scripts/new-target-session.sh <target>` in each
-terminal before launching `opencode` gives that session its own isolated active-engagement
-pointer — no target's state or narration bleeds into another's. `scripts/switch-engagement.sh
-sessions` lists a ready-to-copy command for every target you've already started.
-
-### Claude Code
 ```bash
 claude
-> /audit example.com        # requires engagement.yaml to already match the target
+> /audit example.com        # full autonomous audit (requires engagement.yaml for the target)
+> /chain <scan-id>           # vulnerability chaining analysis
+> /ingest <url> --url ... --title ... --vuln-class XSS --tech React
+> /learn XSS in React apps   # query the writeup RAG
+> /watch start example.com --interval 6    # continuous monitoring
 ```
-HuntBrain and every Level 2 specialist are registered as native subagents
-(`.claude/agents/*.md`) with locked-down tool allowlists — Claude Code will spawn them
-automatically as the engagement progresses.
+
+You can also just ask HuntBrain in natural language ("HuntMCP audit example.com",
+"...--quick for recon + nuclei only").
+
+**Running multiple targets at once?** `source scripts/new-target-session.sh <target>` in each
+terminal before launching `claude` gives that session its own isolated active-engagement
+pointer — no target's state or narration bleeds into another's. `scripts/switch-engagement.sh
+sessions` lists a ready-to-copy command for every target you've already started.
 
 ---
 
@@ -388,12 +382,13 @@ export HUNTMCP_LOCAL_MODEL=my-qlora-finetune   # defaults to whiterabbitneo if u
 
 # No override set → model_gateway.py walks the chain:
 # Anthropic → OpenAI → DeepSeek → Groq → OpenRouter → local Ollama
-./scripts/select-model.sh
+python3 mcp-servers/model_gateway.py        # read-only preview of what would be used
 ```
 
-Claude Code subagents pin their own model in each `.claude/agents/*.md` file's frontmatter
-(`model: sonnet` / `opus` / `inherit`) since that harness always runs on Claude — the gateway
-above applies to the OpenCode harness, where every provider is fair game.
+Claude Code subagents pin their own harness model in each `.claude/agents/*.md` file's
+frontmatter (`model: sonnet` / `opus` / `inherit`). The gateway and the overrides above drive
+the **cross-model tooling** — `second-opinion-mcp`'s independent review and `research_manifest`'s
+provider selection — where every provider is fair game regardless of the harness model.
 
 ---
 
@@ -423,7 +418,7 @@ deep-cut, disclosed-report-derived edge cases:
 
 <br>
 
-*Built on MCP · Runs on OpenCode or Claude Code · For authorized security testing only*
+*Built on Claude Code + MCP · For authorized security testing only*
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:8b5cf6,100:6366f1&height=100&section=footer" width="100%"/>
 

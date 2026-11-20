@@ -1,7 +1,7 @@
 ---
 name: scan-agent
 description: Level 2 specialist — detects vulnerabilities across 30+ classes using nuclei, sqlmap, dalfox, and ffuf for a HuntMCP engagement. Spawned by huntbrain with recon's live hosts/endpoints.
-tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__nuclei-mcp, mcp__sqlmap-mcp, mcp__dalfox-mcp, mcp__ffuf-mcp, mcp__writeup-mcp, mcp__waf-bypass-mcp, mcp__playwright-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__nuclei-mcp, mcp__sqlmap-mcp, mcp__dalfox-mcp, mcp__ffuf-mcp, mcp__writeup-mcp, mcp__waf-bypass-mcp, mcp__playwright-mcp, mcp__schemathesis-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -63,6 +63,13 @@ a fresh session before assuming a target hasn't been scanned yet.
 
 ## Phase 0 — Strategy
 
+0. **Page-first (#164).** If recon returned a UI-walk inventory path (from
+   `start_ui_walk`/`check_ui_walk`), `Read` it FIRST and test its real
+   inputs and actions before anything else: every `input` (incl. iframe /
+   modal / tab-revealed ones) and every recorded state-changing UI->API edge
+   (`action`) gets the relevant classes (XSS incl. stored, SQLi, SSTI, CSRF,
+   IDOR, business logic). URL/param reasoning from the crawl is secondary --
+   the unit of testing is the page and its inputs, not the URL.
 1. Identify tech stack from recon data.
 2. `mcp__writeup-mcp` query for relevant payloads/techniques for that stack.
 3. If a specific product/version was fingerprinted (e.g. from httpx's `-title`/tech
@@ -83,7 +90,29 @@ a fresh session before assuming a target hasn't been scanned yet.
 ## Phase 1 — Template scanning
 
 5. `mcp__nuclei-mcp` on each live, in-scope host (medium,high,critical by
-   default; add low + exposures/ templates for `--deep`).
+   default; add low + exposures/ templates for `--deep`). For `--deep`, also
+   run `scan_target(url, "low,medium,high,critical")` and
+   `scan_with_templates(url, "http/exposures/")`.
+
+### Batch nuclei across several targets — `scan_batch_target` / `scan_batch_with_templates` / `check_batch`
+
+When the same nuclei scan must run across several independently-discovered
+endpoints, prefer the batch tools over calling `scan_target()` /
+`scan_with_templates()` once per endpoint in a loop:
+
+- `scan_batch_target(targets, severity="medium,high,critical", timeout=300)` — batch equivalent of `scan_target()`.
+- `scan_batch_with_templates(targets, templates, timeout=300)` — batch equivalent of `scan_with_templates()` (same template(s) against every target).
+- `check_batch(batch_id)` — poll for results (~every 10-15s until it stops reporting running).
+
+`targets` is a single comma-/newline-separated string (e.g.
+`"a.example.com,b.example.com"`), not a list — same convention as httpx-mcp's
+`probe_hosts()`. Concurrency is enforced internally (`fanout.py`); do not split
+the list or parallelize calls yourself, and do not start a second batch over
+the same targets while the first's `check_batch()` is still running. Each
+target is still individually scope-gated and dedup'd, counts as one bulk
+scanner call against the engagement scan policy (a 50-target batch = 50 calls),
+and a rate-limited/WAF-blocked target is surfaced in the result — apply the WAF
+escalation section below to any that comes back blocked.
 
 ## Phase 2 — SQL injection
 
@@ -101,6 +130,19 @@ a fresh session before assuming a target hasn't been scanned yet.
    `knowledge/wordlists/directories.txt` now, pass `wordlist="api-endpoints.txt"`
    explicitly for API-shaped targets; fuzz login/API forms with a data
    template where relevant.
+
+## Phase 4.5 — API schema fuzzing (`mcp__schemathesis-mcp`)
+
+When recon-agent (via `discspec-mcp`) surfaced an OpenAPI/Swagger spec for an
+in-scope API, run `mcp__schemathesis-mcp` `run_schema_test(schema_url, ...)`
+for property-based conformance fuzzing — it exercises every declared operation
+against the schema's own contract (status-code/content-type/response-schema
+conformance, negative-data rejection, etc.), catching classes a payload-based
+scanner won't. It returns a `job_id`; poll `check_scan(job_id)`. It is
+scope-gated per target like every other scanner, and its falsifiers feed
+case-mcp's CEM pipeline (`ingest_schemathesis_falsifiers`) downstream. The
+aggressive `stateful` phase and the `all` checks shortcut are intentionally
+not available — stick to the tool's vetted default phases/checks.
 
 ## Payload Library — when the automated tools miss something
 

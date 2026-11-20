@@ -68,7 +68,7 @@ def test_no_production_code_imports_answer_key_or_evaluator():
     # Scan production trees (NOT tests/) for any import of the fixture answer/evaluator/retired modules.
     patterns = re.compile(r"^\s*(import|from)\s+(answer_key|evaluator|ground_truth)\b", re.M)
     offenders = []
-    for sub in ("mcp-servers", ".opencode", "scripts"):
+    for sub in ("mcp-servers", "scripts"):
         base = os.path.join(ROOT, sub)
         for dirpath, _dirs, files in os.walk(base):
             if "__pycache__" in dirpath:

@@ -121,8 +121,8 @@ Precondition: finding already **independently confirmed** through the normal flo
   request/response bytes (content-addressed) and `log_experiment` for per-trial dedupe.
 - **`scripts/hooks/scope_gate_hook.py`** *(modify)* — add `"case-mcp"` to `TIER2_MCP_SERVERS`. Add a
   `test_scope_gate_hook.py` case proving local case-mcp tools (no url arg) still return 0.
-- **`.opencode/agents/report-agent.md`** *(modify)* — document the Counterfactual Evidence Bundle section.
-- **`opencode.jsonc`** — no change (case-mcp already registered; no new env needed).
+- **`.claude/agents/report-agent.md`** *(modify)* — document the Counterfactual Evidence Bundle section.
+- **`.mcp.json`** — no change (case-mcp already registered; no new env needed).
 - **Tests** — see §E.
 
 ## D. Data model / schema (new tables in `case.db`)

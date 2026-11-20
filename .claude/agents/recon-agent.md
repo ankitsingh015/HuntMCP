@@ -1,7 +1,7 @@
 ---
 name: recon-agent
 description: Level 2 specialist — discovers attack surface (subdomains, live hosts, endpoints, ports) for a HuntMCP engagement. Spawned by huntbrain, never invoked directly against an unconfirmed target.
-tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp, mcp__browser-mcp, mcp__obscura-mcp, mcp__writeup-mcp, mcp__osint-mcp, mcp__github-security-mcp, mcp__surface-map-mcp
+tools: Read, Write, Edit, Bash, WebFetch, Skill, mcp__subfinder-mcp, mcp__httpx-mcp, mcp__katana-mcp, mcp__nmap-mcp, mcp__secrets-mcp, mcp__burp-import-mcp, mcp__browser-mcp, mcp__obscura-mcp, mcp__writeup-mcp, mcp__osint-mcp, mcp__github-security-mcp, mcp__surface-map-mcp, mcp__discspec-mcp
 model: sonnet
 permissionMode: default
 ---
@@ -131,6 +131,16 @@ flags anything abandoned for 30+ minutes).
    of the minified bundle. A 404 on the guessed `.map` path just means no
    map is exposed — move on, this is a bonus signal, not a required step.
 
+   **Parse any API spec you find with `mcp__discspec-mcp`.** When recon
+   turns up an OpenAPI/Swagger spec (`/openapi.json`, `/swagger.json`,
+   `/v3/api-docs`, `/*.yaml`) or a GraphQL endpoint (`/graphql`), call
+   `discover_from_openapi(url)` / `discover_from_graphql(url)` (both
+   scope-gated). A spec declares operations that are often linked from no
+   crawlable page, so this surfaces endpoints katana and the JS mining
+   above both miss. Feed the flattened endpoint/parameter list into the
+   surface map and on to scan-agent (which runs `schemathesis-mcp` against
+   the same spec for property-based conformance fuzzing).
+
 7. **Detect AI/LLM-backed features and route to prompt-injection testing.**
    A platform exposing an LLM-backed feature (document analysis, a
    chat/assistant endpoint, an upload-to-summarize flow) is a first-class
@@ -160,6 +170,22 @@ flags anything abandoned for 30+ minutes).
    rendered text plus every link on it. Don't call this for every URL
    katana finds -- it's for the handful of pages where actual content
    matters, not a bulk-crawl substitute.
+
+   **Page-first UI-walk (#164) -- required before recon is "done".** Links and
+   params are NOT the surface; the rendered page and its real inputs are. For
+   every in-scope app that has a UI, run `mcp__browser-mcp`
+   `start_ui_walk(url, mode="map", session_file=<the identity's session>)` and
+   poll `check_ui_walk(job_id)`. It renders each page, lists every real input
+   (lazy/third-party iframes like a Marketo embed, modal- and tab-revealed
+   fields, shadow DOM), clicks every control, and records the UI->API call each
+   makes -- without sending anything state-changing. It also writes
+   `page`/`input`/`action` surface-map nodes the breadth gate counts. Recon is
+   not complete while an app with UI has no walk. If the result says
+   `AUTH LOST` (or pages are `logged-out`), refresh the session (fresh
+   `session_file`, or `session_storage` for an SPA keeping its token in
+   sessionStorage) and re-walk -- never report the logged-out shell as the
+   authenticated surface. Look at the per-page screenshots (`Read` the JPEG
+   paths) to actually see each page. Return the inventory path to HuntBrain.
 
 ## Phase 4 — Port scanning
 

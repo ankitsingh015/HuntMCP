@@ -601,7 +601,7 @@ def test_format_session_commands_falls_back_to_slug_when_no_engagement_yaml(tmp_
 
 def test_active_pointer_env_var_isolates_concurrent_sessions(tmp_path):
     """Regression for scripts/new-target-session.sh's whole premise: two
-    real, separate processes (as two concurrent opencode/claude sessions
+    real, separate processes (as two concurrent Claude Code sessions
     actually are) each pointed at their own HUNTMCP_ACTIVE_POINTER must
     never see or overwrite each other's active target, even though both
     share the exact same data/engagements/ root underneath. Runs the

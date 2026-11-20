@@ -10,8 +10,7 @@ once to confirm reachability, not to grind through it repeatedly.
 Tier-2 (target-touching) -- callers must run scripts/check-scope.sh <host>
 first, exactly like every other Tier-2 tool in this repo. Registered in
 scripts/hooks/scope_gate_hook.py's TIER2_MCP_SERVERS so this is also
-structurally enforced for Claude Code (and, via .opencode/plugin/
-scope-gate.ts shelling out to that same script, for OpenCode too).
+structurally enforced for Claude Code via that PreToolUse hook.
 
 Setup: pip install -r requirements.txt gets the playwright Python package.
 No separate `playwright install chromium` needed if an existing system

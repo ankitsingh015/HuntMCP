@@ -44,23 +44,17 @@ This adds a cron entry that checks all active watched targets every 6 hours (con
 ## Example
 
 ```bash
-/openwatch start example.com --interval 6
+/watch start example.com --interval 6
 # → Started watching example.com (interval: 6h). Initial snapshot running
 #   in background (job_id="..."). Poll check_status("...") until it
 #   reports status=done.
 
-# Poll until the snapshot is ready
-/openwatch check_status <job_id>
-# → Snapshot captured for example.com: 12 subdomain(s), 40 endpoint(s).
-
 # Check manually
-/openwatch check example.com
+/watch check example.com
 # → Started change check for example.com (job_id="..."). Poll
 #   check_status("...") until it reports status=done.
-/openwatch check_status <job_id>
-# → Changes detected on example.com (2 event(s)): 2 new subdomains
 
 # View history
-/openwatch history example.com
+/watch history example.com
 # → Shows all watch events chronologically
 ```

@@ -4,10 +4,9 @@ RCE / state-changing actions -- today, specifically sqlmap's own
 finding into actual OS-level command execution on the target. Nothing today
 distinguishes that from an ordinary read-only injection test.
 
-Why this can't just be a declarative "ask" permission entry: opencode.jsonc's
-own comment records that a declarative bash permission ("ask" or "deny") was
-empirically NOT enforced under `opencode run --auto` (see
-scope_gate_hook.py's rm-block comment for the same finding) -- the only
+Why this can't just be a declarative "ask" permission entry: a static
+declarative permission can't inspect the actual command (see
+scope_gate_hook.py's rm-block comment for the same reasoning) -- the only
 structurally-unskippable enforcement point in this repo is the PreToolUse
 hook itself (exit 2 blocks the call). But a hook process fired
 non-interactively, as part of an agent's own tool call, has no real channel

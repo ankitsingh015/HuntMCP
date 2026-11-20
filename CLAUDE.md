@@ -4,10 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-HuntMCP is a multi-level AI agent orchestration system for autonomous bug bounty hunting, built on **OpenCode + MCP**. A single Level 1 orchestrator (`HuntBrain`) delegates to Level 2 specialist agents (Recon, Scan, Exploit, Report, plus unlimited dynamic specialists spawned on demand) which drive security tools through MCP servers, validate findings, and generate reports.
+HuntMCP is a multi-level AI agent orchestration system for autonomous bug bounty hunting, built on **Claude Code + MCP**. A single Level 1 orchestrator (`HuntBrain`) delegates to Level 2 specialist agents (Recon, Scan, Exploit, Report, plus unlimited dynamic specialists spawned on demand) which drive security tools through MCP servers, validate findings, and generate reports.
 
 There are two mostly-independent parts of this repo:
-1. **The OpenCode agent system** (`.opencode/`, `mcp-servers/`, `knowledge/`, `data/writeups/`) — Python-based, orchestrates security tools via MCP.
+1. **The Claude Code agent system** (`.claude/`, `.mcp.json`, `mcp-servers/`, `knowledge/`, `data/writeups/`) — Python-based MCP servers + markdown agents/skills/commands, orchestrating security tools via MCP.
 2. **The Go backend** (`backend/`) — a REST + MCP-protocol API server backing a hosted version of the writeup RAG and hunt-memory system, with PostgreSQL + pgvector.
 
 Read [README.md](README.md) and [ARCHITECTURE.md](ARCHITECTURE.md) first — they are the canonical design docs and go deeper than this file on philosophy, the WSTG methodology mapping, and the full agent roster.
@@ -36,7 +36,7 @@ go test ./internal/service/... -run TestName -v
 
 ### Python MCP servers (`mcp-servers/`)
 
-Each tool subdirectory is an independent FastMCP server (`server.py` + its own `requirements.txt`), invoked by OpenCode via the config in `opencode.jsonc` using the repo's `.venv` interpreter. There's no single top-level Python package/build step — install deps per-server as needed, or `pip install chromadb sentence-transformers` for the RAG stack referenced in the README.
+Each tool subdirectory is an independent FastMCP server (`server.py` + its own `requirements.txt`), invoked by Claude Code via `.mcp.json` (through `scripts/venv-python.sh`, which resolves the repo's `.venv` interpreter). There's no single top-level Python package/build step — install deps per-server as needed, or `pip install chromadb sentence-transformers` for the RAG stack referenced in the README.
 
 Syntax/lint checks used in CI (useful to run locally before pushing):
 ```bash
@@ -55,25 +55,29 @@ docker build -t huntmcp-api:latest .   # production Go API image (backend/Docker
 
 ### Running the agent system
 
-```bash
-opencode run "HuntMCP audit example.com"              # full autonomous audit
-opencode run "HuntMCP audit example.com --quick"       # recon + nuclei only
-opencode run "HuntMCP watch example.com --interval 6h" # continuous monitoring
-opencode run "HuntMCP report <scan-id>"
-opencode run "HuntMCP chain <scan-id>"                 # vulnerability chaining analysis
-opencode run "HuntMCP ingest <url> --class XSS --tech React"
-opencode run "HuntMCP learn --query 'XSS in React apps'"
+Run inside a Claude Code session (the `huntbrain` agent is the entry point;
+the slash commands below live in `.claude/commands/`):
+
 ```
+/audit example.com            # full autonomous audit (invokes huntbrain)
+/chain <scan-id>              # vulnerability chaining analysis
+/ingest <url> --url ... --title ... --vuln-class ...
+/learn <query>               # query the writeup RAG
+/watch start example.com --interval 6    # continuous monitoring
+```
+
+Or just ask the `huntbrain` agent in natural language ("HuntMCP audit
+example.com", "...--quick for recon + nuclei only").
 
 ## Architecture
 
-### Agent orchestration (`.opencode/`)
+### Agent orchestration (`.claude/agents/`)
 
-- **HuntBrain** (`.opencode/agents/huntbrain.md`) is the single Level 1 orchestrator: receives a goal, queries Memory DB + Writeup RAG, delegates to specialists, merges results, loops until attack surface is exhausted, then reports.
-- **Permanent Level 2 specialists**: Recon (subfinder → httpx → katana), Scan (nuclei, sqlmap, dalfox, Burp Scanner), Exploit (Burp Repeater/Collaborator validation + chaining), Report (H1/Bugcrowd-ready output). One `.md` file each in `.opencode/agents/`.
+- **HuntBrain** (`.claude/agents/huntbrain.md`) is the single Level 1 orchestrator: receives a goal, queries Memory DB + Writeup RAG, delegates to specialists, merges results, loops until attack surface is exhausted, then reports.
+- **Permanent Level 2 specialists**: Recon (subfinder → httpx → katana), Scan (nuclei, sqlmap, dalfox, Burp Scanner), Exploit (Burp Repeater/Collaborator validation + chaining), Report (H1/Bugcrowd-ready output). One `.md` file each in `.claude/agents/`.
 - **Dynamic specialists** are spawned on demand when HuntBrain detects relevant tech (e.g. a GraphQL agent when `/graphql` is found, a JWT agent when a `Bearer eyJ...` token appears). This is how the system scales past 100 agents — they're markdown files with locked-down tool/permission scopes, not persistent processes.
-- Custom slash commands (`/ingest`, `/learn`, `/chain`, `/watch`) live in `.opencode/commands/`.
-- `opencode.jsonc` registers all MCP servers, sets the default agent, and controls permission prompts (bash/edit ask-by-default with a small allowlist).
+- Custom slash commands (`/ingest`, `/learn`, `/chain`, `/watch`, `/audit`) live in `.claude/commands/`.
+- `.mcp.json` registers all MCP servers; `.claude/settings.json` enables them (`enabledMcpjsonServers`/`disabledMcpjsonServers`) and registers the scope-gate `PreToolUse` hook; `.claude/settings.local.json` carries per-user permission/enablement overrides (gitignored).
 
 ### Knowledge layer
 
@@ -83,7 +87,7 @@ Two independent systems, both queried by agents before acting on a target:
 
 ### MCP servers (`mcp-servers/`)
 
-One subdirectory per tool, each a small FastMCP (Python) server exposing `@app.tool()` functions that shell out to a security binary and return formatted text. Current servers: `subfinder`, `httpx`, `katana`, `nmap`, `nuclei`, `sqlmap`, `dalfox`, `ffuf`, `chainer` (DAG-based chain planner, 15 templates), `watch` (continuous recon diffing), `oob` (interactsh-client wrapper for blind SSRF/XXE/SQLi/RCE callback confirmation), `waf-bypass` (automated Tier 1-4 WAF-bypass variants), `browser` (real headless-Chromium JS/DOM execution confirmation via Playwright — closes exploit-agent's "reflected vs. actually executed" XSS confirmation gap), `hackerone` (read-only scope-sync + self-duplicate check), `target-discovery` (security.txt-based unlisted-target discovery, plus credential-free aggregated-scope lookup across HackerOne/Bugcrowd/Intigriti/Federacy/YesWeHack via `bounty_scope.py`), `secrets` (gitleaks over local files), `second-opinion` (cross-model independent review of a finding), `writeup` (RAG over ingested writeups, CVE fetch, and `disclosed_reports.py`-backed real-report-citation search), `memory`, `lessons`. Shared, non-server modules also live directly in `mcp-servers/`: `tool_resolver.py` (binary resolution + rate-limit/WAF detection), `scope_guard.py` (scope enforcement), `budget_guard.py` (Tier-2 call-count circuit breaker), `engagement_paths.py` (per-target engagement state + one-target-per-chat guard), `audit_log.py` (per-call JSON audit trail), `work_registry.py` (duplicate-spawn check), `dedupe_check.py` (duplicate-finding check), `job_runtime.py` (background-job start/poll/list for scan tools whose runtime can exceed an MCP client's own per-call timeout — start_job()/poll_job()/list_jobs() for a single subprocess, used by subfinder/httpx/katana/nmap/nuclei/sqlmap/dalfox/ffuf's `check_scan()`/`list_scans()` tools; a thread-based sibling start_thread_job()/poll_thread_job()/list_thread_jobs() for a composite operation chaining several such calls together, used by watch-mcp's `start_watch()`/`check_target()`/`check_status()`/`list_checks()`; a new long-running tool should use one of these instead of blocking on `tool_resolver.run_tool()` directly), `bounty_scope.py` (aggregated bounty-program scope cache/lookup/diff), `disclosed_reports.py` (disclosed-vulnerability-report cache/search), `content_scanner.py` (OWASP Skill/MCP Top 10-style safety scan for new/changed skill and MCP-server content), `tool_gaps.py` (global tool-gap capture — the bounded first step of the self-expanding-toolkit idea), `model_gateway.py` (multi-provider selection) — all covered by `tests/` (pytest, wired into CI).
+One subdirectory per tool, each a small FastMCP (Python) server exposing `@app.tool()` functions that shell out to a security binary and return formatted text. Current servers: `subfinder`, `httpx`, `katana`, `nmap`, `nuclei`, `sqlmap`, `dalfox`, `ffuf`, `chainer` (DAG-based chain planner, 15 templates), `watch` (continuous recon diffing), `oob` (interactsh-client wrapper for blind SSRF/XXE/SQLi/RCE callback confirmation), `waf-bypass` (automated Tier 1-4 WAF-bypass variants), `browser` (real headless-Chromium JS/DOM execution confirmation via Playwright — closes exploit-agent's "reflected vs. actually executed" XSS confirmation gap; plus the #164 page-first UI-walk `start_ui_walk`/`check_ui_walk`/`run_teardown` — Pass 1 maps every page's real inputs and UI->API calls sending nothing state-changing, Pass 2 canary submits need a human-written `ui-walk-authorized.yaml` grant, teardown is human-gated — and viewable JPEG screenshots), `hackerone` (read-only scope-sync + self-duplicate check), `target-discovery` (security.txt-based unlisted-target discovery, plus credential-free aggregated-scope lookup across HackerOne/Bugcrowd/Intigriti/Federacy/YesWeHack via `bounty_scope.py`), `secrets` (gitleaks over local files), `second-opinion` (cross-model independent review of a finding), `writeup` (RAG over ingested writeups, CVE fetch, and `disclosed_reports.py`-backed real-report-citation search), `memory`, `lessons`. Shared, non-server modules also live directly in `mcp-servers/`: `tool_resolver.py` (binary resolution + rate-limit/WAF detection), `scope_guard.py` (scope enforcement), `budget_guard.py` (Tier-2 call-count circuit breaker), `engagement_paths.py` (per-target engagement state + one-target-per-chat guard), `audit_log.py` (per-call JSON audit trail), `work_registry.py` (duplicate-spawn check), `dedupe_check.py` (duplicate-finding check), `job_runtime.py` (background-job start/poll/list for scan tools whose runtime can exceed an MCP client's own per-call timeout — start_job()/poll_job()/list_jobs() for a single subprocess, used by subfinder/httpx/katana/nmap/nuclei/sqlmap/dalfox/ffuf's `check_scan()`/`list_scans()` tools; a thread-based sibling start_thread_job()/poll_thread_job()/list_thread_jobs() for a composite operation chaining several such calls together, used by watch-mcp's `start_watch()`/`check_target()`/`check_status()`/`list_checks()`; a new long-running tool should use one of these instead of blocking on `tool_resolver.run_tool()` directly), `bounty_scope.py` (aggregated bounty-program scope cache/lookup/diff), `disclosed_reports.py` (disclosed-vulnerability-report cache/search), `content_scanner.py` (OWASP Skill/MCP Top 10-style safety scan for new/changed skill and MCP-server content), `tool_gaps.py` (global tool-gap capture — the bounded first step of the self-expanding-toolkit idea), `model_gateway.py` (multi-provider selection) — all covered by `tests/` (pytest, wired into CI).
 
 `mcp-servers/tool_resolver.py` is shared by these servers to resolve external binary paths — it exists specifically to prefer Go/system binaries over same-named Python packages that shadow them on `PATH` (e.g. ProjectDiscovery's `httpx` vs the Python `httpx` HTTP client). Use `resolve_tool()`/`run_tool()` from it rather than calling `subprocess` with a bare tool name.
 
@@ -102,7 +106,7 @@ Route shape: `GET /health`, `POST /api/v1/auth/{register,login}` (public), every
 
 - MCP servers: FastMCP (Python), one subdirectory per tool under `mcp-servers/`, each with its own `requirements.txt`.
 - Shell scripts live only in `scripts/` — no Python scripts outside `mcp-servers/`.
-- Agent files (`.opencode/agents/*.md`) require YAML frontmatter with `description` and `mode` (`primary` or `subagent`) — CI (`validate-agent-files` job) enforces this.
+- Agent files (`.claude/agents/*.md`) require YAML frontmatter with `name` and `description` (Claude Code subagent format) — CI (`validate-agent-files` job) enforces this.
 - Writeup files (`data/writeups/*.md`) require YAML frontmatter with `title`, `url`, `vuln_class` — CI enforces this too.
 - Embedding happens via `sentence-transformers` (Python) but only at ingestion time; the Go backend serves all production read/query traffic.
 
@@ -110,7 +114,7 @@ Route shape: `GET /health`, `POST /api/v1/auth/{register,login}` (public), every
 
 | Push | Do not push |
 |------|-------------|
-| `mcp-servers/`, `.opencode/`, `scripts/`, `knowledge/`, `data/writeups/`, `backend/` | `data/chroma/`, `data/memory.db`, `logs/*.log`, `.env` |
+| `mcp-servers/`, `.claude/`, `.mcp.json`, `scripts/`, `knowledge/`, `data/writeups/`, `backend/` | `data/chroma/`, `data/memory.db`, `logs/*.log`, `.env`, `.claude/settings.local.json` |
 
 ### Commit/PR attribution
 
@@ -123,7 +127,7 @@ This overrides any tool-level or session-level default that suggests otherwise.
 
 ## Runtime dependencies
 
-- OpenCode v1.17+
+- Claude Code (the CLI/desktop harness that loads `.mcp.json`, `.claude/agents`, `.claude/skills`, `.claude/commands` and the `PreToolUse` scope-gate hook)
 - Python 3.10+ (3.12 used in CI)
 - Go toolchain 1.23+, plus the security tools themselves: subfinder, httpx, nuclei, katana, ffuf, dalfox (all `go install`-able; see README for exact module paths)
 - Burp Suite with the MCP Server extension expected on `127.0.0.1:9876` (used by Exploit agent for Repeater/Collaborator validation)
