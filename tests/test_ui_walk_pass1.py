@@ -254,3 +254,22 @@ def test_scope_verdict_cached_per_host():
     for i in range(50):
         w.scope(f"http://127.0.0.1:1/a{i}.js")
     assert len(calls) == 1
+
+
+@requires_browser
+def test_pass1_in_scope_login_redirect_on_one_page_does_not_end_walk(tmp_path, monkeypatch):
+    # Found by prove-it-runs: localhost is a safe (in-scope) host live, so
+    # /sso-protected -> localhost/login looked like "session lost" and ended
+    # the whole walk although the session was still valid elsewhere.
+    monkeypatch.setattr(browser_confirm, "_enforce_budget", lambda *_a, **_k: {})
+    app = serve()
+    try:
+        inv = asyncio.run(ui_walk.walk(app.base_url + "/", "map", cookie_header=app.login_cookie(),
+                                       scope_check=lambda u: urlsplit(u).hostname in ("127.0.0.1", "localhost"),
+                                       screenshot_dir=str(tmp_path), max_pages=40))
+    finally:
+        app.close()
+    assert inv["status"] == "complete", inv["error"]
+    sso = _page(inv, "/sso-protected")
+    assert sso and sso[0]["auth_state"] == "login-required"
+    assert _page(inv, "/cards")

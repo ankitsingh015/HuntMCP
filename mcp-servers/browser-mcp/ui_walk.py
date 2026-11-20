@@ -337,11 +337,18 @@ class _Walker:
         main_controls = [c for f, d in snap if f is page.main_frame for c in d["controls"]]
         if L.looks_logged_out(page.url, main_controls, self.had_session):
             login_redirect = bool(L._LOGIN_PATH_RE.search(urlsplit(page.url).path))
-            if is_start or login_redirect:
+            if is_start:
                 raise _Stop("auth_lost", f"logged-out view at {page.url}")
             rec["auth_state"] = "logged-out"
             rec["title"] = await page.title()
             await self._shoot(page, rec)
+            if login_redirect:
+                # One page bouncing to a login (a separately-protected / SSO
+                # area) is not proof the whole session died: re-check the start
+                # page, which rendered logged-in when the walk began.
+                if not await self._session_still_valid():
+                    raise _Stop("auth_lost", f"logged-out view at {page.url} and the start page is logged out too")
+                rec["auth_state"] = "login-required"
             return rec
         rec["url"] = _defrag(page.url) if self.scope(page.url) else url
         rec["title"] = await page.title()
@@ -432,6 +439,25 @@ class _Walker:
             absorb_inputs(snap, sig)
         await self._shoot(page, rec)
         return rec
+
+    async def _session_still_valid(self) -> bool:
+        page = self.page
+        saved, self.cur_page = self.cur_page, None  # probe edges belong to no page
+        try:
+            await self._budget()
+            await page.goto(self.start_url, wait_until="domcontentloaded")
+            await self._settle(page, first=True)
+            if not self.scope(page.url):
+                return False
+            snap = await self._snapshot(page)
+            ctrls = [c for f, d in snap if f is page.main_frame for c in d["controls"]]
+            return not L.looks_logged_out(page.url, ctrls, self.had_session)
+        except _Stop:
+            raise
+        except Exception:  # noqa: BLE001 -- cannot tell: treat as lost (fail safe)
+            return False
+        finally:
+            self.cur_page = saved
 
     async def _shoot(self, page, rec) -> None:
         try:
