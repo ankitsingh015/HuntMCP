@@ -842,3 +842,24 @@ def test_main_blocks_edit_of_ui_walk_grant_module(monkeypatch):
 def test_main_no_active_engagement_still_works(monkeypatch, tmp_path):
     payload = {"tool_name": "Write", "tool_input": {"file_path": str(tmp_path / "unrelated.txt"), "content": "x"}}
     assert _run_main(monkeypatch, payload) == 0
+
+
+def test_main_blocks_write_of_grant_file_for_a_non_active_engagement(monkeypatch, tmp_path):
+    _active_grant_path(monkeypatch, tmp_path)  # "grant-target" is active
+    other = str(tmp_path / "engagements" / "some-other-target" / "ui-walk-authorized.yaml")
+    payload = {"tool_name": "Write", "tool_input": {"file_path": other, "content": "canary_submit: true\n"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_grant_write_with_no_active_engagement(monkeypatch, tmp_path):
+    monkeypatch.setattr(engagement_paths, "ENGAGEMENTS_ROOT", str(tmp_path / "engagements"))
+    path = str(tmp_path / "engagements" / "future-target" / "ui-walk-authorized.yaml")
+    payload = {"tool_name": "Write", "tool_input": {"file_path": path, "content": "canary_submit: true\n"}}
+    assert _run_main(monkeypatch, payload) == 2
+
+
+def test_main_blocks_bash_copy_of_grant_into_an_engagement_dir(monkeypatch, tmp_path):
+    _active_grant_path(monkeypatch, tmp_path)
+    dest = str(tmp_path / "engagements" / "other-target") + "/"
+    payload = {"tool_name": "Bash", "tool_input": {"command": f"cp /tmp/ui-walk-authorized.yaml {dest}"}}
+    assert _run_main(monkeypatch, payload) == 2

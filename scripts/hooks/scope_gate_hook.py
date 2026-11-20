@@ -58,6 +58,7 @@ from budget_guard import BudgetExceeded  # noqa: E402
 from budget_guard import enforce as _enforce_budget  # noqa: E402
 import hook_confirm  # noqa: E402
 import rce_confirm  # noqa: E402
+import engagement_paths  # noqa: E402
 import ui_walk_grant  # noqa: E402
 from scope_guard import NoEngagementFile, is_in_scope, load_engagement  # noqa: E402
 from scope_guard import is_safe_test_host as _is_safe_test_host  # noqa: E402
@@ -642,6 +643,26 @@ def _protected_hit(candidate: Path | None, protected: frozenset[Path]) -> Path |
     for p in protected:
         if candidate in p.parents:
             return p
+    grant = _grant_file_hit(candidate)
+    if grant is not None:
+        return grant
+    return None
+
+
+def _grant_file_hit(candidate: Path) -> Path | None:
+    """#164: the human-only UI-walk Pass-2 grant is protected for EVERY
+    engagement, not just the active one -- otherwise an agent could write
+    data/engagements/<other>/ui-walk-authorized.yaml (or pre-plant one for a
+    future slug) and then point the active-engagement pointer at it. Matches a
+    write to the grant file itself, or a copy/move INTO an engagement directory
+    (or the engagements root) whose destination basename-join would land on it
+    -- the same conservative directory-destination stance as above."""
+    try:
+        root = Path(engagement_paths.ENGAGEMENTS_ROOT).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if candidate.name == ui_walk_grant.GRANT_FILENAME and candidate.parent.parent == root:
+        return candidate
     return None
 
 
@@ -663,7 +684,9 @@ def _protected_path_from_edit_tool(tool_name: str, tool_input: dict) -> Path | N
     resolved = _resolve_maybe_relative(raw)
     if resolved is None:
         return None
-    return resolved if resolved in _protected_paths() else None
+    if resolved in _protected_paths():
+        return resolved
+    return _grant_file_hit(resolved)
 
 
 # Bash commands whose LAST non-flag positional argument is the write
@@ -834,6 +857,12 @@ def _writes_protected_path(command: str) -> Path | None:
     tests asserting the python3 one-liner, zip-slip, bare-git-checkout,
     and git-reset-hard cases all do NOT get caught."""
     protected = _protected_paths()
+    if ui_walk_grant.GRANT_FILENAME in command:
+        # #164: the grant file's name anywhere in a command that writes is
+        # enough -- `cp /tmp/ui-walk-authorized.yaml data/engagements/x/` never
+        # spells out the destination file itself. Fail closed: the agent has no
+        # legitimate reason to touch this file at all (the walker only reads it).
+        return Path(engagement_paths.ENGAGEMENTS_ROOT) / "*" / ui_walk_grant.GRANT_FILENAME
     for piece in _CHAIN_SPLIT_RE.split(command):
         try:
             words = shlex.split(piece)
