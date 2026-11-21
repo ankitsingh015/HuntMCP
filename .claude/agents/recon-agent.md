@@ -185,7 +185,15 @@ flags anything abandoned for 30+ minutes).
    `session_file`, or `session_storage` for an SPA keeping its token in
    sessionStorage) and re-walk -- never report the logged-out shell as the
    authenticated surface. Look at the per-page screenshots (`Read` the JPEG
-   paths) to actually see each page. Return the inventory path to HuntBrain.
+   paths) to actually see each page. The Burp mirror is automatic: leave `upstream_proxy` empty and the walker
+   auto-detects a local Burp on 127.0.0.1:8080 (only a listener that identifies
+   itself as Burp Suite is used) -- do not ask the human. Pass an explicit
+   loopback `upstream_proxy="http://127.0.0.1:<port>"` only if the human said
+   Burp listens elsewhere, `"off"` if they asked for no mirror or the result
+   said `blocked mid-walk` / `target refused proxied traffic` (re-run once with
+   `"off"`); never any other proxy. The result
+   states `Burp mirror: ON/OFF (<reason>)`; a block seen only through the proxy
+   is a tooling artifact, not a finding. Return the inventory path to HuntBrain.
 
 ## Phase 4 — Port scanning
 

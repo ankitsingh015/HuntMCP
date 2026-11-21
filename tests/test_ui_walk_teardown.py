@@ -173,3 +173,34 @@ def test_execute_uses_only_the_confirmed_tokens(monkeypatch):
                          had_session=True, session_file=None, auth={}, walk_id="w")
     w.configure(cleanup_tokens=plan["cleanup_tokens"])
     assert set(w.tokens) == {"hmcccc0001"}
+
+
+# ---- fix wave item 11: DOM-source tokens are never cleanup tokens or ownership proof ----
+def test_dom_source_tokens_not_in_teardown_plan():
+    ui_walk_store.register_canary("hmaaaa0001", {"page": "/items", "token": "hmaaaa0001"})
+    ui_walk_store.register_canary("hm0123456789", {"token": "hm0123456789", "source": "hash",  # gitleaks:allow -- synthetic walker canary token, not a secret
+                                                   "page": "http://127.0.0.1:9/p", "kind": "dom-source"})
+    plan = T.plan_teardown("http://127.0.0.1:9/", "keep")
+    assert plan["cleanup_tokens"] == ["hmaaaa0001"]
+    # the human-confirmed fingerprint binds exactly the cleanup set, without the DOM token
+    assert plan["fingerprint"] == T.teardown_fingerprint(T.engagement_paths.get_active_target() or "", "keep",
+                                                         "http://127.0.0.1:9/", ["hmaaaa0001"], plan["steps"],
+                                                         plan["session"])
+
+
+def test_dom_source_tokens_never_loaded_by_teardown_walker(tmp_path):
+    ui_walk_store.register_canary("hmaaaa0001", {"page": "/items", "token": "hmaaaa0001"})
+    ui_walk_store.register_canary("hm0123456789", {"token": "hm0123456789", "kind": "dom-source"})  # gitleaks:allow -- synthetic walker canary token, not a secret
+    w = T.TeardownWalker("http://127.0.0.1:9/", "canary", scope=_scope, max_pages=1, max_clicks_per_page=1,
+                         same_origin_only=True, wall_clock_s=10, action_delay_s=0,
+                         screenshot_dir=str(tmp_path), had_session=False, session_file=None, auth={},
+                         walk_id="t")
+    # even if a dom-source token were somehow in the confirmed set, it is not ownership proof
+    w.configure(cleanup_tokens=["hmaaaa0001", "hm0123456789"])
+    assert set(w.tokens) == {"hmaaaa0001"}
+
+
+def test_destroy_ignores_dom_source_tokens_as_ownership():
+    import ui_walk_destroy
+    assert ui_walk_destroy.ownership_tokens({"hmaaaa0001": {"page": "/items"},
+                                             "hm0123456789": {"kind": "dom-source"}}) == {"hmaaaa0001"}

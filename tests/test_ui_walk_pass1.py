@@ -37,6 +37,8 @@ def _walk(app, start, tmp, **kw):
 def walked(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     mp.setattr(browser_confirm, "_enforce_budget", lambda *_a, **_k: {})
+    # isolation only: a DOM-sink hit must never write into the live engagement's canary registry
+    mp.setenv("HUNTMCP_UI_WALK_DIR", str(tmp_path_factory.mktemp("uw")))
     app = serve()
     for i in range(20):
         app.seed_item(f"seed item {i}")
@@ -94,7 +96,7 @@ def test_route_decision_blocks_mutating_get_fetch():
 def test_pass1_completes(walked):
     _, inv = walked
     assert inv["status"] == "complete", inv.get("error")
-    assert inv["schema_version"] == 1
+    assert inv["schema_version"] == 2
     assert any("cannot be detected" in h for h in inv["honest_limits"])
 
 

@@ -76,6 +76,7 @@ import browser_confirm
 import job_runtime
 import session_capture
 import ui_walk
+import ui_walk_events
 import ui_walk_logic
 import ui_walk_store
 import ui_walk_teardown
@@ -473,6 +474,7 @@ async def capture_oauth_redirect(identity_label: str, start_url: str, callback_h
 
 _UI_JOBS: dict = {}
 _MAX_LISTED_PAGES = 30
+_MAX_EVENT_LINES = 20
 
 
 def _run_walk(**kw) -> dict:
@@ -498,7 +500,26 @@ def _target_detail(inv: dict) -> str:
     """Everything target-derived (titles, URLs, control text, field names) --
     quarantined as one block by the caller."""
     out = []
-    for p in (inv.get("pages") or [])[:_MAX_LISTED_PAGES]:
+    listed = (inv.get("pages") or [])[:_MAX_LISTED_PAGES]
+    # Candidates live on the inventory, each naming its page: list them under
+    # that page (matched on the page URL or its query-stripped form); only the
+    # ones whose page matches no listed page stay in the flat list below.
+    by_page: dict[int, list[dict]] = {}
+    flat: list[dict] = []
+    for c in inv.get("candidates") or []:
+        cp = c.get("page") if isinstance(c, dict) else None
+        idx = None
+        if isinstance(cp, str) and cp:
+            for n, p in enumerate(listed):
+                u = p.get("url") or ""
+                if cp in (u, ui_walk_events._strip_url(u)[0], ui_walk._defrag(u)):
+                    idx = n
+                    break
+        if idx is None:
+            flat.append(c)
+        else:
+            by_page.setdefault(idx, []).append(c)
+    for n, p in enumerate(listed):
         out.append(f"PAGE {p.get('url')} -- {p.get('title')!r} [{p.get('auth_state', 'ok')}]")
         for i in p.get("inputs") or []:
             rev = f" (revealed by click {i['revealed_by']})" if i.get("revealed_by") else ""
@@ -508,11 +529,53 @@ def _target_detail(inv: dict) -> str:
             if (e.get("method") or "GET") != "GET" or not e.get("sent"):
                 out.append(f"  edge {e.get('method')} {e.get('url')} sent={e.get('sent')} "
                            f"blocked={e.get('blocked_reason')}")
+        evs = p.get("events") or []
+        for e in evs[:_MAX_EVENT_LINES]:
+            out.append("  event " + json.dumps(e, default=str)[:300])
+        if len(evs) > _MAX_EVENT_LINES:
+            out.append(f"  ... {len(evs) - _MAX_EVENT_LINES} more event(s) in the inventory file")
+        for c in by_page.get(n, []):
+            out.append("  candidate " + json.dumps(c, default=str)[:400])
     if len(inv.get("pages") or []) > _MAX_LISTED_PAGES:
         out.append(f"... {len(inv['pages']) - _MAX_LISTED_PAGES} more page(s) in the inventory file")
-    for c in inv.get("candidates") or []:
+    for c in flat:
         out.append("CANDIDATE " + json.dumps(c, default=str)[:400])
     return "\n".join(out)
+
+
+_PROXY_ARTIFACT_NOTE = (
+    "The block happened only through the proxy, so it is a proxy/tooling artifact (likely the proxy's "
+    "outbound connection), not a finding. If the programme's rules allow it, the human may change their "
+    "own proxy settings and re-run with the mirror.")
+
+
+def _event_lines(inv: dict) -> list[str]:
+    """Counts only -- no target text. Event/console text itself stays in the quarantined block."""
+    pages = inv.get("pages") or []
+    types = Counter(e.get("type") for p in pages for e in p.get("events") or [])
+    dropped = sum(int(p.get("events_dropped") or 0) for p in pages)
+    out = ["Events: " + (", ".join(f"{k}={v}" for k, v in sorted(types.items(), key=lambda kv: str(kv[0])))
+                         or "none") + f" (dropped: {dropped})"]
+    extra = [f"{k}={inv[f'events_{k}']}" for k in ("forged_dropped", "snapshot_frames_skipped",
+                                                  "drains_skipped", "candidate_errors")
+             if inv.get(f"events_{k}")]
+    if extra:
+        out.append("Event recorder: " + ", ".join(extra))
+    out.append(f"Pass-2 events: {len(inv.get('pass2_events') or [])}")
+    m = inv.get("burp_mirror") or {}
+    auto = f" (auto: {m['auto']})" if m.get("auto") else ""
+    if not m.get("requested") and m.get("auto"):
+        out.append(f"Burp mirror: OFF{auto}")
+    if m.get("requested"):
+        if m.get("active"):
+            out.append(f"Burp mirror: ON via {m.get('proxy')}{auto}")
+        else:
+            out.append(f"Burp mirror: OFF ({m.get('reason') or 'unknown'})")
+            if m.get("detail"):
+                out.append("Burp mirror detail: " + json.dumps(str(m["detail"])[:200]))
+            if m.get("reason") == "target refused proxied traffic":
+                out.append(_PROXY_ARTIFACT_NOTE)
+    return out
 
 
 def _format_walk(value: dict) -> str:
@@ -538,6 +601,7 @@ def _format_walk(value: dict) -> str:
         + (", ".join(f"{k}={v}" for k, v in sorted(cand.items())) or "none"),
         f"Surface-map nodes: {value.get('nodes') or {}}",
     ]
+    lines += _event_lines(inv)
     if inv.get("status") == "auth_lost":
         lines.append("AUTH LOST: the session no longer renders the logged-in view -- refresh the session "
                      "(session_file / session_storage) and re-walk; do NOT treat the logged-out shell as the surface.")
@@ -551,6 +615,8 @@ def _format_teardown(r: dict) -> str:
     lines = [f"Teardown status={r.get('status')}" + (f" error={r.get('error')}" if r.get("error") else ""),
              f"Steps run: {r.get('steps_run')}", f"Walker objects deleted: {len(r.get('deleted') or [])}",
              "Candidates (leads, NOT confirmed): " + (", ".join(f"{k}={v}" for k, v in sorted(cand.items())) or "none")]
+    if r.get("inventory"):
+        lines += _event_lines(r["inventory"])
     lines += [f"Note: {n}" for n in r.get("notes") or []]
     if r.get("path"):
         lines.append(f"Inventory: {r['path']}")
@@ -563,7 +629,8 @@ def _format_teardown(r: dict) -> str:
 def start_ui_walk(url: str, mode: str = "map", session_file: str = "", cookie_header: str = "",
                   bearer_token: str = "", local_storage: dict[str, str] | None = None,
                   session_storage: dict[str, str] | None = None, max_pages: int = 50,
-                  max_clicks_per_page: int = 40, same_origin_only: bool = True) -> str:
+                  max_clicks_per_page: int = 40, same_origin_only: bool = True,
+                  upstream_proxy: str = "") -> str:
     """PAGE-FIRST comprehension of an app (#164): render every in-scope page
     reachable from url, list its REAL inputs (incl. lazy/third-party iframes,
     modal- and tab-revealed fields, shadow DOM), click every control, and
@@ -580,6 +647,14 @@ def start_ui_walk(url: str, mode: str = "map", session_file: str = "", cookie_he
     cancel-without-revoke candidates). Refused unless the HUMAN has written
     data/engagements/<slug>/ui-walk-authorized.yaml (`canary_submit: true`) --
     you cannot create that file.
+    upstream_proxy (optional, usually leave empty): the Burp mirror -- a copy
+    of what the walker really sends shows up in the human's own LOCAL Burp.
+    Empty = auto: if a listener on 127.0.0.1:8080 says it is Burp Suite,
+    the mirror turns on by itself, otherwise the walk runs direct (the
+    result says which; no need to ask anyone). "off" disables it; an explicit
+    loopback http URL (e.g. "http://127.0.0.1:8081") or HUNTMCP_UPSTREAM_PROXY
+    picks another listener; anything non-loopback is refused before a job
+    starts. The mirror never changes what is sent.
     Returns a job id; poll with check_ui_walk. Pass session_file /
     session_storage / cookie_header / bearer_token / local_storage to walk
     the logged-in app. Requires scope-gate clearance first (Tier-2)."""
@@ -587,12 +662,16 @@ def start_ui_walk(url: str, mode: str = "map", session_file: str = "", cookie_he
         return f"Error: unknown mode {mode!r}; expected 'map' or 'canary'."
     if not ui_walk_logic._default_scope_check(url):
         return f"Refused: {url!r} is out of scope for the active engagement -- no walk started."
+    refusal = ui_walk.proxy_refusal(upstream_proxy)
+    if refusal:
+        return f"Error: {refusal} -- no walk started."
     job = job_runtime.start_thread_job(
         "ui-walk", _run_walk, _UI_JOBS, start_url=url, mode=mode,
         session_file=session_file or None, cookie_header=cookie_header or None,
         bearer_token=bearer_token or None, local_storage=local_storage or None,
         session_storage=session_storage or None, max_pages=max_pages,
-        max_clicks_per_page=max_clicks_per_page, same_origin_only=same_origin_only)
+        max_clicks_per_page=max_clicks_per_page, same_origin_only=same_origin_only,
+        upstream_proxy=upstream_proxy)
     return (f"UI-walk started ({mode}) on {urlsplit(url).hostname}: job_id={job['job_id']}. "
             "Poll with check_ui_walk(job_id).")
 
@@ -625,7 +704,7 @@ def list_ui_walks() -> str:
 
 @app.tool()
 def run_teardown(url: str, identity_label: str, session_file: str = "", cookie_header: str = "",
-                 steps: list[str] | None = None) -> str:
+                 steps: list[str] | None = None, upstream_proxy: str = "") -> str:
     """FINAL, human-gated engagement step (#164) -- only when the HUMAN says the
     engagement is done (ideally after triage, so findings stay reproducible).
     Never on your own initiative. Steps: cleanup (delete every walker-created
@@ -636,7 +715,11 @@ def run_teardown(url: str, identity_label: str, session_file: str = "", cookie_h
     scripts/confirm-state-change.sh command the HUMAN must run in their own
     terminal (bound to this exact cleanup set + identity); then call again.
     Returns a job id to poll with check_ui_walk. Requires scope-gate clearance
-    first (Tier-2)."""
+    first (Tier-2). upstream_proxy: optional local Burp mirror, same rules as
+    start_ui_walk (loopback http only, "off" disables)."""
+    refusal = ui_walk.proxy_refusal(upstream_proxy)
+    if refusal:
+        return f"Error: {refusal} -- no teardown started."
     try:
         plan, stop = ui_walk_teardown.gate(url, identity_label, steps,
                                            session=ui_walk_teardown.session_ref(session_file or None,
@@ -650,7 +733,8 @@ def run_teardown(url: str, identity_label: str, session_file: str = "", cookie_h
                     "then call run_teardown again with the same arguments.")
         return f"Refused: {stop.get('error')}"
     job = job_runtime.start_thread_job("ui-walk-teardown", _run_teardown_job, _UI_JOBS, plan,
-                                       session_file=session_file or None, cookie_header=cookie_header or None)
+                                       session_file=session_file or None, cookie_header=cookie_header or None,
+                                       upstream_proxy=upstream_proxy)
     return f"Teardown started: job_id={job['job_id']}. Poll with check_ui_walk(job_id)."
 
 

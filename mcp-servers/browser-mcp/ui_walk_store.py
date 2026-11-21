@@ -86,6 +86,20 @@ def load_canaries() -> dict[str, dict]:
         return {}
 
 
+DOM_SOURCE_KIND = "dom-source"
+
+
+def is_dom_source(record) -> bool:
+    """A Pass-1 DOM-source canary (registered on a sink hit, never submitted):
+    never a teardown cleanup token and never proof that a walker created an object."""
+    return isinstance(record, dict) and record.get("kind") == DOM_SOURCE_KIND
+
+
+def load_cleanup_canaries() -> dict[str, dict]:
+    """load_canaries() without the DOM-source tokens."""
+    return {t: r for t, r in load_canaries().items() if not is_dom_source(r)}
+
+
 CREATED_IDS = "created-ids.json"
 
 

@@ -52,6 +52,12 @@ STEALTH_ARGS = [
 ]
 
 
+# Mirror mode only (launch_kwargs(proxy=...)): keep Chromium's own background
+# networking off the user's proxy.
+MIRROR_QUIET_ARGS = ("--disable-background-networking", "--disable-component-update",
+                     "--disable-domain-reliability")
+
+
 def find_browser_executable() -> str | None:
     for path in SYSTEM_BROWSER_CANDIDATES:
         if os.path.isfile(path) and os.access(path, os.X_OK):
@@ -59,13 +65,20 @@ def find_browser_executable() -> str | None:
     return None
 
 
-def launch_kwargs(headless: bool = True) -> dict:
+def launch_kwargs(headless: bool = True, proxy: str | None = None) -> dict:
     # headless=False is for browser_confirm.py's start_manual_intervention()
     # only -- a real, visible window a human can actually see and click in,
     # for whatever blocks scripted automation entirely (a CAPTCHA, an
     # unusual login flow). Every other caller in this repo wants headless
     # (no display needed, and the default), so this stays True unless a
     # caller explicitly asks otherwise.
+    #
+    # proxy is for the #164 UI-walk's optional Burp mirror only, and the
+    # caller has already checked it is a loopback URL. Chromium skips the
+    # proxy for loopback targets by default; --proxy-bypass-list=<-loopback>
+    # turns that off so a locally served target shows up in Burp too, and
+    # MIRROR_QUIET_ARGS keep Chromium's own background traffic out of it. With
+    # proxy=None the result is exactly what every other browser tool gets.
     executable = find_browser_executable()
     kwargs: dict = {
         "headless": headless,
@@ -73,6 +86,13 @@ def launch_kwargs(headless: bool = True) -> dict:
     }
     if executable:
         kwargs["executable_path"] = executable
+    if proxy:
+        kwargs["proxy"] = {"server": proxy}
+        # Chromium's own background traffic (component updates, safe-browsing /
+        # variations fetches to Google) must not go through the human's proxy:
+        # only the target's traffic belongs in Burp.
+        kwargs["args"].extend(MIRROR_QUIET_ARGS)
+        kwargs["args"].append("--proxy-bypass-list=<-loopback>")
     return kwargs
 
 

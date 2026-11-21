@@ -64,3 +64,29 @@ def test_every_browser_mcp_tool_named_in_agents_exists():
         if f.endswith(".md"):
             mentioned |= set(re.findall(r"\b(start_ui_walk|check_ui_walk|list_ui_walks|run_teardown)\b", _read(f)))
     assert mentioned and mentioned <= names
+
+
+def test_exploit_agent_mentions_new_candidate_types():
+    t = _read("exploit-agent.md")
+    for ct in ("cookie-flags-candidate", "postmessage-wildcard-target-candidate",
+               "postmessage-no-origin-check-candidate", "storage-token-candidate",
+               "redirect-param-candidate", "clickjacking-candidate", "cors-candidate",
+               "tabnabbing-candidate", "dom-sink-candidate", "dom-xss-candidate"):
+        assert f"`{ct}`" in t, ct
+    for skill in ("csrf-cors-origin", "auth-and-session", "open-redirect"):
+        assert skill in t
+
+
+def test_recon_agent_mentions_upstream_proxy():
+    t = _read("recon-agent.md")
+    assert "upstream_proxy" in t and "Burp" in t
+
+
+def test_recon_agent_knows_mirror_is_automatic():
+    text = open(os.path.join(ROOT, ".claude", "agents", "recon-agent.md")).read()
+    assert "auto-detect" in text and "Burp" in text
+
+
+def test_recon_agent_may_turn_mirror_off_after_a_proxy_block():
+    text = open(os.path.join(ROOT, ".claude", "agents", "recon-agent.md")).read()
+    assert "blocked mid-walk" in text and '"off"' in text

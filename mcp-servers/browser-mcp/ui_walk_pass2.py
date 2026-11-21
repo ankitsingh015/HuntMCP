@@ -33,10 +33,13 @@ sys.path.insert(0, os.path.dirname(_HERE))
 
 import browser_confirm  # noqa: E402
 import ui_walk  # noqa: E402
+import ui_walk_events  # noqa: E402
+import ui_walk_events_logic as EL  # noqa: E402
 import ui_walk_grant  # noqa: E402
 import ui_walk_logic as L  # noqa: E402
 import ui_walk_store  # noqa: E402
 from budget_guard import BudgetExceeded  # noqa: E402
+from endpoint_template import endpoint_template  # noqa: E402
 
 _SINK_JS = r"""
 () => ({html: document.documentElement.outerHTML, title: document.title,
@@ -124,6 +127,7 @@ class CanaryWalker(ui_walk._Walker):
         self.inv["destroy_log"] = []
         self.inv["skipped_forms"] = []
         self.last_aborted: dict | None = None
+        self._p2_rec: dict | None = None
 
     # -- policy -------------------------------------------------------------
     @property
@@ -179,6 +183,7 @@ class CanaryWalker(ui_walk._Walker):
             body = await resp.text()
             await route.fulfill(response=resp, body=body)
             rec["status"] = resp.status
+            self._record_fetch_cookies(resp, url)
             rec["created_id"] = _created_id(body)
             if rec["created_id"]:
                 self.created_ids.add(rec["created_id"])
@@ -192,7 +197,43 @@ class CanaryWalker(ui_walk._Walker):
                 pass
         self.inv["real_submits"].append(rec)
 
+    def _record_fetch_cookies(self, resp, url: str) -> None:
+        """A route.fetch() response never reaches the page's network events, so its
+        Set-Cookie headers are parsed here (flags only, never the value)."""
+        try:
+            arr = resp.headers_array   # a property on Playwright's APIResponse
+            arr = arr() if callable(arr) else arr
+            raw = "\n".join(h["value"] for h in arr
+                            if (h.get("name") or "").lower() == "set-cookie")
+            clean, qkeys = ui_walk_events._strip_url(url)
+            # page_template is set here too: with no Pass-2 scratch page (_p2_rec),
+            # _flush_p2 never adds one.
+            tmpl = (self._p2_rec or {}).get("template") or endpoint_template(
+                (self.cur_page or {}).get("url") or self.page.url)
+            for c in EL.parse_set_cookie(raw):   # raw string is dropped right here
+                ev = dict(c)
+                ev.update({"type": "set_cookie", "url": clean, "query_keys": qkeys, "blocked": [],
+                           "via": "route.fetch", "frame_origin": ui_walk_events._origin(self.page.url),
+                           "page_template": tmpl})
+                self.recorder.record(ev)
+        except Exception:  # noqa: BLE001 -- recording is best-effort
+            pass
+
+    async def _flush_p2(self) -> None:
+        """Finish the current scratch page's recording into inv['pass2_events']."""
+        rec, self._p2_rec = self._p2_rec, None
+        if rec is None:
+            return
+        try:
+            await self.recorder.end_page(rec, remaining_s=self.deadline - ui_walk.time.monotonic())
+        except Exception:  # noqa: BLE001
+            pass
+        for ev in rec.get("events") or []:
+            self.inv["pass2_events"].append({**ev, "page_template": rec.get("template")
+                                             or ev.get("page_template") or endpoint_template(rec.get("url") or "")})
+
     def on_dialog(self, dialog) -> None:
+        super().on_dialog(dialog)   # ruling R2: Pass-1 DOM-canary execution detection stays on
         try:
             self.dialog_msgs.append(dialog.message or "")
         except Exception:  # noqa: BLE001
@@ -208,7 +249,11 @@ class CanaryWalker(ui_walk._Walker):
                 "ws_frames_blocked": 0}
 
     async def _open_page(self, url: str) -> None:
+        await self._flush_p2()
         self.cur_page = self._p2(url)
+        self.cur_page["template"] = endpoint_template(url)
+        self._p2_rec = self.cur_page
+        self.recorder.begin_page(self.cur_page)
         self.current_control = None
         await self._budget()
         try:
@@ -232,13 +277,37 @@ class CanaryWalker(ui_walk._Walker):
     # -- phases ----------------------------------------------------------------
     async def after_map(self) -> None:
         pages = [p for p in self.inv["pages"] if p.get("auth_state", "ok") == "ok"]
-        for prec in pages:
-            if any(_fillable(i) and self._granted(i["frame_origin"] + "/") for i in prec["inputs"]):
-                await self._submit_page(prec)
-            if self.budget_hit:
-                raise ui_walk._Stop("budget_exhausted", "budget exhausted during canary submits")
-        await self._detect_sinks(pages)
-        await self.destroy_phase(pages)
+        try:
+            for prec in pages:
+                if any(_fillable(i) and self._granted(i["frame_origin"] + "/") for i in prec["inputs"]):
+                    await self._submit_page(prec)
+                if self.budget_hit:
+                    raise ui_walk._Stop("budget_exhausted", "budget exhausted during canary submits")
+            await self._detect_sinks(pages)
+            await self.destroy_phase(pages)
+        finally:
+            await self._flush_p2()
+            self._derive_pass2()
+
+    def _derive_pass2(self) -> None:
+        """R9: cookies rotated by real submits (set_cookie via route.fetch) are
+        checked for flags too. Grouped per page template; de-duplicated."""
+        # Runs in after_map's finally: nothing here may raise (it would replace
+        # a _Stop on its way out), so the grouping is inside the try too.
+        try:
+            by_tmpl: dict[str, list[dict]] = {}
+            for ev in self.inv["pass2_events"]:
+                if ev.get("type") == "set_cookie" and ev.get("via") == "route.fetch":
+                    by_tmpl.setdefault(ev.get("page_template") or "", []).append(ev)
+        except Exception:  # noqa: BLE001
+            self.inv["events_candidate_errors"] += 1
+            return
+        for tmpl, evs in by_tmpl.items():
+            try:
+                self._add_candidates(EL.derive_candidates(
+                    {"url": tmpl, "events": evs, "api_edges": [], "controls": []}, scope=self.scope))
+            except Exception:  # noqa: BLE001
+                self.inv["events_candidate_errors"] += 1
 
     async def destroy_phase(self, pages: list[dict]) -> None:
         import ui_walk_destroy
