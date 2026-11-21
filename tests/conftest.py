@@ -66,6 +66,25 @@ def _isolate_engagement_paths(monkeypatch, tmp_path):
     yield
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_from_real_burp():
+    """The UI-walk's Burp mirror auto-detects a Burp listener (default
+    127.0.0.1:8080) when no upstream_proxy is given. A developer running Burp
+    while the suite runs must never get test traffic routed through it: point
+    auto-detection at port 1 (nothing listens there) for the WHOLE session.
+    Session scope + os.environ (not a function-scoped monkeypatch), because
+    module-scoped fixtures run real walks before any function-scoped autouse
+    fixture is set up. A test that exercises auto mode sets
+    HUNTMCP_BURP_AUTO_PORT itself (monkeypatch restores "1" afterwards)."""
+    old = os.environ.get("HUNTMCP_BURP_AUTO_PORT")
+    os.environ["HUNTMCP_BURP_AUTO_PORT"] = "1"
+    yield
+    if old is None:
+        os.environ.pop("HUNTMCP_BURP_AUTO_PORT", None)
+    else:
+        os.environ["HUNTMCP_BURP_AUTO_PORT"] = old
+
+
 @pytest.fixture(autouse=True)
 def _isolate_from_real_dotenv(monkeypatch, tmp_path):
     """No test in this suite should ever be able to see this developer

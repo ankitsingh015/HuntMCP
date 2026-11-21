@@ -88,7 +88,7 @@ def plan_teardown(base_url: str, identity_label: str, steps: list[str] | None = 
         ordered.remove("account_delete")
         notes.append(f"account_delete skipped: identity {identity_label!r} is not marked "
                      "`disposable: true` in the test-identity roster")
-    tokens = sorted(ui_walk_store.load_canaries())
+    tokens = sorted(ui_walk_store.load_cleanup_canaries())   # never a DOM-source token
     host = (urlsplit(base_url).hostname or "").lower()
     fp = teardown_fingerprint(engagement_paths.get_active_target() or "", identity_label, base_url, tokens,
                               ordered, session)
@@ -110,8 +110,11 @@ class TeardownWalker(ui_walk_pass2.CanaryWalker):
         super().configure(ui_walk_pass2.ui_walk_grant.Grant(True, [], TEARDOWN_SUBMIT_CAP))
         # ONLY the canaries the human confirmed (the fingerprinted set), never
         # tokens registered after the confirmation.
-        confirmed = set(cleanup_tokens or [])
-        self.tokens = {t: r for t, r in ui_walk_store.load_canaries().items() if t in confirmed}
+        # A DOM-source canary is never a cleanup token / ownership proof, even
+        # if one ended up in the confirmed set.
+        reg = ui_walk_store.load_canaries()
+        confirmed = set(cleanup_tokens or []) - {t for t, r in reg.items() if ui_walk_store.is_dom_source(r)}
+        self.tokens = {t: r for t, r in reg.items() if t in confirmed}
         self.created_ids = {i for i, t in ui_walk_store.load_created_ids().items() if t in confirmed}
         self.steps: list[str] = []
         self.steps_run: list[str] = []
@@ -266,8 +269,9 @@ def gate(base_url: str, identity_label: str, steps: list[str] | None = None, sco
 
 async def execute(plan: dict, session_file: str | None = None, *, cookie_header: str | None = None,
                   bearer_token: str | None = None, scope_check=None, screenshot_dir: str | None = None,
-                  max_pages: int = 50) -> dict:
-    """Run an already-approved plan (see gate())."""
+                  max_pages: int = 50, upstream_proxy: str = "") -> dict:
+    """Run an already-approved plan (see gate()). upstream_proxy: the optional
+    Burp mirror, same rules and launch path as ui_walk.walk()."""
     scope = scope_check or L._default_scope_check
     base_url, identity_label = plan["base_url"], plan["identity"]
     start = time.monotonic()
@@ -279,6 +283,10 @@ async def execute(plan: dict, session_file: str | None = None, *, cookie_header:
                        auth={**auth, "identity_label": identity_label}, walk_id=os.urandom(6).hex())
     if session_ref(session_file, cookie_header) != plan.get("session"):
         return {"status": "refused", "error": "session differs from the one the human confirmed", "candidates": []}
+    proxy, mirror_err = ui_walk.resolve_mirror(upstream_proxy)
+    if mirror_err:
+        return {"status": "refused", "error": mirror_err, "candidates": []}
+    await w.setup_mirror(proxy)
     w.configure(cleanup_tokens=plan["cleanup_tokens"])
     w.steps = plan["steps"]
     inv = await w.run(**auth)
@@ -294,9 +302,13 @@ async def execute(plan: dict, session_file: str | None = None, *, cookie_header:
 async def run_teardown(base_url: str, identity_label: str, session_file: str | None = None,
                        steps: list[str] | None = None, *, cookie_header: str | None = None,
                        bearer_token: str | None = None, scope_check=None,
-                       screenshot_dir: str | None = None, max_pages: int = 50) -> dict:
+                       screenshot_dir: str | None = None, max_pages: int = 50, upstream_proxy: str = "") -> dict:
+    mirror_err = ui_walk.proxy_refusal(upstream_proxy)
+    if mirror_err:   # refused before gate(), so a bad proxy URL never uses up the human's approval
+        return {"status": "refused", "error": mirror_err, "candidates": []}
     plan, stop = gate(base_url, identity_label, steps, scope_check, session_ref(session_file, cookie_header))
     if stop is not None:
         return stop
     return await execute(plan, session_file, cookie_header=cookie_header, bearer_token=bearer_token,
-                         scope_check=scope_check, screenshot_dir=screenshot_dir, max_pages=max_pages)
+                         scope_check=scope_check, screenshot_dir=screenshot_dir, max_pages=max_pages,
+                         upstream_proxy=upstream_proxy)

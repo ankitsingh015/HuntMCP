@@ -67,3 +67,19 @@ def test_parse_cookie_header_empty_string_returns_empty_list():
 def test_parse_cookie_header_scopes_domain_from_url():
     cookies = parse_cookie_header("session=abc123", "https://api.target.com:8443/v1/data")
     assert cookies[0]["domain"] == "api.target.com"
+
+
+# ---- #164 fix wave: mirror mode keeps Chromium's own background traffic off the proxy ----
+MIRROR_QUIET_FLAGS = ("--disable-background-networking", "--disable-component-update")
+
+
+def test_proxy_launch_disables_chromium_background_networking():
+    args = launch_kwargs(proxy="http://127.0.0.1:8080")["args"]
+    for flag in MIRROR_QUIET_FLAGS:
+        assert flag in args, flag
+
+
+def test_no_proxy_launch_args_unchanged_by_mirror_flags():
+    base = launch_kwargs()
+    assert base == launch_kwargs(proxy=None)
+    assert base["args"] == ["--no-sandbox", "--disable-dev-shm-usage", *STEALTH_ARGS]

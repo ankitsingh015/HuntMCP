@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(_HERE))
 
 import ui_walk  # noqa: E402
 import ui_walk_logic as L  # noqa: E402
+import ui_walk_store  # noqa: E402
 from redact import redact_text  # noqa: E402
 
 MAX_REACH_PATHS = 20
@@ -97,8 +98,14 @@ async def _container(frame, c) -> dict:
         return {"text": "", "links": []}
 
 
+def ownership_tokens(tokens: dict) -> set[str]:
+    """Tokens that may prove a walker created an object: never a DOM-source
+    canary (planted client-side, never submitted to the server)."""
+    return {t for t, r in (tokens or {}).items() if not ui_walk_store.is_dom_source(r)}
+
+
 async def run(walker, pages: list[dict]) -> None:
-    tokens = set(walker.tokens)
+    tokens = ownership_tokens(walker.tokens)
     for prec in pages:
         if not any(c.get("classification") == "destructive" for c in prec.get("controls") or []):
             continue

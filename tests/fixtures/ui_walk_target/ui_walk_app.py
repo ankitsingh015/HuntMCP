@@ -21,6 +21,7 @@ import json
 import os
 import secrets
 import threading
+import time
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
@@ -58,10 +59,22 @@ def _render(title: str, body: str, script: str = "") -> bytes:
                         script=f"<script>{script}</script>" if script else "").encode()
 
 
+_WAF_BODY = _render("Access denied", "<h1>Access denied</h1><p>Request blocked by the edge firewall.</p>")
+
+
 class FixtureApp:
-    def __init__(self, vulnerable: bool = True):
+    def __init__(self, vulnerable: bool = True, refuse_proxied: bool = False,
+                 refuse_proxied_after: int | None = None, refuse_all: bool = False):
         self.vulnerable = vulnerable
+        # Burp-mirror tests: answer requests carrying a `Via` header (i.e. that
+        # came through the stand-in proxy) with a WAF-looking 403 -- always
+        # (refuse_proxied), or once more than N requests were received
+        # (refuse_proxied_after=N, the mid-walk case).
+        self.refuse_proxied = refuse_proxied
+        self.refuse_proxied_after = refuse_proxied_after
+        self.refuse_all = refuse_all   # the same 403 for every request, proxied or direct (a real block)
         self.requests: list[tuple[str, str]] = []
+        self.cookie_headers: list[str] = []
         self.items: dict[str, dict] = {}
         self.valid_sids: set[str] = set()
         self.account_deleted = False
@@ -95,8 +108,8 @@ class FixtureApp:
         self._server.server_close()
 
 
-def serve(vulnerable: bool = True) -> FixtureApp:
-    return FixtureApp(vulnerable=vulnerable)
+def serve(vulnerable: bool = True, **kw) -> FixtureApp:
+    return FixtureApp(vulnerable=vulnerable, **kw)
 
 
 def _make_handler(app: FixtureApp):
@@ -123,6 +136,9 @@ def _make_handler(app: FixtureApp):
             self.send_header("Content-Length", str(len(body)))
             for k, v in (headers or {}).items():
                 self.send_header(k, v)
+            if (not app.vulnerable and ctype == "text/html"
+                    and (self.headers.get("Host") or "").startswith(LOOPBACK)):
+                self.send_header("X-Frame-Options", "SAMEORIGIN")   # patched: pages cannot be framed cross-origin
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
@@ -141,6 +157,21 @@ def _make_handler(app: FixtureApp):
 
         def _log(self):
             app.requests.append((self.command, self.path))
+            app.cookie_headers.append(self.headers.get("Cookie") or "")
+
+        def _refused_proxied(self) -> bool:
+            """Burp-mirror tests: a WAF-style 403 for proxied (Via) requests,
+            or for every request when refuse_all is set."""
+            if app.refuse_all:
+                self._send(403, _WAF_BODY)
+                return True
+            if not self.headers.get("Via"):
+                return False
+            after = app.refuse_proxied_after
+            if not (app.refuse_proxied or (after is not None and len(app.requests) > after)):
+                return False
+            self._send(403, _WAF_BODY)
+            return True
 
         # -- verbs ----------------------------------------------------------
         def do_HEAD(self):
@@ -153,6 +184,8 @@ def _make_handler(app: FixtureApp):
 
         def do_GET(self):
             self._log()
+            if self._refused_proxied():
+                return
             u = urlsplit(self.path)
             path, q = u.path, parse_qs(u.query)
             protected = path in ("/items", "/settings", "/activity") or path.startswith(("/items/", "/api/items"))
@@ -275,6 +308,13 @@ setTimeout(()=>{{const f=document.createElement('iframe'); f.src='{app.alt_base_
   const s=document.getElementById('slot'); s.textContent=''; s.appendChild(f);}},300);"""
             self._send(200, _render("Contact", '<div id="slot"></div>', script))
 
+        def _get_p2contact(self, path, q):
+            # unlinked: an in-scope (same-origin) contact form, for Pass-2 cookie-event tests
+            body = """<form action="/api/contact" method="post">
+<label>Your name <input name="name"></label><label>Message <textarea name="message"></textarea></label>
+<button type="submit">Send</button></form>"""
+            self._send(200, _render("Contact form", body))
+
         def _get_embed(self, path, q):
             body = """<form action="/api/contact" method="post">
 <label>Your name <input name="name"></label><label>Message <textarea name="message"></textarea></label>
@@ -313,6 +353,35 @@ document.getElementById('del-account').onclick=()=>{ if(confirm('Delete your acc
         def _get_cal(self, path, q):
             d = int((q.get("d") or ["1"])[0])
             self._send(200, _render("Calendar", f'<p>Day {d}</p><a href="/cal?d={d + 1}">Next day</a>'))
+
+        def _get_mx(self, path, q):
+            # Burp-mirror R12 hubs (no nav bar, so the BFS order is exactly the
+            # hub's links): /mx/deny/N is the app's OWN "Access denied" 403
+            # (with or without a proxy), /mx/ok/N a normal page.
+            hubs = {"a": ["deny/1", "deny/2", "ok/1", "deny/3"],   # never 3 block pages in a row
+                    "b": ["deny/1", "deny/2", "deny/3", "ok/1"],   # 3 in a row
+                    "c": ["ok/1", "ok/2", "ok/3"]}                 # all fine (refuse_proxied_after tests)
+            parts = [x for x in path.split("/") if x]
+            if len(parts) == 2 and parts[1] == "e":
+                # fix-wave R12 hub: a BUTTON whose click navigates to deny/2 (a block
+                # page at a different URL), then the hub's own re-load (the walker's
+                # way back) is the app's 403 too. Links: deny/1, ok/1.
+                if sum(1 for _m, pth in app.requests if pth == "/mx/e") > 1:
+                    return self._send(403, _WAF_BODY)
+                return self._send(200, b"<!doctype html><html><head><title>MX e</title></head><body>"
+                                       b'<a href="/mx/deny/1">deny/1</a> <a href="/mx/ok/1">ok/1</a> '
+                                       b'<button id="go" onclick="location.href=\'/mx/deny/2\'">Go</button>'
+                                       b"</body></html>")
+            if len(parts) == 2 and parts[1] in hubs:
+                links = "".join(f'<a href="/mx/{h}">{h}</a> ' for h in hubs[parts[1]])
+                return self._send(200, f"<!doctype html><html><head><title>MX {parts[1]}</title></head>"
+                                       f"<body>{links}</body></html>".encode())
+            if len(parts) == 3 and parts[1] == "deny":
+                return self._send(403, _WAF_BODY)
+            if len(parts) == 3 and parts[1] == "ok":
+                return self._send(200, f"<!doctype html><html><head><title>OK {parts[2]}</title></head>"
+                                       "<body><p>ok</p></body></html>".encode())
+            return self._send(404, _render("Not found", "<p>not found</p>"))
 
         def _get_tall(self, path, q):
             self._send(200, _render("Tall", '<div style="height:10000px;background:#eee">tall</div>'))
@@ -367,6 +436,230 @@ else { const n=JSON.parse(u).name; const p=document.createElement('p'); p.textCo
   const i=document.createElement('input'); i.name='nickname'; m.appendChild(i); }"""
             self._send(200, _render("App", '<div id="spa"></div>', script))
 
+        # -- /ev/*: event-recorder surfaces (cookies, redirects, console, WS, CORS) --
+        def _get_ev(self, path, q):
+            sub = path.strip("/").split("/")[1:]
+            name = sub[0] if sub else ""
+            if name == "":
+                body = """<h1>Events</h1><ul>
+<li><a href="/ev/cookies">Cookies</a></li>
+<li><a href="/ev/redirect?next=/ev/landed">Redirecting</a></li>
+<li><a href="/ev/console">Console</a></li><li><a href="/ev/delayed">Delayed</a></li>
+<li><a href="/ev/ws">Socket</a></li><li><a href="/ev/noisy">Noisy</a></li>
+<li><a href="/ev/redirect-out">Out two</a></li><li><a href="/ev/redirect-out1">Out one</a></li>
+<li><a href="/ev/redirect-dead">Dead two</a></li><li><a href="/ev/redirect-dead1">Dead one</a></li><li><a href="/ev/cors">Cors</a></li>
+<li><a href="/ev/pm-send">Pm send</a></li><li><a href="/ev/pm-listen">Pm listen</a></li>
+<li><a href="/ev/pm-listen-safe">Pm listen safe</a></li><li><a href="/ev/jscookie">Js cookie</a></li>
+<li><a href="/ev/idb">Idb</a></li><li><a href="/ev/storage">Storage</a></li>
+<li><a href="/ev/blank">Blank</a></li><li><a href="/ev/sw">Sw</a></li>
+<li><a href="/ev/forge">Forge</a></li><li><a href="/ev/overwrite">Overwrite</a></li><li><a href="/ev/flood">Flood</a></li>
+<li><a href="/ev/hook-a">Hook a</a></li><li><a href="/ev/hook-b">Hook b</a></li></ul>"""
+                return self._send(200, _render("Events", body))
+            if name == "cookies":
+                flags = "" if app.vulnerable else "; Secure; HttpOnly; SameSite=Lax"
+                self.send_response(200)
+                body = _render("Cookies", "<p>cookies set</p>")
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Set-Cookie", f"SID=FIXTURESECRET; Path=/{flags}")
+                self.send_header("Set-Cookie", "theme=dark; Path=/")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if name == "redirect":
+                nxt = (q.get("next") or ["/ev/landed"])[0]
+                # patched: the destination is fixed server-side, no redirect parameter
+                return self._redirect("/ev/hop2?next=" + nxt if app.vulnerable else "/ev/hop2")
+            if name == "redirect-out":
+                return self._redirect("/ev/hop2-out")
+            if name == "redirect-dead":
+                return self._redirect("/ev/hop2-dead")
+            if name == "hop2-dead":
+                return self._redirect("http://127.0.0.1:1/dead")  # nothing listens: network failure
+            if name == "redirect-dead1":
+                return self._redirect("http://127.0.0.1:1/dead")
+            if name == "hop2-out":
+                return self._redirect(f"{app.alt_base_url}/elsewhere")
+            if name == "redirect-out1":
+                return self._redirect(f"{app.alt_base_url}/elsewhere")
+            if name == "hop2":
+                return self._redirect((q.get("next") or ["/ev/landed"])[0])
+            if name == "landed":
+                return self._send(200, _render("Landed", "<p>landed</p>"))
+            if name == "console":
+                script = """document.getElementById('boom').onclick=()=>{
+  console.error('fixture console failure code 42'); throw new Error('fixture click error'); };"""
+                return self._send(200, _render("Console", '<button id="boom">Trigger fault</button>', script))
+            if name == "noisy":
+                script = """document.getElementById('spam').onclick=()=>{
+  for(let i=0;i<25;i++) console.error('noisy failure '+i); };"""
+                return self._send(200, _render("Noisy", '<button id="spam">Make noise</button>', script))
+            if name == "delayed":
+                script = """document.getElementById('late').onclick=()=>{ fetch('/ev/delayed-set'); };"""
+                return self._send(200, _render("Delayed", '<button id="late">Load later</button>', script))
+            if name == "delayed-set":
+                time.sleep(0.4)
+                return self._send(200, b"ok", "text/plain",
+                                  {"Set-Cookie": "late=FIXTURESECRET; Path=/"})
+            if name == "ws":
+                script = """const ws=new WebSocket('ws://'+location.host+'/ev/socket');
+document.getElementById('sub').onclick=()=>{ ws.send(JSON.stringify({op:'sub',token:'FIXTURESECRET'})); };"""
+                return self._send(200, _render("Socket", '<button id="sub">Open channel</button>', script))
+            if name == "cors":
+                script = """fetch('/api/cors').then(r=>r.json()).then(j=>{document.getElementById('o').textContent=j.ok;});"""
+                return self._send(200, _render("Cors", '<p id="o"></p>', script))
+            if name == "pm-send":
+                script = """document.getElementById('pm').onclick=()=>{ window.postMessage({op:'sync',token:'FIXTURESECRET'}, TARGET); };"""
+                script = script.replace("TARGET", "'*'" if app.vulnerable else "location.origin")
+                return self._send(200, _render("Pm send", '<button id="pm">Send message</button>', script))
+            if name == "pm-listen":
+                guard = "" if app.vulnerable else "if(e.origin!==location.origin) return; "
+                script = ("window.addEventListener('message', e=>{ " + guard + "document.title = String(e.data); });")
+                return self._send(200, _render("Pm listen", '<p>listener</p><iframe src="/ev/pm-listen-safe"></iframe>', script))
+            if name == "pm-listen-safe":
+                script = """window.addEventListener('message', e=>{ if(e.origin!==location.origin) return; document.title='ok'; });"""
+                return self._send(200, _render("Pm listen safe", "<p>safe listener</p>", script))
+            if name == "jscookie":
+                script = """document.getElementById('jc').onclick=()=>{ document.cookie='jsid=FIXTURESECRET; Path=/; SameSite=Lax'; };
+document.getElementById('jn').onclick=()=>{ document.cookie='FIXTURESECRET'; };"""
+                return self._send(200, _render("Js cookie", '<button id="jc">Remember me</button><button id="jn">Nameless cookie</button>', script))
+            if name == "idb":
+                script = """const rq=indexedDB.open('fixturedb',1);
+rq.onupgradeneeded=()=>{ rq.result.createObjectStore('notes'); rq.result.createObjectStore('drafts'); };"""
+                return self._send(200, _render("Idb", "<p>idb</p>", script))
+            if name == "storage":
+                script = """document.getElementById('st').onclick=()=>{ localStorage.setItem('authToken','FIXTURESECRET'); };"""
+                return self._send(200, _render("Storage", '<button id="st">Keep me signed in</button>', script))
+            if name == "tabnab":   # unlinked: an out-of-scope target=_blank link without noopener
+                return self._send(200, _render("Tabnab", f'<a href="{app.alt_base_url}/ev/landed" target="_blank">Partner</a>'))
+            if name == "blank":
+                body = """<a href="/ev/landed" target="_blank" rel="noopener">Safe link</a>
+<a href="/ev/landed?x=1" target="_blank">Unsafe link</a>
+<a href="/ev/landed?ANCHORSECRET=1" target="_blank">Tracked link</a>
+<button id="pop">Open popup</button>"""
+                script = """document.getElementById('pop').onclick=()=>{ window.open('/ev/landed?p=1&access_token=POPUPSECRET#POPUPSECRET','_blank','noopener'); };"""
+                return self._send(200, _render("Blank", body, script))
+            if name == "sw":
+                script = """navigator.serviceWorker.register('/ev/sw.js?token=FIXTURESECRET').then(
+()=>fetch('/ev/sw-state?r=registered'), ()=>fetch('/ev/sw-state?r=blocked'));"""
+                return self._send(200, _render("Sw", "<p>sw</p>", script))
+            _find = """const names=Object.getOwnPropertyNames(window).filter(k=>k.startsWith('__hm')&&typeof window[k]==='function');"""
+            if name == "forge":
+                script = _find + """const forge=()=>{ for(const n of names){ for(const o of [
+ {k:'wopen',url:'http://forged.invalid/x',noopener:false}, {k:'wopen',url:'http://forged.invalid/y',noopener:false,n:'guess'}]){
+ try{ window[n](JSON.stringify(o)); }catch(e){} } } };
+forge(); document.getElementById('fg').onclick=forge;"""
+                return self._send(200, _render("Forge", '<button id="fg">Forge events</button>', script))
+            if name == "overwrite":
+                script = _find + """for(const n of names){ try{ window[n]=function(){ window.__intercepted=true; }; }catch(e){}
+ try{ Object.defineProperty(window,n,{value:function(){ window.__intercepted=true; }}); }catch(e){} }
+document.getElementById('ow').onclick=()=>{ window.postMessage({after:'overwrite'}, '*'); };"""
+                return self._send(200, _render("Overwrite", '<button id="ow">Send after overwrite</button>', script))
+            if name == "flood":
+                script = """document.getElementById('fl').onclick=()=>{ for(let i=0;i<100;i++) window.postMessage({i:i}, '*'); };"""
+                return self._send(200, _render("Flood", '<button id="fl">Flood messages</button>', script))
+            if name in ("hook-a", "hook-b"):
+                install = ("Object.defineProperty(Object.prototype,'n',{configurable:true,set(v){ window.__leak=v; }});"
+                           if name == "hook-a" else
+                           "Object.defineProperty(Object.prototype,'toJSON',{configurable:true,value:function(){ if(this&&this.n) window.__leak=this.n; return this; }});")
+                script = _find + install + """document.getElementById('hk').onclick=()=>{
+ window.postMessage({real:1}, '*'); window.open('/ev/landed','_blank','noopener');
+ const lk=window.__leak; for(const n of names){ for(const p of [
+  JSON.stringify({k:'wopen',url:'http://forged.invalid/z',noopener:false,n:lk}),
+  String(lk)+'|'+JSON.stringify({k:'wopen',url:'http://forged.invalid/z',noopener:false})]){
+  try{ window[n](p); }catch(e){} } } };"""
+                return self._send(200, _render("Hook", '<button id="hk">Fire real events</button>', script))
+            # -- DOM-XSS sources/sinks + postMessage probe (Task 4); own index so
+            #    the /ev walk of test_ui_walk_events stays as it was --
+            if name == "dom":
+                body = """<h1>DOM</h1><ul>
+<li><a href="/ev/dom-hash">Dom hash</a></li><li><a href="/ev/dom-hash-raw">Dom hash raw</a></li>
+<li><a href="/ev/dom-name">Dom name</a></li><li><a href="/ev/pm-dom">Pm dom</a></li>
+<li><a href="/ev/pm-oos">Pm oos</a></li><li><a href="/ev/spa">Spa</a></li>
+<li><a href="/ev/dom-leak">Dom leak</a></li><li><a href="/ev/dom-cookie">Dom cookie</a></li>
+<li><a href="/ev/dom-alert">Dom alert</a></li><li><a href="/ev/dom-store">Dom store</a></li>
+<li><a href="/ev/redirect-secret">Redirect secret</a></li><li><a href="/ev/q-secret">Query secret</a></li>
+<li><a href="/ev">All events</a></li></ul>"""
+                return self._send(200, _render("DOM", body))
+            sink = "innerHTML" if app.vulnerable else "textContent"
+            if name == "dom-hash":
+                script = f"""const render=()=>{{ const h=decodeURIComponent(location.hash.slice(1));
+  document.getElementById('out').{sink}='Section: '+h; }};
+window.addEventListener('hashchange', render); render();"""
+                return self._send(200, _render("Dom hash", '<p id="out"></p>', script))
+            if name == "dom-hash-raw":
+                # undecoded hash: the token reaches the sink, the payload stays percent-encoded
+                script = f"""window.addEventListener('hashchange', ()=>{{
+  document.getElementById('out').{sink}='Raw: '+location.hash.slice(1); }});"""
+                return self._send(200, _render("Dom hash raw", '<p id="out"></p>', script))
+            if name == "dom-name":
+                script = ("document.write('<p>Hello '+window.name+'</p>');" if app.vulnerable else
+                          "const p=document.createElement('p'); p.textContent='Hello '+window.name; document.body.appendChild(p);")
+                return self._send(200, _render("Dom name", "<p>name</p>", script))
+            if name == "pm-dom":
+                check = "" if app.vulnerable else "if(e.origin!==location.origin) return; "
+                script = f"""window.addEventListener('message', e=>{{ {check}const d=e.data;
+  document.getElementById('out').innerHTML='Got: '+(d && d.type!==undefined ? d.type : d); }});"""
+                return self._send(200, _render("Pm dom", '<div id="out"></div>', script))
+            if name == "pm-oos":
+                return self._send(200, _render("Pm oos", f'<p>oos</p><iframe src="{app.alt_base_url}/ev/pm-oos-frame"></iframe>'))
+            if name == "pm-oos-frame":
+                script = """window.addEventListener('message', e=>{ fetch('/ev/pm-oos-hit'); document.title='hit'; });"""
+                return self._send(200, _render("Pm oos frame", "<p>third-party listener</p>", script))
+            if name == "pm-oos-hit":
+                return self._send(200, b"ok", "text/plain")
+            if name == "spa":
+                script = """const ROUTES={'/route':'Route view: /route'};
+const route=()=>{ const h=location.hash; if(h===''||h==='#'){ location.replace('#/route'); return; }
+  const r=h.startsWith('#/') ? h.slice(1).split('?')[0] : '';
+  document.getElementById('view').textContent=ROUTES[r]||'Not found'; };
+window.addEventListener('hashchange', route); route();"""
+                return self._send(200, _render("Spa", '<div id="view"></div>', script))
+            if name == "dom-leak":
+                # the page forwards its hash to the server: the walker must never let a canary out
+                script = """window.addEventListener('hashchange', ()=>{ fetch('/ev/leak?d='+encodeURIComponent(location.hash.slice(1))); });"""
+                return self._send(200, _render("Dom leak", "<p>leak</p>", script))
+            if name == "dom-cookie":
+                # the page copies its hash into a cookie, then makes a request (the cookie rides along)
+                script = """window.addEventListener('hashchange', ()=>{
+  document.cookie='lastsection='+encodeURIComponent(location.hash.slice(1))+'; path=/';
+  fetch('/ev/landed?after=cookie'); });"""
+                return self._send(200, _render("Dom cookie", "<p>cookie</p>", script))
+            if name == "dom-alert":
+                # echoes the decoded hash in a dialog: the payload is shown, never executed
+                script = """window.addEventListener('hashchange', ()=>{
+  alert('Bad route: '+decodeURIComponent(location.hash)); });"""
+                return self._send(200, _render("Dom alert", "<p>alert</p>", script))
+            if name == "dom-store":
+                # copies the hash into web storage (it would persist into a saved session file)
+                script = """window.addEventListener('hashchange', ()=>{
+  localStorage.setItem('lastSection', location.hash.slice(1));
+  sessionStorage.setItem('lastSection', location.hash.slice(1));
+  localStorage.setItem('keep', 'kept-value'); });"""
+                return self._send(200, _render("Dom store", "<p>store</p>", script))
+            if name == "dom-store-key":
+                # unlinked (fix wave): copies the hash into web-storage KEYS, which the
+                # in-browser value scrub does not look at; only the post-save scrub can
+                script = """window.addEventListener('hashchange', ()=>{
+  localStorage.setItem('sec_'+location.hash.slice(1), '1');
+  sessionStorage.setItem('ss_'+location.hash.slice(1), '1');
+  localStorage.setItem('val', location.hash.slice(1));
+  localStorage.setItem('keep', 'kept-value'); });"""
+                return self._send(200, _render("Dom store key", "<p>store key</p>", script))
+            if name == "leak":
+                return self._send(200, b"ok", "text/plain")
+            if name == "redirect-secret":
+                return self._redirect("/ev/hop2?next=/ev/landed&code=FIXTURESECRET" if app.vulnerable
+                                      else "/ev/hop2?code=FIXTURESECRET")
+            if name == "q-secret":
+                return self._send(200, _render("Query secret",
+                                               '<iframe src="/ev/cookies?code=FIXTURESECRET"></iframe>'))
+            if name == "sw-state":
+                return self._send(200, b"ok", "text/plain")
+            if name == "sw.js":
+                return self._send(200, b"self.addEventListener('fetch',()=>{});", "application/javascript")
+            return self._send(404, _render("Not found", "<p>not found</p>"))
+
         def _get_api(self, path, q):
             parts = [p for p in path.split("/") if p]
             if parts[:2] == ["api", "items"]:
@@ -377,15 +670,25 @@ else { const n=JSON.parse(u).name; const p=document.createElement('p'); p.textCo
                 if it is None or (it["deleted"] and not app.vulnerable):
                     return self._json(404, {"error": "not found"})
                 return self._json(200, it)
+            if parts == ["api", "cors"]:
+                origin = (self.headers.get("Origin") or f"http://{self.headers.get('Host')}"
+                          if app.vulnerable else "http://allowed.test")
+                return self._send(200, b'{"ok": "cors"}', "application/json",
+                                  {"Access-Control-Allow-Origin": origin,
+                                   "Access-Control-Allow-Credentials": "true"})
             return self._json(404, {"error": "not found"})
 
         # -- mutations ------------------------------------------------------
         def _mutate(self, method: str):
+            if self._refused_proxied():
+                return
             path = urlsplit(self.path).path
             raw = self._body()
             parts = [p for p in path.split("/") if p]
             if path == "/api/contact" and method == "POST":
-                return self._send(200, _render("Thanks", "<p>thanks</p>"))
+                # vulnerable: rotates a session cookie on an unauthenticated POST
+                hdr = {"Set-Cookie": "SID=FIXTURESECRET; Path=/"} if app.vulnerable else None
+                return self._send(200, _render("Thanks", "<p>thanks</p>"), headers=hdr)
             if not self._authed():
                 return self._json(401, {"error": "unauthenticated"})
             if parts[:2] == ["api", "items"]:

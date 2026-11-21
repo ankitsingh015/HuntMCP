@@ -102,3 +102,140 @@ def test_run_teardown_blocked_returns_exact_command():
 
 def test_list_ui_walks_empty():
     assert "No UI-walk" in server.list_ui_walks()
+
+
+# ---- Task 7: event counts, Burp mirror status, proxy refusal ----------------
+def _inv_events(**over):
+    inv = _inv()
+    inv["pages"][0]["events"] = [
+        {"type": "console", "level": "error", "text": "FIXTURE-CONSOLE-LEAK boom"},
+        {"type": "redirect", "url": "http://127.0.0.1:9/x"},
+        {"type": "redirect", "url": "http://127.0.0.1:9/y"},
+    ]
+    inv["pages"][0]["events_dropped"] = 2
+    inv["pass2_events"] = [{"type": "headers"}, {"type": "console", "text": "p2"}]
+    inv["events_forged_dropped"] = 1
+    inv["events_snapshot_frames_skipped"] = 3
+    inv["events_drains_skipped"] = 4
+    inv["events_candidate_errors"] = 5
+    inv["candidates"].append({"type": "cookie-flags-candidate", "page": "http://127.0.0.1:9/items",
+                              "detail": {"name": "sid"}})
+    inv.update(over)
+    return inv
+
+
+def _fmt(inv):
+    return server._format_walk({"inventory": inv, "path": "/tmp/w1.json", "nodes": {}})
+
+
+def test_format_walk_shows_event_counts_and_mirror_status():
+    out = _fmt(_inv_events(burp_mirror={"requested": True, "active": True,
+                                        "proxy": "http://127.0.0.1:8080", "reason": None}))
+    assert "Events: console=1, redirect=2 (dropped: 2)" in out
+    assert "Pass-2 events: 2" in out
+    assert "forged_dropped=1" in out and "snapshot_frames_skipped=3" in out
+    assert "drains_skipped=4" in out and "candidate_errors=5" in out
+    assert "Burp mirror: ON via http://127.0.0.1:8080" in out
+    assert "CANDIDATE" in out and "cookie-flags-candidate" in out
+    off = _fmt(_inv_events(burp_mirror={"requested": True, "active": False, "proxy": "http://127.0.0.1:8080",
+                                        "reason": "proxy unreachable"}))
+    assert "Burp mirror: OFF (proxy unreachable)" in off
+    none = _fmt(_inv_events(burp_mirror={"requested": False, "active": False, "proxy": None, "reason": None}))
+    assert "Burp mirror" not in none
+    assert "Burp mirror" not in _fmt(_inv())
+
+
+def test_format_walk_shows_auto_mode():
+    # 2026-11-21 addendum: auto mode says what it decided, both ways
+    off = _fmt(_inv_events(burp_mirror={"requested": False, "active": False, "proxy": None, "reason": None,
+                                        "auto": "no Burp detected"}))
+    assert "Burp mirror: OFF (auto: no Burp detected)" in off
+    on = _fmt(_inv_events(burp_mirror={"requested": True, "active": True, "proxy": "http://127.0.0.1:8080",
+                                       "reason": None, "auto": "Burp detected"}))
+    assert "Burp mirror: ON via http://127.0.0.1:8080 (auto: Burp detected)" in on
+
+
+def test_start_ui_walk_docstring_says_auto():
+    import inspect
+    doc = inspect.getdoc(server.start_ui_walk)
+    assert "auto" in doc and "Burp Suite" in doc
+
+
+def test_format_walk_refused_by_target_line_is_neutral():
+    out = _fmt(_inv_events(burp_mirror={"requested": True, "active": False, "proxy": "http://127.0.0.1:8080",
+                                        "reason": "target refused proxied traffic"}))
+    assert "proxy/tooling artifact" in out and "not a finding" in out
+    assert "change their own proxy settings" in out
+
+
+def test_format_walk_provenance_last():
+    out = _fmt(_inv_events(burp_mirror={"requested": True, "active": False, "proxy": None,
+                                        "reason": "proxy unreachable"}))
+    assert out.splitlines()[-1].startswith("Provenance (for case-mcp add_evidence):")
+
+
+def test_format_walk_quarantines_console_text():
+    out = _fmt(_inv_events())
+    lines = out.splitlines()
+    begin = next(i for i, ln in enumerate(lines) if "UNTRUSTED-DATA-BEGIN" in ln)
+    end = max(i for i, ln in enumerate(lines) if "UNTRUSTED-DATA-END" in ln)
+    hits = [i for i, ln in enumerate(lines) if "FIXTURE-CONSOLE-LEAK" in ln]
+    assert hits and all(begin < i < end for i in hits)
+
+
+def test_start_ui_walk_rejects_remote_proxy_before_starting_job():
+    out = server.start_ui_walk("http://127.0.0.1:9/", upstream_proxy="http://evil.example:8080")
+    assert "upstream_proxy refused" in out and "evil.example" not in out
+    assert not server._UI_JOBS
+
+
+def test_run_teardown_rejects_remote_proxy_before_starting_job():
+    out = server.run_teardown("http://127.0.0.1:9/", "keep", upstream_proxy="http://evil.example:8080")
+    assert "upstream_proxy refused" in out and not server._UI_JOBS
+
+
+def test_tools_expose_upstream_proxy():
+    tools = _tools()
+    assert "upstream_proxy" in tools["start_ui_walk"].inputSchema["properties"]
+    assert "upstream_proxy" in tools["run_teardown"].inputSchema["properties"]
+
+
+def test_tool_output_has_no_secret():
+    inv = _inv_events(burp_mirror={"requested": True, "active": True, "proxy": "http://127.0.0.1:8080",
+                                   "reason": None})
+    inv["pages"][0]["events"].append({"type": "console", "level": "error", "text": "x"})
+    out = _fmt(inv)
+    assert "FIXTURESECRET" not in out
+    r = {"status": "complete", "steps_run": [], "candidates": [], "inventory": _inv_events()}
+    assert "FIXTURESECRET" not in server._format_teardown(r)
+
+
+# ---- fix wave item 7: inventory candidates listed under their page ----------
+def test_target_detail_groups_candidates_under_their_page():
+    inv = _inv()
+    inv["pages"].append({"url": "http://127.0.0.1:9/settings?tab=2", "title": "Settings", "auth_state": "ok",
+                         "inputs": [], "controls": [], "api_edges": []})
+    inv["candidates"] = [
+        {"type": "cookie-flags-candidate", "page": "http://127.0.0.1:9/items", "detail": {"name": "sid"}},
+        # the page URL carries a query; the candidate's page is the stripped URL
+        {"type": "clickjacking-candidate", "page": "http://127.0.0.1:9/settings", "detail": {}},
+        {"type": "broken-delete", "reach_path": "http://127.0.0.1:9/api/items/2"},        # no page
+        {"type": "storage-token-candidate", "page": "http://127.0.0.1:9/gone", "detail": {}},  # matches none
+    ]
+    out = _fmt(inv)
+    lines = out.splitlines()
+    begin = next(i for i, ln in enumerate(lines) if "UNTRUSTED-DATA-BEGIN" in ln)
+    end = max(i for i, ln in enumerate(lines) if "UNTRUSTED-DATA-END" in ln)
+    p_items = next(i for i, ln in enumerate(lines) if ln.startswith("PAGE http://127.0.0.1:9/items"))
+    p_settings = next(i for i, ln in enumerate(lines) if ln.startswith("PAGE http://127.0.0.1:9/settings"))
+    # (the counts line above the quarantine also names the types: only listing lines count here)
+    cookie = [i for i, ln in enumerate(lines) if "cookie-flags-candidate" in ln and "{" in ln]
+    click = [i for i, ln in enumerate(lines) if "clickjacking-candidate" in ln and "{" in ln]
+    assert len(cookie) == 1 and p_items < cookie[0] < p_settings
+    assert lines[cookie[0]].startswith("  candidate ")
+    assert len(click) == 1 and p_settings < click[0] < end and lines[click[0]].startswith("  candidate ")
+    flat = [ln for ln in lines if ln.startswith("CANDIDATE ")]
+    assert len(flat) == 2 and any("broken-delete" in ln for ln in flat)
+    assert any("storage-token-candidate" in ln for ln in flat)
+    assert all(begin < i < end for i in cookie + click)
+    assert out.splitlines()[-1].startswith("Provenance (for case-mcp add_evidence):")
