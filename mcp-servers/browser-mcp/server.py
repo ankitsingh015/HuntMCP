@@ -75,6 +75,8 @@ from urllib.parse import urlsplit
 import browser_confirm
 import job_runtime
 import session_capture
+import session_keepalive
+import session_refresh
 import ui_walk
 import ui_walk_events
 import ui_walk_logic
@@ -464,6 +466,46 @@ async def capture_oauth_redirect(identity_label: str, start_url: str, callback_h
         await session_capture.capture_oauth_redirect(identity_label, start_url, callback_host), indent=2
     )
 
+
+
+# ------------------------------------------ session keep-alive (silent renewal)
+# Renews a CAPTURED identity's session without the human: reopens the app
+# headless in the identity's dedicated profile (the app renews itself), else
+# uses a stored refresh token; only when both fail does it say
+# needs_human_login (then start_capture again). Never types a password, never
+# touches a CAPTCHA, never returns a token. Login/IdP hosts used: in scope, or
+# learned from the human's own capture, or a well-known IdP -- for renewal only.
+
+
+@app.tool()
+async def refresh_session(identity_label: str) -> str:
+    """Silently renew identity_label's captured session (writes the fresh
+    cookies/localStorage/sessionStorage into its session_file). Returns
+    {status, refreshed, layer, needs_human_login, reason, access_expires_in_s}
+    -- never a token. On needs_human_login, ask the human to start_capture."""
+    return json.dumps(await session_refresh.refresh_session(identity_label), indent=2)
+
+
+@app.tool()
+def session_health(identity_labels: list[str] | None = None) -> str:
+    """Per identity: last refresh, layer used, access-token expiry, the
+    estimated next forced human login and a warning when it is < 48 h away.
+    Non-secret. No labels = every roster identity."""
+    return json.dumps(session_keepalive.session_health(identity_labels), indent=2)
+
+
+@app.tool()
+def start_keepalive(identity_labels: list[str], interval_s: int = 7200) -> str:
+    """Keep these captured identities logged in in the background: refresh
+    ~5 min before the access token expires, else every interval_s (min 1800,
+    default 7200). Runs while browser-mcp runs. Replaces a running keep-alive."""
+    return json.dumps(session_keepalive.start_keepalive(identity_labels, interval_s), indent=2)
+
+
+@app.tool()
+def stop_keepalive() -> str:
+    """Stop the background session keep-alive for the active engagement."""
+    return json.dumps(session_keepalive.stop_keepalive(), indent=2)
 
 # ------------------------------------------------- UI-walk (#164)
 # Page comprehension: the rendered PAGE + its real inputs + its actions are

@@ -181,9 +181,12 @@ flags anything abandoned for 30+ minutes).
    makes -- without sending anything state-changing. It also writes
    `page`/`input`/`action` surface-map nodes the breadth gate counts. Recon is
    not complete while an app with UI has no walk. If the result says
-   `AUTH LOST` (or pages are `logged-out`), refresh the session (fresh
+   `AUTH LOST` (or pages are `logged-out`), refresh the session -- for a
+   captured roster identity call `refresh_session(<label>)` first (silent
+   renewal; the walk already tries it once itself) and ask the human to
+   re-capture only if it says `needs_human_login`; otherwise a fresh
    `session_file`, or `session_storage` for an SPA keeping its token in
-   sessionStorage) and re-walk -- never report the logged-out shell as the
+   sessionStorage -- and re-walk -- never report the logged-out shell as the
    authenticated surface. Look at the per-page screenshots (`Read` the JPEG
    paths) to actually see each page. The Burp mirror is automatic: leave `upstream_proxy` empty and the walker
    auto-detects a local Burp on 127.0.0.1:8080 (only a listener that identifies

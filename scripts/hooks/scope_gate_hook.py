@@ -35,19 +35,24 @@ pip install, editing files, curl-ing a package registry) never trips this:
   dev-infra allowlist got refused as "not in scope," which isn't a
   meaningful authorization boundary for reading a public webpage the way
   it is for sending a crafted request to a target's own infrastructure.
-- example.com/example.org/example.net/localhost/loopback/RFC1918 hosts, plus
-  a small allowlist of known dev infrastructure (GitHub, PyPI, npm, Go
-  module proxy, Debian/Ubuntu package mirrors -- see scope_guard.py's
-  DEV_INFRA_HOSTS, the shared source of truth for this exemption), are
-  always allowed with no engagement.yaml required -- that's normal
-  development/testing, not a live engagement.
+- example.com/example.org/example.net/localhost/loopback hosts are always
+  allowed with no engagement.yaml required -- that's normal
+  development/testing, not a live engagement. A small allowlist of known
+  dev infrastructure (GitHub, PyPI, npm, Go module proxy, Debian/Ubuntu
+  package mirrors -- scope_guard.py's DEV_INFRA_HOSTS) is allowed ONLY for a
+  Bash command whose every Tier-2 binary is plain curl/wget (a download), not
+  for scanners or Tier-2 MCP tools. RFC1918/link-local/metadata IPs are NOT
+  exempt (2026-11-22 scope-bypass fix): list a lab range in in_scope
+  explicitly, e.g. "10.88.0.*".
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import shlex
+import socket
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -61,7 +66,10 @@ import rce_confirm  # noqa: E402
 import engagement_paths  # noqa: E402
 import ui_walk_grant  # noqa: E402
 from scope_guard import NoEngagementFile, is_in_scope, load_engagement  # noqa: E402
+from scope_guard import _normalize_host  # noqa: E402
+from scope_guard import is_dev_infra_host as _is_dev_infra_host  # noqa: E402
 from scope_guard import is_safe_test_host as _is_safe_test_host  # noqa: E402
+from scope_guard import looks_like_filename as _looks_like_filename  # noqa: E402
 
 # S6 (Phase-S Tier-2, hook tamper-resistance): the repo root this hook's own
 # path and every protected-path entry below is anchored to -- NOT the
@@ -92,11 +100,11 @@ TIER2_BASH_TOOLS = {
 }
 
 # curl/wget also legitimately touch non-target infrastructure during ordinary
-# MCP-server development -- package registries, source hosting, docs -- which
-# must stay exempt the same way scope_guard.SAFE_TEST_HOSTS exempts
-# example.com/localhost. That allowlist (DEV_INFRA_HOSTS) now lives in
-# scope_guard.py, the one shared source of truth _is_safe_test_host uses --
-# not duplicated here anymore (was, until 2026-08-29; see module docstring).
+# MCP-server development -- package registries, source hosting, docs. That
+# allowlist (DEV_INFRA_HOSTS) lives in scope_guard.py (is_dev_infra_host) and
+# is exempt ONLY for a download-only Bash command (see _is_candidate_exempt).
+# It is deliberately NOT part of is_safe_test_host any more: that made
+# github.com etc. scannable by every Tier-2 tool (2026-11-22 bypass fix).
 # Kept separate from content_scanner.py's KNOWN_GOOD_HOSTS (that allowlist is
 # for outbound calls made BY this repo's own Python code to known service
 # integrations; this one is for a human/agent curl-ing the open internet
@@ -224,6 +232,9 @@ URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 # "tester@realtarget-corp.com". Removing the whole matched email span
 # first closes that; there's no substring left for HOSTNAME_RE to
 # re-enter on.
+# NOTE (2026-11-22): no longer applied to commands -- blanking every email span
+# also erased real `user@host` destinations. Request-data emails are now
+# skipped via _CURL_DATA_FLAGS instead; kept only as the documented pattern.
 EMAIL_RE = re.compile(
     r"[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}"
 )
@@ -300,8 +311,17 @@ def _blank_header_value_unless_exempt(m: re.Match) -> str:
 _ATTACKER_PLACEHOLDER_HOSTS = {"evil.com", "attacker.com", "malicious.com"}
 
 
-def _is_candidate_exempt(host: str) -> bool:
-    return _is_safe_test_host(host) or host.lower().strip(".") in _ATTACKER_PLACEHOLDER_HOSTS
+def _is_candidate_exempt(host: str, *, download_only: bool = False) -> bool:
+    """Whether an extracted candidate needs no scope check. `download_only`
+    is True only for a Bash command whose every Tier-2 binary is a plain
+    curl/wget-style fetcher -- then (and only then) DEV_INFRA_HOSTS
+    (github.com, pypi.org, ...) are exempt, so fetching a package still works
+    but pointing a scanner at github.com does not (2026-11-22 bypass fix;
+    dev infra used to be exempt for every Tier-2 tool via is_safe_test_host)."""
+    return (_is_safe_test_host(host)
+            or _looks_like_filename(host)
+            or _normalize_host(host) in _ATTACKER_PLACEHOLDER_HOSTS
+            or (download_only and _is_dev_infra_host(host)))
 
 
 def _first_word(command: str) -> str:
@@ -1122,6 +1142,31 @@ _NMAP_SKIP_VALUE_FLAGS = frozenset({
 # every non-flag token rather than only a single positional.
 _CURL_LIKE_TOOLS = frozenset({"curl", "wget", "curl-rl.sh"})
 
+# curl/wget flags whose (separate) value is request DATA or credentials, never
+# the destination -- e.g. `-d '{"email":"a@b.com"}'`, `-u user@corp.com:pw`.
+# Their value is skipped by the destination scan (this replaced blanking every
+# email-shaped span from the whole command, which also hid `user@host`
+# destinations). Attached forms (`-dfoo`, `--data=foo`) start with `-` and are
+# skipped as flags already. Deliberately NOT listed: -x/--proxy, --url,
+# --resolve, --connect-to (those name hosts that are actually contacted).
+_CURL_DATA_FLAGS = frozenset({
+    "-d", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii",
+    "--json", "-F", "--form", "--form-string", "-u", "--user", "-b", "--cookie",
+    "-A", "--user-agent", "-e", "--referer", "--oauth2-bearer", "--mail-from",
+    "--mail-rcpt", "--mail-auth", "-X", "--request", "-w", "--write-out",
+    "--url-query", "--variable", "-T", "--upload-file",
+})
+# wget's own value-taking data/credential flags. Kept SEPARATE from curl's:
+# wget's -b/-d/-F are booleans (--background/--debug/--force-html), so
+# skipping "their value" would swallow the destination, and wget's -e is
+# --execute, whose `http_proxy=host` value IS contacted -- neither may be
+# listed here (security-review finding).
+_WGET_DATA_FLAGS = frozenset({
+    "--post-data", "--body-data", "--http-user", "--http-password", "--password",
+    "--user", "--ftp-user", "--ftp-password", "-U", "--user-agent", "--referer",
+    "--method",
+})
+
 
 def _bare_host_candidate(token: str) -> str | None:
     """A schemeless host extracted from a single argument token, or None.
@@ -1137,6 +1182,8 @@ def _bare_host_candidate(token: str) -> str | None:
     applied once, centrally, by the caller."""
     if not token:
         return None
+    # (Single-candidate helper; see _bare_host_candidates for the list form
+    # every caller uses.)
     # Issue #129 regression fix: split at the first `$` and scope-check the
     # literal host prefix rather than dropping the whole token on `$`. Dropping
     # on `$` let `curl evilcorp.com$x` / `subfinder -d evilcorp.com$x` smuggle
@@ -1147,6 +1194,84 @@ def _bare_host_candidate(token: str) -> str | None:
         return None
     found = HOSTNAME_RE.findall(base)
     return found[0] if found else None
+
+
+def _bare_host_candidates(token: str) -> list[str]:
+    """Every host a schemeless destination token may make a tool contact:
+    the original first-HOSTNAME_RE-match candidate (_bare_host_candidate,
+    unchanged) PLUS the token's IP literal, if its host part is one.
+
+    Bare IPs (`nmap 8.8.8.8`, `curl 169.254.169.254/latest/meta-data/`,
+    `curl 2852039166/x`) used to yield nothing -- HOSTNAME_RE only matches
+    names -- so they were never scope-checked (2026-11-22). The IP is ADDED to
+    the old candidate rather than replacing it, so this can never check less
+    than before: a parse that guesses the wrong host part (`evilcorp.com/x@
+    127.0.0.1`) still leaves `evilcorp.com` to be checked."""
+    base = (token or "").split("$", 1)[0]
+    out: list[str] = []
+    if base and "(" not in base:
+        # The name in the authority after any userinfo (`first.last@app.x.com/`
+        # -> app.x.com), which the first-match candidate below can miss.
+        name = _host_part(base, False)
+        if HOSTNAME_RE.fullmatch(name):
+            out.append(name)
+        # Both readings of `\`: curl treats it as an ordinary userinfo
+        # character (`127.0.0.1\@8.8.8.8` contacts 8.8.8.8, verified with
+        # curl 8.18), Chromium as `/` -- check whatever either would contact.
+        for backslash_ends_authority in (False, True):
+            ip = _ip_literal(_host_part(base, backslash_ends_authority))
+            if ip and ip not in out:
+                out.append(ip)
+    old = _bare_host_candidate(token)
+    if old and old not in out:
+        out.append(old)
+    return out
+
+
+# A one-part or four-part IPv4 in decimal/hex/octal -- the forms glibc's
+# inet_aton (and so curl/wget/nmap) accept as an address, e.g. 2852039166,
+# 0xa9fea9fe, 0251.0376.0251.0376 for 169.254.169.254. Two/three-part short
+# forms (169.254.43518) are deliberately NOT matched: they collide with
+# ordinary numeric values like `curl -m 1.5` (known, narrower gap).
+_IPV4_NUMERIC_RE = re.compile(r"^(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+)){3}$|^(?:0x[0-9a-f]+|\d{8,})$",
+                              re.IGNORECASE)
+
+
+def _host_part(token: str, backslash_ends_authority: bool = True) -> str:
+    """The host portion of a schemeless destination token: drops userinfo
+    (`user@`), path/query/fragment and a trailing `:port`; keeps a bracketed
+    IPv6 literal's contents."""
+    # Authority ends at the first / ? # (and, for the WHATWG/Chromium reading,
+    # \) -- and only THEN is userinfo dropped: an `@` in the path/query
+    # (`evilcorp.com/x@127.0.0.1`) is not userinfo (security-review finding).
+    # A protocol-relative `//host/...` token starts with its authority.
+    token = token.lstrip("/\\") if token.startswith(("//", "\\\\")) else token
+    t = re.split(r"[/?#\\]" if backslash_ends_authority else r"[/?#]", token, maxsplit=1)[0]
+    t = t.rsplit("@", 1)[-1]
+    if t.startswith("["):
+        end = t.find("]")
+        return t[1:end] if end != -1 else t
+    if t.count(":") == 1:
+        t = t.split(":", 1)[0]
+    # A fully-qualified trailing dot (`169.254.169.254.`) is not an IP literal
+    # and not a HOSTNAME_RE match either -- strip it so it can't slip through.
+    return t.rstrip(".")
+
+
+def _ip_literal(host: str) -> str | None:
+    """Canonical address if `host` is an IP literal a resolver would connect
+    to (plain IPv4/IPv6, or a numeric IPv4 encoding), else None. Small bare
+    numbers (`-m 30`, a port) are not treated as addresses."""
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    if not _IPV4_NUMERIC_RE.match(host):
+        return None
+    try:
+        return socket.inet_ntoa(socket.inet_aton(host))
+    except OSError:
+        return None
 
 
 def _hosts_from_tier2_tool_args(tool: str, args: list[str]) -> list[str]:
@@ -1173,9 +1298,7 @@ def _hosts_from_tier2_tool_args(tool: str, args: list[str]) -> list[str]:
                         value = w[len(f) + 1:]
                         break
             if value is not None:
-                c = _bare_host_candidate(value)
-                if c:
-                    hosts.append(c)
+                hosts.extend(_bare_host_candidates(value))
             i += 1
     elif tool == "dalfox":
         # dalfox's single-target modes are `dalfox url <target>` and
@@ -1184,9 +1307,7 @@ def _hosts_from_tier2_tool_args(tool: str, args: list[str]) -> list[str]:
         # <list>`/`pipe` read a file/stdin, so they carry no inline host.
         for i, w in enumerate(args):
             if w in ("url", "sxss") and i + 1 < len(args):
-                c = _bare_host_candidate(args[i + 1])
-                if c:
-                    hosts.append(c)
+                hosts.extend(_bare_host_candidates(args[i + 1]))
     elif tool in _POSITIONAL_HOST_TOOLS:
         skip_next = False
         for w in args:
@@ -1203,17 +1324,21 @@ def _hosts_from_tier2_tool_args(tool: str, args: list[str]) -> list[str]:
                 continue
             if w.startswith("-"):
                 continue
-            c = _bare_host_candidate(w)
-            if c:
-                hosts.append(c)
+            hosts.extend(_bare_host_candidates(w))
     elif tool in _CURL_LIKE_TOOLS:
         out = _wget_output_target(args) if tool == "wget" else _curl_output_target(args)
+        data_flags = _WGET_DATA_FLAGS if tool == "wget" else _CURL_DATA_FLAGS
+        skip_next = False
         for w in args:
+            if skip_next:
+                skip_next = False
+                continue
+            if w in data_flags:
+                skip_next = True
+                continue
             if w.startswith("-") or (out is not None and w == out):
                 continue
-            c = _bare_host_candidate(w)
-            if c:
-                hosts.append(c)
+            hosts.extend(_bare_host_candidates(w))
     return hosts
 
 
@@ -1289,10 +1414,14 @@ def _extract_hosts_from_bash(command: str) -> list[str]:
     for start, end in sorted(seen_spans, reverse=True):
         remainder = remainder[:start] + " " + remainder[end:]
 
-    # Also remove whole email-address spans (see EMAIL_RE's own comment for
-    # why this has to be a full-span removal, not a lookbehind on
-    # HOSTNAME_RE itself) before the schemeless-host extraction below.
-    remainder = EMAIL_RE.sub(" ", remainder)
+    # Email-shaped spans are NO LONGER blanked here (2026-11-22). Blanking them
+    # was a pre-#129 fix for emails inside request DATA, but it also erased a
+    # real destination written as `user@host` (`curl admin@evilcorp.com/x`,
+    # `nuclei -u user@evilcorp.com` -- curl/wget/Go read that as userinfo +
+    # host), so it was never scope-checked. The position-aware scan below only
+    # reads destination arguments, and for curl/wget it now skips the values
+    # of data-carrying flags (_CURL_DATA_FLAGS), which is where request-body
+    # emails actually live.
 
     # Issue #129: position-aware schemeless-host extraction replaces the old
     # `HOSTNAME_RE.findall(remainder)` whole-command scan, which treated any
@@ -1308,12 +1437,63 @@ def _extract_hosts_from_bash(command: str) -> list[str]:
     # host can't be smuggled past the gate as `curl https://evilcorp.com$x/`; a
     # host that is purely a variable (`$HOST`) strips to "" and is skipped.
     hosts.extend(_bare_hosts_from_tier2_args(remainder))
+    # Dev-infra hosts are exempt only when every Tier-2 binary in the whole
+    # command is a plain fetcher: `curl -sL https://raw.githubusercontent.com/...`
+    # passes, but `curl ... && nuclei -u https://github.com/` does not.
+    download_only = (_bash_basenames(command) & TIER2_BASH_TOOLS) <= _CURL_LIKE_TOOLS
     normalized: list[str] = []
     for h in hosts:
         literal = h.split("$", 1)[0]
-        if literal and not _is_candidate_exempt(literal):
+        if literal and not _is_candidate_exempt(literal, download_only=download_only):
             normalized.append(literal)
     return normalized
+
+
+def _host_candidate_of(text: str) -> str:
+    """IP literal of `text`'s host part, else its first HOSTNAME_RE match,
+    else `text` raw (an unrecognised value then fails closed downstream)."""
+    ip = _ip_literal(_host_part(text))
+    if ip:
+        return ip
+    found = HOSTNAME_RE.findall(text)
+    return found[0] if found else text
+
+
+def _tool_input_candidates(piece: str) -> list[str]:
+    """Hosts a Tier-2 MCP arg value may make the tool contact. Always includes
+    the original candidate (first HOSTNAME_RE match of the raw value), and
+    for a URL-shaped value (a scheme or `user@host`) ALSO the host a URL
+    parser finds -- so `http://example.com@evilcorp.com/` checks evilcorp.com
+    (2026-11-22; the first match alone, example.com, is exempt and hid it).
+    Both are kept because parsers disagree: `\\` is a path delimiter for
+    Chromium (WHATWG) but not for Python's urlsplit, so for
+    `http://evilcorp.com\\@127.0.0.1/` urlsplit says 127.0.0.1 while the
+    browser loads evilcorp.com. `\\` is normalised to `/` first as well."""
+    found = HOSTNAME_RE.findall(piece)
+    out = [found[0]] if found else []
+    if "://" in piece or "@" in piece:
+        # Parse it both ways -- raw (curl/urllib3: `\` is a userinfo char, so
+        # `http://127.0.0.1\@8.8.8.8/` contacts 8.8.8.8) and with `\` as `/`
+        # (Chromium) -- and check every host either reading yields. A value
+        # that won't parse is kept raw so it fails closed, as before.
+        for variant in dict.fromkeys((piece, piece.replace("\\", "/"))):
+            try:
+                # A protocol-relative `//host` value already starts with its
+                # authority; prepending another `//` would make it empty.
+                rel = variant if variant.startswith("//") else "//" + variant
+                parsed = urlsplit(variant if "://" in variant else rel).hostname
+            except ValueError:
+                out.append(piece)
+                continue
+            if parsed:
+                out.append(_host_candidate_of(parsed))
+    else:
+        ip = _ip_literal(_host_part(piece))
+        if ip:
+            out.append(ip)
+    # Nothing name- or IP-shaped: keep the raw value (old behaviour), which
+    # then fails closed in is_in_scope unless it really matches.
+    return list(dict.fromkeys(out)) or [piece]
 
 
 def _extract_hosts_from_tool_input(tool_input: dict) -> list[str]:
@@ -1322,14 +1502,21 @@ def _extract_hosts_from_tool_input(tool_input: dict) -> list[str]:
         val = tool_input.get(key)
         if not isinstance(val, str):
             continue
-        for piece in re.split(r"[,\s]+", val):
+        pieces = re.split(r"[,\s]+", val)
+        # Chromium (WHATWG) deletes tab/CR/LF anywhere inside a URL, so a
+        # browser tool given `//127.0.0.1<TAB>example.com/` loads
+        # 127.0.0.1example.com -- while the split above sees two exempt
+        # pieces. For URL-shaped values, ALSO check the browser's reading.
+        # (Not for plain host lists: `a.com\nb.com` must not become a.comb.com.)
+        if re.search(r"[\t\r\n]", val) and ("://" in val or val.lstrip().startswith("//")):
+            pieces += re.split(r"[, ]+", re.sub(r"[\t\r\n]", "", val))
+        for piece in pieces:
             piece = piece.strip()
             if not piece:
                 continue
-            found = HOSTNAME_RE.findall(piece)
-            candidate = found[0] if found else piece
-            if not _is_candidate_exempt(candidate):
-                hosts.append(candidate)
+            for candidate in _tool_input_candidates(piece):
+                if not _is_candidate_exempt(candidate) and candidate not in hosts:
+                    hosts.append(candidate)
     return hosts
 
 

@@ -29,7 +29,7 @@ import os
 import re
 import secrets as _secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import yaml
 
@@ -118,7 +118,7 @@ def roster_entry(label: str, path: str | None = None) -> dict:
 _ALLOWED_SUMMARY_KEYS = frozenset({
     "identity", "captured", "cookie_count", "has_bearer", "whoami",
     "otp_applied", "magic_link_opened", "captured_params", "callback_host",
-    "status", "message", "error",
+    "status", "message", "error", "renewal_hosts",
 })
 
 # Playwright cookie attributes carried into identities.json (solves the C2b
@@ -138,6 +138,10 @@ class _LiveCapture:
     slug: str
     label: str
     opened_at: float
+    # session keep-alive: hosts of the human login's main-frame navigations
+    # (incl. redirect hops), so a later silent renewal knows which login hosts
+    # it may pass through. Default keeps positional constructions working.
+    nav_hosts: list = field(default_factory=list)
 
 
 # Reservation placeholder + registry of open captures, keyed by (slug, label),
@@ -195,6 +199,69 @@ def _record_auth(auth_by_host: dict, request, engagement) -> None:
             auth_by_host[host] = auth
     except Exception:
         pass
+
+
+MAX_LEARNED_HOSTS = 5
+
+
+def _record_nav(nav_hosts: list, request, page=None) -> None:
+    """Request listener: remember, in order, the host of every document
+    navigation of the capture window's OWN main frame (each redirect hop is its
+    own request). Subresources, iframes and popups are ignored. In process only."""
+    try:
+        if not request.is_navigation_request() or request.frame.parent_frame is not None:
+            return
+        if page is not None and request.frame != page.main_frame:
+            return
+        host = (scope_guard._host_of(request.url) or "").lower()
+        if host and (not nav_hosts or nav_hosts[-1] != host):
+            nav_hosts.append(host)
+    except Exception:
+        pass
+
+
+def _explicit_in_scope(url_or_host: str, engagement) -> bool:
+    """Explicit engagement.in_scope match (NOT scope_guard.is_in_scope's
+    safe-test-host shortcut), out_of_scope still winning."""
+    host = (scope_guard._host_of(url_or_host) or "").lower()
+    if not host:
+        return False
+    exact_in = host in engagement.in_scope
+    if any(scope_guard._matches(host, p) and not (exact_in and "*" in p) for p in engagement.out_of_scope):
+        return False
+    return any(scope_guard._matches(host, p) for p in engagement.in_scope)
+
+
+def learned_renewal_hosts(nav_hosts, engagement) -> list[str]:
+    """The login/IdP hosts of the human's login round trip: non-scope hosts the
+    capture window went through BEFORE its last landing on an explicitly
+    in-scope host (anything browsed after that is not part of the login), not
+    excluded by out_of_scope, never an IP literal, at most MAX_LEARNED_HOSTS.
+    Usable only by silent renewal -- never added to the engagement scope."""
+    import ipaddress
+
+    seq = list(nav_hosts or [])
+    last_app = max((i for i, h in enumerate(seq) if _explicit_in_scope(h, engagement)), default=-1)
+    out: list[str] = []
+    for host in seq[:max(last_app, 0)]:
+        if host in out or _explicit_in_scope(host, engagement) or scope_guard.is_in_scope(host, engagement):
+            continue
+        if any(scope_guard._matches(host, p) for p in engagement.out_of_scope):
+            continue
+        try:
+            ipaddress.ip_address(host.strip("[]"))
+            continue
+        except ValueError:
+            pass
+        out.append(host)
+    return sorted(out[:MAX_LEARNED_HOSTS])
+
+
+def _app_url(page, login_url: str, engagement) -> str:
+    url = getattr(page, "url", "") or ""
+    if url.startswith(("http://", "https://")) and _explicit_in_scope(url, engagement):
+        return url
+    return login_url
 
 
 def _pick_authorization(auth_by_host: dict, engagement) -> str | None:
@@ -290,13 +357,17 @@ def _whoami(cookies: list[dict], authorization: str | None, whoami_url: str, eng
 
 
 def _build_identity_entry(cookies: list[dict], authorization: str | None,
-                          login_url: str, whoami: dict | None) -> dict:
+                          login_url: str, whoami: dict | None, app_url: str | None = None,
+                          renewal_hosts: list[str] | None = None, whoami_url: str = "") -> dict:
     return {
         "cookies": cookies,
         "authorization": authorization,
         "captured_at": time.time(),
         "source_login_url": login_url,
         "whoami": whoami or {},
+        "app_url": app_url or login_url,
+        "renewal_hosts": list(renewal_hosts or []),
+        "whoami_url": whoami_url or "",
     }
 
 
@@ -310,13 +381,16 @@ def _write_private(path: str, text: str) -> None:
 
 def _write_identity(label: str, entry: dict, storage: dict) -> str:
     _safe_label(label)
+    import file_lock
+
     ipath = engagement_paths.resolve("secrets/identities.json")
-    data = {}
-    if os.path.isfile(ipath):
-        with open(ipath) as f:
-            data = json.load(f) or {}
-    data[label] = entry
-    _write_private(ipath, json.dumps(data, indent=2))
+    with file_lock.locked(ipath):  # same lock as session_refresh._update_identity
+        data = {}
+        if os.path.isfile(ipath):
+            with open(ipath) as f:
+                data = json.load(f) or {}
+        data[label] = entry
+        _write_private(ipath, json.dumps(data, indent=2))
     spath = engagement_paths.resolve(f"secrets/sessions/{label}.json")
     _write_private(spath, json.dumps(storage))
     return ipath
@@ -684,7 +758,13 @@ async def start_capture(identity_label: str, login_url: str, slug: str | None = 
     # Attach the request listener BEFORE navigating, so an Authorization-bearing
     # request on the very first (landing) navigation -- the SSO-reuse case, where
     # the dedicated profile is already logged in -- is captured, not missed.
-    context.on("request", lambda req: _record_auth(auth_by_host, req, engagement))
+    nav_hosts: list = []
+
+    def _on_request(req) -> None:
+        _record_auth(auth_by_host, req, engagement)
+        _record_nav(nav_hosts, req, page)
+
+    context.on("request", _on_request)
     try:
         await page.goto(login_url, timeout=DEFAULT_TIMEOUT_MS, wait_until="domcontentloaded")
     except Exception as e:
@@ -694,7 +774,7 @@ async def start_capture(identity_label: str, login_url: str, slug: str | None = 
     fingerprint = _fingerprint(slug, identity_label, login_url, _secrets.token_hex(8))
     _live_captures[key] = _LiveCapture(
         p, context, page, fingerprint, auth_by_host, engagement,
-        login_url, slug, identity_label, time.monotonic(),
+        login_url, slug, identity_label, time.monotonic(), nav_hosts,
     )
     _log_call("browser-mcp", ["start_capture", identity_label], returncode=None,
               duration_ms=0.0, block=None)
@@ -740,7 +820,10 @@ async def finish_capture(identity_label: str, slug: str | None = None,
     except Exception:
         storage = {"cookies": [], "origins": []}
     whoami = _whoami(in_scope, authorization, whoami_url, live.engagement)
-    entry = _build_identity_entry(in_scope, authorization, live.login_url, whoami)
+    renewal_hosts = learned_renewal_hosts(live.nav_hosts, live.engagement)
+    entry = _build_identity_entry(in_scope, authorization, live.login_url, whoami,
+                                  app_url=_app_url(live.page, live.login_url, live.engagement),
+                                  renewal_hosts=renewal_hosts, whoami_url=whoami_url)
     _write_identity(identity_label, entry, _filter_storage_state(storage, live.engagement))
     # metadata only -- record_intake never stores the credential value itself, and
     # writes to its OWN intake-history file (no `path=` -- that param is its storage
@@ -754,4 +837,5 @@ async def finish_capture(identity_label: str, slug: str | None = None,
     _log_call("browser-mcp", ["finish_capture", identity_label], returncode=None,
               duration_ms=0.0, block=None)
     return _safe_summary(identity_label, captured=True, cookie_count=len(in_scope),
-                         has_bearer=bool(authorization), whoami=_quarantine_whoami(whoami))
+                         has_bearer=bool(authorization), whoami=_quarantine_whoami(whoami),
+                         renewal_hosts=renewal_hosts)

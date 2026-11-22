@@ -40,6 +40,21 @@ import ui_walk_store
 from budget_guard import BudgetExceeded
 from endpoint_template import endpoint_template
 
+
+async def _refresh_identity_session(session_file: str) -> None:
+    """Session keep-alive hook for auth_lost: if session_file is a captured
+    identity's session file, silently renew it (session_refresh) before the
+    walk re-reads it. Never raises; the walk's own single retry follows."""
+    try:
+        import session_refresh
+
+        label = session_refresh.label_for_session_file(session_file)
+        if label:
+            await session_refresh.refresh_session(label)
+    except Exception:  # noqa: BLE001 -- renewal is best-effort here
+        pass
+
+
 SCHEMA_VERSION = 2
 MAX_PER_TEMPLATE = 3
 _SETTLE_MS = 3000
@@ -1017,7 +1032,10 @@ class _Walker:
                         if stop.status == "auth_lost" and not retried and self.session_file:
                             # The session file may have been refreshed externally
                             # since the walk started: re-read it once and retry.
+                            # Session keep-alive: first try a silent renewal of the
+                            # identity whose captured session_file this is.
                             retried = True
+                            await _refresh_identity_session(self.session_file)
                             await self.context.close()
                             await self._open(**auth)
                             visited.discard(url)
