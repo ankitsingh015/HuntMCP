@@ -90,3 +90,22 @@ def test_recon_agent_knows_mirror_is_automatic():
 def test_recon_agent_may_turn_mirror_off_after_a_proxy_block():
     text = open(os.path.join(ROOT, ".claude", "agents", "recon-agent.md")).read()
     assert "blocked mid-walk" in text and '"off"' in text
+
+
+SSO_CANDIDATE_TYPES = ("sso-redirect-uri-candidate", "sso-state-candidate", "sso-nonce-candidate",
+                       "sso-pkce-candidate", "sso-implicit-flow-candidate", "sso-logout-redirect-candidate",
+                       "sso-registration-candidate")
+
+
+def test_recon_agent_knows_walk_covers_in_scope_sso():
+    t = _read("recon-agent.md")
+    assert "in-scope identity provider" in t and "no extra step" in t
+
+
+def test_exploit_agent_works_sso_candidates_with_auth_and_session():
+    t = _read("exploit-agent.md")
+    for c in SSO_CANDIDATE_TYPES:
+        assert f"`{c}`" in t, c
+    assert "auth-and-session" in t
+    assert "never test an out-of-scope identity provider" in t
+    assert "idp_in_scope: false" in t

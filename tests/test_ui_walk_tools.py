@@ -239,3 +239,44 @@ def test_target_detail_groups_candidates_under_their_page():
     assert any("storage-token-candidate" in ln for ln in flat)
     assert all(begin < i < end for i in cookie + click)
     assert out.splitlines()[-1].startswith("Provenance (for case-mcp add_evidence):")
+
+
+def _inv_sso():
+    inv = _inv()
+    inv["schema_version"] = 3
+    inv["sso"] = {
+        "flows": [{"key": "k", "idp_host": "idp.test", "idp_in_scope": True, "page": "http://127.0.0.1:9/items",
+                   "authorize": {"client_id": "fixture-app", "response_type": "code", "pkce": False,
+                                 "state": {"present": True, "strength": "ok", "length_bucket": "16-31"},
+                                 "nonce": {"present": False, "strength": "absent", "length_bucket": None}},
+                   "state_changes_per_request": False, "nonce_changes_per_request": "unknown",
+                   "state_echoed_on_callback": True, "repeat": {"kind": "a", "result": "compared"}}],
+        "endpoints": [{"role": "authorize", "method": "GET", "url": "http://idp.test/authorize", "in_scope": True},
+                      {"role": "logout", "method": "GET", "url": "http://idp.test/logout", "in_scope": True,
+                       "redirect_params": ["post_logout_redirect_uri"]}],
+        "discovery": [{"host": "idp.test", "url": "http://idp.test/.well-known/openid-configuration",
+                       "status": 200, "issuer": "http://idp.test", "endpoints": [], "supported": {}}],
+        "idp_hosts": ["idp.test"], "repeats": 1, "discovery_gets": 1,
+        "out_of_scope_idp_redirects": [{"host": "login.oos.test", "url": "https://login.oos.test/authorize",
+                                        "page": "http://127.0.0.1:9/", "control_signature": None}]}
+    return inv
+
+
+def test_format_walk_sso_section():
+    out = server._format_walk({"inventory": _inv_sso(), "path": "/tmp/w.json"})
+    lines = out.splitlines()
+    sso = next(ln for ln in lines if ln.startswith("SSO:"))
+    assert "flows=1" in sso and "idp_hosts_in_scope=1" in sso and "repeats=1" in sso
+    assert "discovery_gets=1" in sso and "out_of_scope_idp_redirects=1" in sso
+    assert "authorize=1" in out and "logout=1" in out
+    # target-derived SSO text (hosts, client ids, URLs) only inside the quarantine block
+    begin = out.index("UNTRUSTED-DATA-BEGIN")
+    for needle in ("fixture-app", "http://idp.test/logout", "login.oos.test"):
+        assert needle in out and out.index(needle) > begin, needle
+    assert "state static" in out[begin:] and "pkce=False" in out[begin:]
+    assert lines[-1].startswith("Provenance (for case-mcp add_evidence):")
+
+
+def test_format_walk_without_sso_key_still_works():
+    out = server._format_walk({"inventory": _inv(), "path": "/tmp/w.json"})
+    assert "SSO: none" in out

@@ -554,6 +554,8 @@ class Recorder:
         self._hit_done: set[str] = set()
         self._watch: dict | None = None          # postMessage probe reaction window
         self.on_dom_hit: Callable[[str, str, str], None] | None = None
+        # spec 2: full hop URLs of each redirect chain (in memory, before R4 stripping)
+        self.on_redirect_chain: Callable[[list[str], str | None, str], None] | None = None
         self.canary_cookies_cleared = 0
         self.canary_storage_cleared = 0
 
@@ -751,6 +753,12 @@ class Recorder:
             hops.append({"url": clean, "query_keys": qkeys, "status": status,
                          "in_scope": bool(self._scope(r.url))})
             for_params.append({"url": r.url, "location": loc})
+        hook = self.on_redirect_chain
+        if hook is not None:
+            try:
+                hook([r.url for r in chain], ctl, term_req.resource_type)
+            except Exception:  # noqa: BLE001 -- the SSO tracker never affects recording
+                pass
         # param names are matched on the FULL URLs, in memory; only names are kept
         names = EL.redirect_param_names(for_params)
         del for_params
