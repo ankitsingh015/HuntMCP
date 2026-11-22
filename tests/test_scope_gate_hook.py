@@ -44,9 +44,14 @@ def test_safe_test_host_recognized():
     assert hook._is_safe_test_host("evil-target.com") is False
 
 
-def test_safe_test_host_private_ip_ranges():
-    assert hook._is_safe_test_host("192.168.1.1") is True
-    assert hook._is_safe_test_host("10.0.0.5") is True
+def test_safe_test_host_private_ip_ranges_are_not_exempt():
+    # 2026-11-22 scope-bypass fix: RFC1918/link-local IPs used to be exempt
+    # here, letting any Tier-2 tool reach the operator's LAN or the cloud
+    # metadata endpoint under an unrelated engagement. They now need an
+    # explicit in_scope entry; only loopback stays exempt.
+    assert hook._is_safe_test_host("192.168.1.1") is False
+    assert hook._is_safe_test_host("10.0.0.5") is False
+    assert hook._is_safe_test_host("169.254.169.254") is False
     assert hook._is_safe_test_host("8.8.8.8") is False
 
 
@@ -1292,3 +1297,269 @@ def test_129_pure_shell_variable_target_has_no_literal_host():
     real literal host resolves to that literal prefix."""
     assert hook._extract_hosts_from_bash('curl "$TARGET/path"') == []
     assert hook._extract_hosts_from_bash("curl $BASEURL") == []
+
+
+# ---------------------------------------------------------------------------
+# Scope-bypass fix (2026-11-22). Before: real TLDs that look like file
+# extensions (evil.sh), RFC1918/link-local/metadata IPs and dev-infra hosts
+# were filtered out of the candidate list entirely, so a Tier-2 scanner could
+# be pointed at them under an unrelated engagement and the hook allowed it.
+# ---------------------------------------------------------------------------
+def _write_target_engagement(tmp_path):
+    (tmp_path / "engagement.yaml").write_text(
+        "target: realtarget-corp.com\nin_scope:\n  - realtarget-corp.com\nout_of_scope: []\n"
+    )
+
+
+_BYPASS_HOSTS = ["evil.sh", "attacker.zip", "x.py", "evil.md", "github.com",
+                 "10.0.0.5", "192.168.1.1", "169.254.169.254"]
+
+
+@pytest.mark.parametrize("host", _BYPASS_HOSTS)
+def test_bypass_host_in_tier2_mcp_arg_is_blocked(monkeypatch, tmp_path, host):
+    monkeypatch.chdir(tmp_path)
+    _write_target_engagement(tmp_path)
+    payload = {"tool_name": "mcp__httpx-mcp__screenshot_hosts", "tool_input": {"domains": host}}
+    assert _run_main(monkeypatch, payload) == 2, host
+
+
+@pytest.mark.parametrize("command", [
+    "nuclei -u evil.sh",
+    "subfinder -d attacker.zip",
+    # (A BARE IP in a Bash scanner arg -- `nmap 10.0.0.5` -- is a separate,
+    # pre-existing gap: HOSTNAME_RE never extracts bare IPs at all, public or
+    # private. Tracked as a follow-up, not part of this fix.)
+    "nmap -p 80 evil.md",
+    "nuclei -u https://github.com/",
+    "curl http://169.254.169.254/latest/meta-data/",
+    "curl http://192.168.1.1/admin",
+    "curl https://evil.sh/x",
+    # dev infra is exempt only when every Tier-2 binary in the command is a
+    # plain download tool -- chaining a scanner onto it removes the exemption.
+    "curl -sL https://raw.githubusercontent.com/a/b/main/x && nuclei -u https://github.com/",
+])
+def test_bypass_host_in_bash_is_blocked(monkeypatch, tmp_path, command):
+    monkeypatch.chdir(tmp_path)
+    _write_target_engagement(tmp_path)
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+    assert _run_main(monkeypatch, payload) == 2, command
+
+
+@pytest.mark.parametrize("command", [
+    "curl -sL https://raw.githubusercontent.com/foo/bar/main/README.md",
+    "wget https://files.pythonhosted.org/packages/x.tar.gz",
+    "curl http://127.0.0.1:8000/health",
+    "curl http://localhost:3000/",
+    "curl -o results.json https://realtarget-corp.com/api",
+    "ffuf -w wordlist.txt -u https://realtarget-corp.com/FUZZ",
+])
+def test_legit_dev_and_filename_commands_still_pass(monkeypatch, tmp_path, command):
+    monkeypatch.chdir(tmp_path)
+    _write_target_engagement(tmp_path)
+    monkeypatch.setattr(hook, "_enforce_budget", lambda name: None)
+    monkeypatch.setattr(hook, "_log_call", lambda *a, **k: None)
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+    assert _run_main(monkeypatch, payload) == 0, command
+
+
+def test_private_ip_passes_hook_when_explicitly_in_scope(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text(
+        "target: lab\nin_scope:\n  - '10.88.0.*'\nout_of_scope: []\n"
+    )
+    monkeypatch.setattr(hook, "_enforce_budget", lambda name: None)
+    monkeypatch.setattr(hook, "_log_call", lambda *a, **k: None)
+    payload = {"tool_name": "mcp__httpx-mcp__screenshot_hosts", "tool_input": {"domains": "10.88.0.7"}}
+    assert _run_main(monkeypatch, payload) == 0
+
+
+def test_extract_hosts_keeps_real_tld_lookalikes():
+    assert hook._extract_hosts_from_bash("nuclei -u evil.sh") == ["evil.sh"]
+    assert hook._extract_hosts_from_bash("curl https://x.py/") == ["x.py"]
+
+
+# ---------------------------------------------------------------------------
+# Host-extraction gaps (2026-11-22, follow-up to the bypass fix above):
+# (1) a bare, schemeless IP in a Bash Tier-2 destination argument was never
+#     extracted (HOSTNAME_RE only matches names), so `nmap 8.8.8.8` or
+#     `curl 169.254.169.254/latest/meta-data/` was never scope-checked;
+# (2) a Tier-2 MCP arg value was checked by its FIRST hostname-shaped match,
+#     so `http://example.com@evilcorp.com/` hid the real host evilcorp.com.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("command,expected", [
+    ("curl 169.254.169.254/latest/meta-data/", ["169.254.169.254"]),
+    ("nmap 8.8.8.8", ["8.8.8.8"]),
+    ("nmap -sV -p 80 8.8.8.8", ["8.8.8.8"]),
+    ("httpx -u 8.8.8.8", ["8.8.8.8"]),
+    ("nuclei -u 8.8.8.8:8443", ["8.8.8.8"]),
+    ("curl -s 8.8.8.8:8080/x?y=1", ["8.8.8.8"]),
+    # alternate numeric encodings glibc/curl resolve to the metadata address
+    ("curl 2852039166/latest", ["169.254.169.254"]),
+    ("curl 0xa9fea9fe/latest", ["169.254.169.254"]),
+    ("curl 0251.0376.0251.0376/latest", ["169.254.169.254"]),
+    ("curl [fe80::1]/x", ["fe80::1"]),
+    ("curl 169.254.169.254./latest/meta-data/", ["169.254.169.254"]),  # trailing dot
+])
+def test_bare_ip_in_bash_destination_is_extracted(command, expected):
+    assert hook._extract_hosts_from_bash(command) == expected, command
+
+
+@pytest.mark.parametrize("command,expected", [
+    # security-review regression: an `@` in the PATH/query/fragment is not
+    # userinfo -- the real host must still be checked (old candidate kept).
+    ("curl evilcorp.com/x@127.0.0.1", ["evilcorp.com"]),
+    ("nuclei -u evilcorp.com/@127.0.0.1", ["evilcorp.com"]),
+    ("httpx -u evilcorp.com/@127.0.0.1", ["evilcorp.com"]),
+    ("curl evilcorp.com#@127.0.0.1", ["evilcorp.com"]),
+    ("curl 'evilcorp.com?a=@127.0.0.1'", ["evilcorp.com"]),
+    ("curl evilcorp.com/@[::1]", ["evilcorp.com"]),
+    ("curl evilcorp.com/@2130706433", ["evilcorp.com"]),
+    ("wget evilcorp.com/a@127.0.0.1", ["evilcorp.com"]),
+    # curl treats `\` as a userinfo char: this contacts 8.8.8.8 (re-review)
+    ("curl '127.0.0.1\\@8.8.8.8/'", ["8.8.8.8"]),
+    ("curl '127.0.0.1\\@169.254.169.254/latest/meta-data/'", ["169.254.169.254"]),
+    ("curl '//0xa9fea9fe/latest'", ["169.254.169.254"]),   # protocol-relative
+])
+def test_at_sign_in_path_does_not_hide_real_host(command, expected):
+    assert hook._extract_hosts_from_bash(command) == expected, command
+
+
+@pytest.mark.parametrize("command", [
+    "curl -m 30 --retry 3 https://realtarget-corp.com/",   # small numbers are not IPs
+    "nmap -p 8080 realtarget-corp.com",
+    "curl -o 2026.11.22.json https://realtarget-corp.com/",  # output filename
+])
+def test_numeric_non_host_tokens_are_not_extracted_as_ips(command):
+    assert hook._extract_hosts_from_bash(command) == ["realtarget-corp.com"], command
+
+
+def test_loopback_bare_ip_in_bash_still_exempt():
+    assert hook._extract_hosts_from_bash("curl 127.0.0.1:8000/health") == []
+
+
+@pytest.mark.parametrize("command", [
+    "curl 169.254.169.254/latest/meta-data/",
+    "nmap 8.8.8.8",
+    "curl 2852039166/latest",
+    "nmap 10.0.0.5",
+])
+def test_bare_ip_in_bash_is_blocked_end_to_end(monkeypatch, tmp_path, command):
+    monkeypatch.chdir(tmp_path)
+    _write_target_engagement(tmp_path)
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+    assert _run_main(monkeypatch, payload) == 2, command
+
+
+def test_in_scope_bare_ip_in_bash_passes(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "engagement.yaml").write_text("target: lab\nin_scope:\n  - '10.88.0.*'\nout_of_scope: []\n")
+    monkeypatch.setattr(hook, "_enforce_budget", lambda name: None)
+    monkeypatch.setattr(hook, "_log_call", lambda *a, **k: None)
+    payload = {"tool_name": "Bash", "tool_input": {"command": "nmap -sV 10.88.0.7"}}
+    assert _run_main(monkeypatch, payload) == 0
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("http://example.com@evilcorp.com/", ["evilcorp.com"]),
+    ("http://results.json@evilcorp.com/", ["evilcorp.com"]),
+    ("https://user:pw@evilcorp.com:8443/x", ["evilcorp.com"]),
+    ("example.com@evilcorp.com", ["evilcorp.com"]),
+    ("http://[fe80::1]/", ["fe80::1"]),
+    ("http://169.254.169.254./", ["169.254.169.254"]),
+    ("0x0a580007:80", ["10.88.0.7"]),
+    ("2852039166/x", ["169.254.169.254"]),
+    # security-review regression: Chromium (WHATWG) treats `\` as `/`, so
+    # this loads evilcorp.com even though Python's urlsplit says 127.0.0.1.
+    ("http://evilcorp.com\\@127.0.0.1/", ["evilcorp.com"]),
+    ("evilcorp.com\\@127.0.0.1", ["evilcorp.com"]),
+    ("evilcorp.com/x@127.0.0.1", ["evilcorp.com"]),
+    # ...while curl/urllib3 read `\` as userinfo: check that host too (re-review)
+    ("http://127.0.0.1\\@8.8.8.8/", ["8.8.8.8"]),
+    ("http://127.0.0.1\\@169.254.169.254/latest/meta-data/", ["169.254.169.254"]),
+    ("http://localhost\\@8.8.8.8/", ["8.8.8.8"]),
+    ("http://0x7f000001\\@8.8.8.8/", ["8.8.8.8"]),
+    ("127.0.0.1\\@8.8.8.8", ["8.8.8.8"]),
+    ("http://example.com\\@evilcorp.com/", ["evilcorp.com"]),
+    # protocol-relative value: its authority is right after the leading //
+    ("//0xa9fea9fe/@example.com/", ["169.254.169.254"]),
+    ("//evilcorp.com/x@127.0.0.1", ["evilcorp.com"]),
+    # Chromium deletes tab/newline inside a URL: this loads 127.0.0.1example.com
+    ("//127.0.0.1\texample.com/", ["127.0.0.1example.com"]),
+    ("http://127.0.0.1\nexample.com/", ["127.0.0.1example.com"]),
+    # unchanged shapes
+    ("realtarget-corp.com", ["realtarget-corp.com"]),
+    ("https://realtarget-corp.com/api/v1/file.txt", ["realtarget-corp.com"]),
+    ("8.8.8.8", ["8.8.8.8"]),
+    ("example.com", []),
+])
+def test_mcp_arg_userinfo_does_not_hide_real_host(value, expected):
+    assert hook._extract_hosts_from_tool_input({"url": value}) == expected, value
+
+
+def test_newline_separated_host_list_is_not_joined():
+    # Plain host lists keep their normal splitting -- no a.comb.com false positive.
+    assert hook._extract_hosts_from_tool_input({"domains": "realtarget-corp.com\napp.realtarget-corp.com"}) == [
+        "realtarget-corp.com", "app.realtarget-corp.com"]
+    assert hook._extract_hosts_from_tool_input(
+        {"url": "https://realtarget-corp.com/\nhttps://app.realtarget-corp.com/"}) == [
+        "realtarget-corp.com", "app.realtarget-corp.com"]
+
+
+# ---------------------------------------------------------------------------
+# Email-strip gap (2026-11-22): the hook used to blank every email-shaped span
+# out of the command before the schemeless scan, so a DESTINATION written as
+# `user@host` -- which curl/wget/nuclei read as userinfo + host -- vanished
+# and was never scope-checked. Emails inside request DATA must still be ignored.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("command", [
+    "curl 'admin@evilcorp.com/'",
+    "curl admin@evilcorp.com/x",
+    "curl -s admin:pw@evilcorp.com/x",
+    "nuclei -u user@evilcorp.com",
+    "httpx -u user@evilcorp.com",
+    "wget user@evilcorp.com/file",
+    "subfinder -d a@evilcorp.com",
+    "sqlmap -u 'user@evilcorp.com/x.php?id=1'",
+    # wget's -b/-d/-F are booleans: the next token IS the destination (re-review)
+    "wget -b evilcorp.com/x",
+    "wget -d evilcorp.com/x",
+    "wget -F evilcorp.com/x",
+    # wget -e runs a wgetrc command; http_proxy= is a host that is contacted
+    "wget -e http_proxy=evilcorp.com:8080 http://example.com/",
+])
+def test_userinfo_destination_in_bash_is_extracted(command):
+    assert hook._extract_hosts_from_bash(command) == ["evilcorp.com"], command
+
+
+@pytest.mark.parametrize("command", [
+    "curl -X POST https://realtarget-corp.com/signup -d '{\"email\":\"tester@notarealhost.com\"}'",  # gitleaks:allow
+    "curl --data 'email=tester@notarealhost.com' https://realtarget-corp.com/signup",
+    "curl --data-urlencode email=tester@notarealhost.com https://realtarget-corp.com/signup",
+    "curl -F 'email=tester@notarealhost.com' https://realtarget-corp.com/signup",
+    "curl --json '{\"e\":\"tester@notarealhost.com\"}' https://realtarget-corp.com/signup",
+    "curl -u tester@notarealhost.com:pw https://realtarget-corp.com/api",  # gitleaks:allow
+    "curl -b 'last=tester@notarealhost.com' https://realtarget-corp.com/api",
+    "curl -A 'bot tester@notarealhost.com' https://realtarget-corp.com/api",
+    "wget --post-data 'email=tester@notarealhost.com' https://realtarget-corp.com/signup",
+    "wget --user tester@notarealhost.com https://realtarget-corp.com/api",
+    "curl --url-query email=tester@notarealhost.com https://realtarget-corp.com/api",
+    "curl --variable email=tester@notarealhost.com https://realtarget-corp.com/api",
+])
+def test_email_in_request_data_is_still_ignored(command):
+    assert hook._extract_hosts_from_bash(command) == ["realtarget-corp.com"], command
+
+
+@pytest.mark.parametrize("command", ["curl admin@evilcorp.com/x", "nuclei -u user@evilcorp.com"])
+def test_userinfo_destination_in_bash_is_blocked_end_to_end(monkeypatch, tmp_path, command):
+    monkeypatch.chdir(tmp_path)
+    _write_target_engagement(tmp_path)
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+    assert _run_main(monkeypatch, payload) == 2, command
+
+
+@pytest.mark.parametrize("value", ["http://example.com@evilcorp.com/", "example.com@evilcorp.com"])
+def test_mcp_arg_userinfo_is_blocked_end_to_end(monkeypatch, tmp_path, value):
+    monkeypatch.chdir(tmp_path)
+    _write_target_engagement(tmp_path)
+    payload = {"tool_name": "mcp__httpx-mcp__screenshot_hosts", "tool_input": {"domains": value}}
+    assert _run_main(monkeypatch, payload) == 2, value

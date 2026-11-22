@@ -199,23 +199,28 @@ def test_hook_sender_with_real_target_and_no_engagement_fails_closed(monkeypatch
 # LOOPBACK EDGE -- pre-existing hook quirk, documented, NOT fixed here
 # ======================================================================
 
-def test_KNOWN_hook_scheme_port_loopback_url_arg_without_engagement_is_blocked(
+def test_hook_scheme_port_loopback_url_arg_without_engagement_is_allowed(
         monkeypatch, tmp_path):
-    """Pre-existing quirk of _extract_hosts_from_tool_input: unlike
-    _extract_hosts_from_bash it does not urlsplit a scheme+port value, so
-    'http://127.0.0.1:8765/x' is treated as one opaque candidate and, with no
-    engagement.yaml, fails CLOSED (rc 2). This is:
-      - not CEM-specific (any Tier-2 MCP server handed http://<ip>:<port>/... hits it),
-      - fail-closed (safe direction),
-      - not exercised by the CEM benchmark (which drives cem_engine / the senders
-        directly, and the SENDER correctly allows loopback -- see
-        test_SEC1_no_engagement_loopback_base_request_is_allowed).
-    F1 deliberately does not broaden into a general scope-hook refactor; tracked
-    as a separate follow-up (urlsplit scheme-bearing values in
-    _extract_hosts_from_tool_input, mirroring _extract_hosts_from_bash)."""
+    """Was test_KNOWN_..._is_blocked: _extract_hosts_from_tool_input used to
+    treat 'http://127.0.0.1:8765/x' as one opaque candidate, so a loopback URL
+    failed CLOSED with no engagement.yaml (a documented false positive). The
+    tracked follow-up -- urlsplit scheme-bearing values in
+    _extract_hosts_from_tool_input, mirroring _extract_hosts_from_bash -- landed
+    2026-11-22 with the userinfo-hiding fix, so loopback is now exempt here
+    exactly as it is on the Bash path and in the SENDER
+    (test_SEC1_no_engagement_loopback_base_request_is_allowed). An out-of-scope
+    host in the same shape is still blocked (next test)."""
     _without_engagement(tmp_path, monkeypatch)
     rc = _run_hook(monkeypatch, "mcp__case-mcp__determinism_gate",
                    {"finding_id": 1, "url": "http://127.0.0.1:8765/doc/1"})
+    assert rc == 0
+
+
+def test_hook_scheme_port_non_loopback_url_arg_without_engagement_is_blocked(
+        monkeypatch, tmp_path):
+    _without_engagement(tmp_path, monkeypatch)
+    rc = _run_hook(monkeypatch, "mcp__case-mcp__determinism_gate",
+                   {"finding_id": 1, "url": "http://10.0.0.5:8765/doc/1"})
     assert rc == 2
 
 

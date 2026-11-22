@@ -94,31 +94,62 @@ DEV_INFRA_HOSTS = {
 
 # A bare hostname-shaped regex can't distinguish a real domain from a
 # filename with an extension (results.json, wordlist.txt) -- see
-# scope_gate_hook.py's own comment on this for the full rationale. Kept here
-# too since is_safe_test_host() is the shared authority both callers use.
+# scope_gate_hook.py's own comment on this for the full rationale. Used ONLY
+# by looks_like_filename() for the hook's command-text parsing, never as a
+# network allow-list.
+#
+# Every entry MUST NOT be a real, registrable TLD. sh/py/md/zip used to be
+# listed here and are real IANA TLDs -- anyone can register evil.sh -- so a
+# Tier-2 scanner pointed at one was silently treated as "not a host" and
+# allowed under any engagement (fixed 2026-11-22; pinned by
+# tests/test_scope_guard.py::test_no_real_tld_is_treated_as_file_extension).
 NON_TLD_FILE_EXTENSIONS = {
-    "txt", "json", "py", "md", "yaml", "yml", "csv", "html", "htm", "xml",
-    "sh", "js", "ts", "log", "pdf", "zip", "tar", "gz", "cfg", "conf", "ini",
+    "txt", "json", "yaml", "yml", "csv", "html", "htm", "xml",
+    "js", "ts", "log", "pdf", "tar", "gz", "cfg", "conf", "ini",
     "png", "jpg", "jpeg", "gif", "svg", "css", "sql", "db", "bak", "out",
 }
 
 
+def _normalize_host(host: str) -> str:
+    return host.lower().strip(".").strip("[]")
+
+
+def looks_like_filename(token: str) -> bool:
+    """True if `token` ends in an extension that is never a real TLD
+    (results.json, wordlist.txt). For the scope-gate hook's command-text
+    parsing only -- answers "this word is not a host," never "this host may
+    be contacted"."""
+    token = _normalize_host(token)
+    return "." in token and token.rsplit(".", 1)[-1] in NON_TLD_FILE_EXTENSIONS
+
+
+def is_dev_infra_host(host: str) -> bool:
+    """True for well-known package/source hosting (DEV_INFRA_HOSTS). This is
+    NOT a scope exemption: the scope-gate hook exempts these only for a plain
+    curl/wget download in Bash, never for a scanner or for is_in_scope()."""
+    return _normalize_host(host) in DEV_INFRA_HOSTS
+
+
 def is_safe_test_host(host: str) -> bool:
-    """True for a host that never needs an engagement.yaml or an explicit
-    in_scope entry -- test/placeholder domains, private/loopback IPs, and
-    well-known dev/package infrastructure. This is about "is this host even
-    a live-target-shaped thing," not "is it authorized" -- a real target
-    still goes through the normal in_scope/out_of_scope check."""
-    host = host.lower().strip(".")
-    if host in SAFE_TEST_HOSTS or host in DEV_INFRA_HOSTS:
-        return True
-    if host.rsplit(".", 1)[-1] in NON_TLD_FILE_EXTENSIONS:
+    """True for a host that may be contacted with no engagement.yaml or
+    in_scope entry: the RFC 2606 example domains, localhost/0.0.0.0, and
+    loopback IPs -- i.e. this machine or a domain nobody can own.
+
+    Deliberately NOT included (2026-11-22 scope-bypass fix): RFC1918 /
+    link-local / cloud-metadata IPs (the operator's own LAN and
+    169.254.169.254 -- Python's is_private covers link-local too, so the old
+    `is_private or is_loopback` check let a Tier-2 tool reach metadata under
+    any engagement), DEV_INFRA_HOSTS (see is_dev_infra_host), and
+    filename-looking tokens (see looks_like_filename). A lab range must be
+    listed in in_scope explicitly, e.g. "10.88.0.*"."""
+    host = _normalize_host(host)
+    if host in SAFE_TEST_HOSTS:
         return True
     try:
         ip = ipaddress.ip_address(host)
-        return ip.is_private or ip.is_loopback
     except ValueError:
         return False
+    return ip.is_loopback
 
 
 @dataclass
@@ -245,12 +276,12 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 def outbound_policy_error(url: str) -> str | None:
     """Generic outbound-request policy check, applied IN ADDITION to
-    is_in_scope() -- is_in_scope()'s own is_safe_test_host fast-path treats
-    loopback/RFC1918/link-local addresses as automatically in-scope before
-    out_of_scope is even consulted (correct for this benchmark's own
-    "needs no engagement.yaml" local test-host posture), so on its own it
-    cannot keep a request off a cloud instance-metadata endpoint or a
-    non-HTTP scheme. Originally built as a case-mcp-local CEM helper (despite
+    is_in_scope() -- is_in_scope() only answers "is this host authorized";
+    an operator can still list a link-local/metadata address or range in
+    in_scope by mistake, and is_in_scope() never looks at the scheme, so on
+    its own it cannot keep a request off a cloud instance-metadata endpoint
+    or a non-HTTP scheme. (Until 2026-11-22 its is_safe_test_host fast-path
+    also auto-allowed every RFC1918/link-local IP; that bypass is fixed.) Originally built as a case-mcp-local CEM helper (despite
     its CEM-prefixed name, it was already generic, not CEM-specific) --
     relocated here so every caller shares one
     implementation instead of each hand-copying it.
@@ -538,7 +569,13 @@ def _cli() -> None:
     # which made an agent following its own instructions self-block on
     # example.com/github.com the moment any unrelated engagement existed.
     if is_safe_test_host(_host_of(target)):
-        print(f"IN SCOPE: {target} (safe/dev-infra test host, no engagement required)")
+        print(f"IN SCOPE: {target} (safe test host, no engagement required)")
+        sys.exit(0)
+    if is_dev_infra_host(_host_of(target)):
+        # Exit 0 so an agent's "check before curl-ing a package/raw file"
+        # step still works, but say plainly that this is NOT scan authorization.
+        print(f"DEV INFRA: {target} may be fetched with plain curl/wget only -- it is "
+              "NOT in scope for scanners or any Tier-2 testing tool.")
         sys.exit(0)
 
     try:

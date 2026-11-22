@@ -4,13 +4,15 @@ policy added under O1:
   * scheme allowlist -- CEM sends http/https only (no file:/ftp:/gopher:/data:)
   * cloud instance-metadata deny -- 169.254.0.0/16, fe80::/10, v4-mapped forms,
     and the well-known metadata hostnames, even when scope_guard.is_in_scope
-    would allow them (its is_safe_test_host fast-path treats every link-local IP
-    as in-scope before out_of_scope is consulted)
+    would allow them (e.g. an operator lists a link-local range in in_scope; until
+    2026-11-22 its is_safe_test_host fast-path also auto-allowed every
+    link-local IP)
   * redirects are NOT followed on a CEM fetch (a scope-checked in-scope URL must
     not 3xx onto an unchecked host)
 
-The F1-approved posture is preserved: ordinary loopback / RFC1918 still needs no
-engagement.yaml and still works (the benchmark path).
+The F1-approved posture is preserved for loopback: it still needs no
+engagement.yaml and still works (the benchmark path). RFC1918 now needs an
+explicit in_scope entry (2026-11-22 scope-bypass fix).
 """
 from __future__ import annotations
 

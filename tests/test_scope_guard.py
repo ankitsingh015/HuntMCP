@@ -127,16 +127,15 @@ def test_detect_scope_conflicts_no_warning_when_out_of_scope_is_unrelated():
 
 @pytest.mark.parametrize(
     "host",
-    ["example.com", "example.org", "localhost", "0.0.0.0",
-     "github.com", "raw.githubusercontent.com", "pypi.org",
-     "192.168.1.1", "127.0.0.1", "10.0.0.5",
-     "results.json", "payload.txt"],
+    ["example.com", "example.org", "localhost", "0.0.0.0", "127.0.0.1"],
 )
 def test_is_safe_test_host_true(host):
     assert is_safe_test_host(host) is True
 
 
-@pytest.mark.parametrize("host", ["realtarget-corp.com", "evil.com", "attacker.com", "8.8.8.8"])
+@pytest.mark.parametrize("host", ["realtarget-corp.com", "evil.com", "attacker.com", "8.8.8.8",
+                                  # 2026-11-22 scope-bypass fix: no longer exempt
+                                  "github.com", "192.168.1.1", "10.0.0.5", "results.json"])
 def test_is_safe_test_host_false(host):
     # evil.com/attacker.com are deliberately NOT exempt here -- see
     # scope_guard.py's comment on SAFE_TEST_HOSTS: someone could genuinely
@@ -149,14 +148,16 @@ def test_is_safe_test_host_false(host):
 
 def test_is_in_scope_exempts_safe_host_under_an_unrelated_engagement():
     """Regression: scripts/check-scope.sh used to require the exact host to
-    be in THIS engagement's in_scope list even for example.com/github.com --
-    an agent following its own "check scope before touching any host"
-    instruction would self-block on a totally safe host the moment ANY
-    engagement existed for a different target. A safe/dev-infra host must
-    pass regardless of which engagement (if any) is currently active."""
+    be in THIS engagement's in_scope list even for example.com -- an agent
+    following its own "check scope before touching any host" instruction
+    would self-block on a totally safe host the moment ANY engagement existed
+    for a different target. A safe test host must pass regardless of which
+    engagement (if any) is currently active. Dev infra (github.com) is no
+    longer in scope (2026-11-22 bypass fix): it is only exempt for the hook's
+    plain curl/wget downloads -- see scope_guard.is_dev_infra_host()."""
     e = _engagement(target="unrelated-target.com", in_scope=["unrelated-target.com"])
     assert is_in_scope("example.com", e) is True
-    assert is_in_scope("github.com", e) is True
+    assert is_in_scope("github.com", e) is False
 
 
 def test_load_engagement_roundtrip(tmp_path):
@@ -367,3 +368,95 @@ def test_pin_hosts_or_error_skips_pinning_entirely_under_bench_network(monkeypat
 
     assert extra_hosts == {}
     assert error is None
+
+
+# ---------------------------------------------------------------------------
+# Scope-bypass fix (2026-11-22): is_safe_test_host() used to treat real,
+# registrable TLDs that look like file extensions (.sh/.py/.md/.zip), every
+# RFC1918/link-local/metadata IP, and DEV_INFRA_HOSTS as "needs no
+# authorization", so is_in_scope() short-circuited to True for them under ANY
+# engagement. Contactable-without-engagement is now only the RFC 2606 example
+# domains, localhost/0.0.0.0 and loopback IPs.
+# ---------------------------------------------------------------------------
+from scope_guard import (
+    NON_TLD_FILE_EXTENSIONS,
+    is_dev_infra_host,
+    looks_like_filename,
+)
+
+# Real IANA TLDs (checked against data.iana.org/TLD/tlds-alpha-by-domain.txt
+# on 2026-11-22) that were wrongly listed as "file extensions". Pinned so a
+# future edit can't quietly put one back.
+_REAL_TLDS_THAT_LOOK_LIKE_EXTENSIONS = {"sh", "py", "md", "zip"}
+
+
+def _target_only():
+    return Engagement(target="target.com", in_scope=["*.target.com"], out_of_scope=[])
+
+
+def _as_url(host):
+    return f"http://[{host}]/" if ":" in host else f"http://{host}/"
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["evil.sh", "attacker.zip", "x.py", "evil.md",
+     "github.com", "raw.githubusercontent.com", "pypi.org",
+     "10.0.0.5", "192.168.1.1", "172.16.0.1",
+     "169.254.169.254", "169.254.1.1", "fe80::1", "fd00:ec2::254"],
+)
+def test_bypass_hosts_are_not_in_scope_for_unrelated_engagement(host):
+    e = _target_only()
+    assert is_in_scope(host, e) is False
+    assert is_in_scope(_as_url(host), e) is False
+
+
+@pytest.mark.parametrize(
+    "host", ["evil.sh", "x.py", "github.com", "10.0.0.5", "192.168.1.1", "169.254.169.254", "fe80::1"],
+)
+def test_bypass_hosts_are_not_safe_test_hosts(host):
+    assert is_safe_test_host(host) is False
+
+
+@pytest.mark.parametrize(
+    "host", ["example.com", "example.org", "example.net", "localhost", "0.0.0.0",
+             "127.0.0.1", "127.5.6.7", "::1", "EXAMPLE.COM."],
+)
+def test_local_dev_hosts_stay_safe(host):
+    assert is_safe_test_host(host) is True
+    # Bare IPv6 ("::1") isn't a form _host_of() parses (it splits on ':' and
+    # fails closed) -- that's pre-existing and unchanged; use the URL form.
+    assert is_in_scope(_as_url(host.strip(".")) if ":" in host else host, _target_only()) is True
+
+
+def test_private_ip_passes_only_when_explicitly_in_scope():
+    e = Engagement(target="lab", in_scope=["10.88.0.*", "192.168.56.10"], out_of_scope=[])
+    assert is_in_scope("10.88.0.7", e) is True
+    assert is_in_scope("http://192.168.56.10:8080/", e) is True
+    assert is_in_scope("10.0.0.5", e) is False
+
+
+def test_out_of_scope_private_ip_is_respected():
+    e = Engagement(target="lab", in_scope=["10.88.0.*"], out_of_scope=["10.88.0.1"])
+    assert is_in_scope("10.88.0.1", e) is False
+
+
+def test_no_real_tld_is_treated_as_file_extension():
+    assert not (NON_TLD_FILE_EXTENSIONS & _REAL_TLDS_THAT_LOOK_LIKE_EXTENSIONS)
+
+
+@pytest.mark.parametrize("token", ["results.json", "payload.txt", "wordlist.TXT", "a.tar", "notes.log"])
+def test_looks_like_filename_true(token):
+    assert looks_like_filename(token) is True
+
+
+@pytest.mark.parametrize("token", ["evil.sh", "x.py", "evil.md", "a.zip", "target.com", "10.0.0.5", "json"])
+def test_looks_like_filename_false(token):
+    assert looks_like_filename(token) is False
+
+
+def test_dev_infra_is_separate_from_safe():
+    assert is_dev_infra_host("github.com") is True
+    assert is_dev_infra_host("RAW.githubusercontent.com.") is True
+    assert is_dev_infra_host("evil-github.com") is False
+    assert is_safe_test_host("github.com") is False
