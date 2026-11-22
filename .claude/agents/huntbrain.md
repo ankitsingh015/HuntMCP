@@ -343,7 +343,11 @@ never being the only place data lives:
     captures the login, prefer passing THAT path over the raw cookie/
     bearer value where the target tool accepts it — a reference the
     subagent can load, not the literal secret duplicated a second time in
-    your own spawn-prompt text.
+    your own spawn-prompt text. For captured roster identities pass the
+    identity LABELS: exploit-agent/recon-agent keep them logged in with
+    `start_keepalive` and renew them with `refresh_session`; a token expiry
+    is not a reason to ask the human for a new login unless
+    `refresh_session` reports `needs_human_login`.
 
     **When you first receive the credential**, classify what you actually
     got before assuming it's usable: `python3 -c "import sys;
