@@ -159,3 +159,26 @@ def test_form_is_unsafe_to_submit():
     assert L.form_unsafe_reason([{"tag": "button", "text": "Delete project"}], "") == "destructive"
     assert L.form_unsafe_reason([{"tag": "button", "text": "Save"}], "https://x.test/u?action=delete") == "mutating-action"
     assert L.form_unsafe_reason([{"tag": "button", "text": "Save"}], "https://x.test/api/p1") is None
+
+
+def test_form_unsafe_sso_page():
+    # spec 2: nothing is ever typed into / submitted on an IdP login, consent or MFA form
+    assert L.form_unsafe_reason([{"tag": "button", "text": "Next"}], "", sso_page=True) == "sso-form"
+    assert L.form_unsafe_reason([{"tag": "button", "text": "Next"}], "") is None
+
+
+def test_form_unsafe_sso_action():
+    assert L.form_unsafe_reason([{"tag": "button", "text": "Continue"}],
+                                "https://idp.test/oauth2/v2.0/authorize?client_id=a") == "sso-form"
+    assert L.form_unsafe_reason([{"tag": "button", "text": "Go"}], "https://app.test/saml/acs?SAMLResponse=x") == "sso-form"
+    # existing precedence kept: a never-click classification still wins
+    assert L.form_unsafe_reason([{"tag": "button", "text": "Place order"}], "", sso_page=True) == "payment"
+
+
+def test_sso_logout_endpoints_are_mutating_gets():
+    # review F1: an IdP end-session GET ends the session -- never sent in Pass 1
+    for u in ("https://idp.test/default/endsession?post_logout_redirect_uri=x",
+              "https://idp.test/connect/endsession", "https://idp.test/oidc/end_session",
+              "https://idp.test/saml2/SingleLogout?SAMLRequest=x"):
+        assert L.is_mutating_get_url(u), u
+    assert not L.is_mutating_get_url("https://idp.test/default/authorize?client_id=a")

@@ -8,6 +8,11 @@ server session, a sessionStorage-token SPA, a payment button, an out-of-scope
 link, an icon-only and a non-English destructive button, a popup that POSTs
 on load, an unbounded calendar URL space, and a very tall page.
 
+Spec 2 (SSO): `/sso/*` makes this app a relying party for a real local test
+IdP (mock_idp.py, mock-oauth2-server container): static vs fresh state/nonce,
+no PKCE vs S256, an implicit-flow link, a baked-state authorize href, an SPA
+button, an IdP logout link, and a callback.
+
 `vulnerable=False` serves the PATCHED variant (escaped renders, hard delete,
 invalidating logout and account deletion) so tests can check the walker
 distinguishes the two.
@@ -17,6 +22,7 @@ NOT a protected benchmark -- an ordinary test fixture.
 
 from __future__ import annotations
 
+import html
 import json
 import os
 import secrets
@@ -64,8 +70,17 @@ _WAF_BODY = _render("Access denied", "<h1>Access denied</h1><p>Request blocked b
 
 class FixtureApp:
     def __init__(self, vulnerable: bool = True, refuse_proxied: bool = False,
-                 refuse_proxied_after: int | None = None, refuse_all: bool = False):
+                 refuse_proxied_after: int | None = None, refuse_all: bool = False,
+                 sso_login_issuer: str | None = None, sso_session_issuer: str | None = None):
         self.vulnerable = vulnerable
+        # Spec 2 (SSO): issuer URLs of the local test IdPs (tests/fixtures/
+        # ui_walk_target/mock_idp.py) -- one showing its login page, one with
+        # an "existing session" that bounces straight back. This app is only
+        # the relying party (RP): its /sso pages start flows and take callbacks.
+        self.sso_login_issuer = sso_login_issuer
+        self.sso_session_issuer = sso_session_issuer
+        self.issued_secrets: list[str] = []          # every state/nonce/challenge/code this RP saw or made
+        self.host_requests: list[tuple[str, str, str]] = []   # (method, host, path?query)
         # Burp-mirror tests: answer requests carrying a `Via` header (i.e. that
         # came through the stand-in proxy) with a WAF-looking 403 -- always
         # (refuse_proxied), or once more than N requests were received
@@ -99,6 +114,41 @@ class FixtureApp:
             self._next_id += 1
             self.items[iid] = {"id": iid, "name": name, "description": description, "deleted": False}
         return iid
+
+    def write_session_file(self, path: str) -> None:
+        """A Playwright storage_state file holding a valid RP `sid` cookie."""
+        sid = self.login_cookie().split("=", 1)[1]
+        state = {"cookies": [{"name": "sid", "value": sid, "domain": LOOPBACK, "path": "/",
+                              "expires": -1, "httpOnly": False, "secure": False, "sameSite": "Lax"}],
+                 "origins": []}
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+
+    def _sso_secret(self, static: str) -> str:
+        v = static if self.vulnerable else secrets.token_urlsafe(24)
+        self.issued_secrets.append(v)
+        return v
+
+    def sso_authorize_url(self, issuer: str, *, implicit: bool = False, prompt: str | None = None,
+                          client_id: str = "fixture-app") -> str:
+        """An authorize request as this RP builds it. Vulnerable: static
+        state and nonce, no PKCE, implicit link without nonce. Patched: fresh
+        values every time, PKCE S256, implicit link downgraded to code."""
+        from urllib.parse import urlencode
+
+        q = {"client_id": client_id, "redirect_uri": self.base_url + "/sso/callback",
+             "scope": "openid profile", "state": self._sso_secret("FIXSTATESTATIC01")}
+        if implicit and self.vulnerable:
+            q["response_type"] = "id_token token"
+        else:
+            q["response_type"] = "code"
+            q["nonce"] = self._sso_secret("FIXNONCESTATIC01")
+        if not self.vulnerable:
+            q["code_challenge"] = self._sso_secret("")
+            q["code_challenge_method"] = "S256"
+        if prompt:
+            q["prompt"] = prompt
+        return f"{issuer}/authorize?{urlencode(q)}"
 
     def non_get_requests(self) -> list[tuple[str, str]]:
         return [(m, p) for m, p in self.requests if m not in ("GET", "HEAD", "OPTIONS")]
@@ -157,6 +207,8 @@ def _make_handler(app: FixtureApp):
 
         def _log(self):
             app.requests.append((self.command, self.path))
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
+            app.host_requests.append((self.command, host, self.path))
             app.cookie_headers.append(self.headers.get("Cookie") or "")
 
         def _refused_proxied(self) -> bool:
@@ -435,6 +487,37 @@ if(!u){ const b=document.createElement('button'); b.textContent='Sign in'; b.onc
 else { const n=JSON.parse(u).name; const p=document.createElement('p'); p.textContent='Welcome, '+n; m.appendChild(p);
   const i=document.createElement('input'); i.name='nickname'; m.appendChild(i); }"""
             self._send(200, _render("App", '<div id="spa"></div>', script))
+
+        # -- /sso/*: spec 2 relying-party pages (IdP = local mock container) --
+        def _get_sso(self, path, q):
+            sub = path.rstrip("/")
+            login, sess = app.sso_login_issuer, app.sso_session_issuer
+            if not (login and sess):
+                return self._send(404, _render("Not found", "<p>no IdP configured</p>"))
+            if sub == "/sso":
+                spa = app.sso_authorize_url(login, client_id="fixture-spa")   # its own flow: repeat by re-click
+                body = f"""<h1>SSO</h1><p>Account linking (you are signed in to this app)</p><ul>
+<li><a href="/sso/login">SSO with login prompt</a></li>
+<li><a href="/sso/login-silent">Silent SSO</a></li>
+<li><a href="/sso/login-implicit">Implicit SSO</a></li>
+<li><a id="link-signin" href="{html.escape(app.sso_authorize_url(login))}">SSO direct link</a></li>
+<li><a href="{html.escape(sess)}/endsession?post_logout_redirect_uri={app.base_url}/sso&amp;id_token_hint=FIXIDTOKENHINT">Log out of IdP</a></li>
+</ul><button id="spa-signin">SPA SSO</button>"""
+                script = f"document.getElementById('spa-signin').onclick=()=>{{location.href={json.dumps(spa)};}};"
+                return self._send(200, _render("SSO", body, script))
+            if sub == "/sso/login":
+                return self._redirect(app.sso_authorize_url(login, prompt="login"))
+            if sub == "/sso/login-silent":
+                return self._redirect(app.sso_authorize_url(sess))
+            if sub == "/sso/login-implicit":
+                return self._redirect(app.sso_authorize_url(sess, implicit=True))
+            if sub == "/sso/callback":
+                for k in ("code", "state"):
+                    app.issued_secrets.extend(q.get(k) or [])
+                return self._redirect("/sso/home")
+            if sub == "/sso/home":
+                return self._send(200, _render("Signed in", "<p>signed in via SSO</p>"))
+            return self._send(404, _render("Not found", "<p>not found</p>"))
 
         # -- /ev/*: event-recorder surfaces (cookies, redirects, console, WS, CORS) --
         def _get_ev(self, path, q):

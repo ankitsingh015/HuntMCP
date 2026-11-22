@@ -197,6 +197,11 @@ flags anything abandoned for 30+ minutes).
    `"off"`); never any other proxy. The result
    states `Burp mirror: ON/OFF (<reason>)`; a block seen only through the proxy
    is a tooling artifact, not a finding. Return the inventory path to HuntBrain.
+   SSO (spec 2): when the app signs in through an in-scope identity provider,
+   the walk itself maps its login/consent/MFA pages, records every
+   authorize/callback/token/logout hop and the IdP's discovery document, and
+   adds SSO nodes -- no extra step for you. An out-of-scope IdP is only
+   recorded (the browser's own redirect there is followed; nothing else).
 
 ## Phase 4 — Port scanning
 

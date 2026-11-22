@@ -29,6 +29,7 @@ from urllib.parse import parse_qsl, urlsplit
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
 
 import scope_guard
+import ui_walk_sso_logic
 
 CLASSIFICATIONS = ("navigational", "expand", "submit", "destructive", "logout",
                    "account-delete", "payment", "other")
@@ -114,7 +115,11 @@ def is_mutating_get_url(url: str) -> bool:
     for k, v in parse_qsl(parts.query, keep_blank_values=True):
         tokens.append(k.lower())
         tokens.append(v.lower())
-    return any(t in words for t in tokens)
+    if any(t in words for t in tokens):
+        return True
+    # spec 2: an OAuth/OIDC/SAML end-session endpoint (/endsession, /end_session,
+    # SingleLogout ...) ends the IdP session just like a /logout link
+    return ui_walk_sso_logic.is_logout_endpoint(url)
 
 
 PAYMENT_HOST_SUFFIXES = ("stripe.com", "paypal.com", "braintreegateway.com", "adyen.com",
@@ -254,7 +259,7 @@ def url_has_segment(url: str, value: str) -> bool:
     return value in segs or value in vals
 
 
-def form_unsafe_reason(submit_controls: list[dict], action: str) -> str | None:
+def form_unsafe_reason(submit_controls: list[dict], action: str, *, sso_page: bool = False) -> str | None:
     """Why a form must NOT be really submitted in Pass 2 (None = safe): its
     submit control is logout / account-delete / payment / destructive (those
     are never submitted -- destructive ones only via the ownership-checked
@@ -265,4 +270,8 @@ def form_unsafe_reason(submit_controls: list[dict], action: str) -> str | None:
             return cls
     if action and is_mutating_get_url(action):
         return "mutating-action"
+    # spec 2: a canary is never typed into an IdP login / consent / MFA form
+    # (a failed-login storm can lock accounts and break programme rules)
+    if sso_page or (action and ui_walk_sso_logic.classify_url(action, "POST") is not None):
+        return "sso-form"
     return None

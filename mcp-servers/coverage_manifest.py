@@ -118,6 +118,17 @@ def required_classes(node: dict) -> set[str]:
     FLOOR, UNIONed with classes the node's bound precedent surfaces. A node with
     no precedent still gets the floor; precedent only widens it."""
     floor = set(BATTERY_BY_KIND.get(node.get("kind", ""), set()))
+    # Spec 2: an SSO endpoint / IdP page. For actions the SSO battery REPLACES
+    # the generic one (idor/business-logic mean nothing on an authorize URL).
+    sso_role = (node.get("meta") or {}).get("sso_role")
+    if sso_role:
+        if node.get("kind") == "action":
+            floor = set()
+        floor.add("auth")
+        if sso_role in ("authorize", "callback", "logout"):
+            floor.add("open-redirect")
+        if sso_role in ("authorize", "login", "consent"):
+            floor.add("csrf")
     # #164: a destructive control (delete/remove/revoke/cancel...) must have its
     # business logic tested (broken-delete / cancel-without-revoke live there),
     # whatever kind of node recorded it.

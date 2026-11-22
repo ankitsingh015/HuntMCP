@@ -68,7 +68,7 @@ def test_canary_registry_concurrent_appends():
 def test_emit_nodes_signatures_parents_meta(tmp_path):
     mp = str(tmp_path / "map.json")
     counts = S.emit_nodes(_inv(), map_path=mp)
-    assert counts == {"page": 1, "input": 1, "action": 1}
+    assert counts == {"page": 1, "input": 1, "action": 1, "sso_action": 0}
     nodes = surface_map.load_map(mp)["nodes"]
     page = next(n for n in nodes if n["kind"] == "page")
     inp = next(n for n in nodes if n["kind"] == "input")
@@ -95,7 +95,7 @@ def test_emit_nodes_skips_logged_out_pages(tmp_path):
     inv = _inv()
     inv["pages"][0]["auth_state"] = "logged-out"
     mp = str(tmp_path / "map.json")
-    assert S.emit_nodes(inv, map_path=mp) == {"page": 0, "input": 0, "action": 0}
+    assert S.emit_nodes(inv, map_path=mp) == {"page": 0, "input": 0, "action": 0, "sso_action": 0}
 
 
 def test_inventory_file_is_valid_json_with_schema_version():

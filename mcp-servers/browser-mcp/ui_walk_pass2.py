@@ -319,6 +319,10 @@ class CanaryWalker(ui_walk._Walker):
             self.last_aborted = {"method": method, "url": url, "body": post}
 
     async def _submit_page(self, prec: dict) -> None:
+        if prec.get("auth_state") == "sso" or self.sso.is_idp_url(prec.get("url") or ""):
+            # spec 2: nothing on an IdP login / consent / MFA page is ever filled or submitted
+            self.inv["skipped_forms"].append({"page": prec["url"], "action": None, "reason": "sso-form"})
+            return
         groups: dict = {}
         for i in prec["inputs"]:
             if _fillable(i) and self._granted(i["frame_origin"] + "/"):
@@ -344,7 +348,8 @@ class CanaryWalker(ui_walk._Walker):
                     except Exception:  # noqa: BLE001
                         form = None
                     if form is not None:
-                        unsafe = L.form_unsafe_reason(form["controls"], form["action"])
+                        unsafe = L.form_unsafe_reason(form["controls"], form["action"],
+                                                      sso_page=self.sso.is_idp_url(prec.get("url") or ""))
                         if unsafe:
                             self.inv["skipped_forms"].append({"page": prec["url"], "action": form["action"],
                                                               "reason": unsafe})

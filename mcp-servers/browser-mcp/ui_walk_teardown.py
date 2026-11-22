@@ -294,9 +294,11 @@ async def execute(plan: dict, session_file: str | None = None, *, cookie_header:
                               returncode=0 if inv["status"] == "complete" else 1,
                               duration_ms=(time.monotonic() - start) * 1000, block=None)
     deleted = [d for d in inv.get("destroy_log", []) if d["owned"] and not d["skipped_reason"]]
-    return {"status": inv["status"], "error": inv["error"], "plan": plan, "steps_run": w.steps_run,
-            "notes": plan["notes"] + w.notes, "candidates": inv["candidates"], "deleted": deleted,
-            "walk_id": inv["walk_id"], "inventory": inv}
+    # spec 2 decision 1: no OAuth/SAML secret value leaves the walker (same rule as ui_walk.walk())
+    return ui_walk.S.redact_urls_deep(
+        {"status": inv["status"], "error": inv["error"], "plan": plan, "steps_run": w.steps_run,
+         "notes": plan["notes"] + w.notes, "candidates": inv["candidates"], "deleted": deleted,
+         "walk_id": inv["walk_id"], "inventory": inv})
 
 
 async def run_teardown(base_url: str, identity_label: str, session_file: str | None = None,

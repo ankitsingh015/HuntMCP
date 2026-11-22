@@ -25,7 +25,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
-from urllib.parse import parse_qsl, urldefrag, urlsplit
+from urllib.parse import parse_qsl, urldefrag, urljoin, urlsplit
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -36,6 +36,8 @@ import tool_resolver
 import ui_walk_events
 import ui_walk_events_logic
 import ui_walk_logic as L
+import ui_walk_sso
+import ui_walk_sso_logic as S
 import ui_walk_store
 from budget_guard import BudgetExceeded
 from endpoint_template import endpoint_template
@@ -55,7 +57,12 @@ async def _refresh_identity_session(session_file: str) -> None:
         pass
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+MAX_PAGES_PER_IDP_HOST = 10   # spec 2
+MAX_SSO_REPEATS = 5           # spec 2: the repeat (user decision B), per walk
+MAX_DISCOVERY_HOSTS = 3
+MAX_DISCOVERY_GETS_PER_HOST = 3
+_SSO_REQUEST_TIMEOUT_MS = 10000
 MAX_PER_TEMPLATE = 3
 _SETTLE_MS = 3000
 _CLICK_TIMEOUT_MS = 3000
@@ -358,6 +365,11 @@ class _Walker:
         # does not re-read engagement.yaml for every subresource request.
         self._scope_fn = scope
         self._scope_cache: dict[str, bool] = {}
+        # spec 2: in-scope SSO / auth flows as surface (inv["sso"])
+        self.sso = ui_walk_sso.SsoTracker(self.scope)
+        self.recorder.on_redirect_chain = self._on_chain
+        self._idp_enqueued: dict[str, set[str]] = {}
+        self._pw = None   # the Playwright handle while run() is active (repeat / discovery request contexts)
         self.max_pages = max_pages
         self.max_clicks = max_clicks_per_page
         self.same_origin_only = same_origin_only
@@ -373,7 +385,7 @@ class _Walker:
             "honest_limits": list(HONEST_LIMITS), "pages": [], "real_submits": [],
             "canaries": [], "sinks": [], "candidates": [],
             "pass2_events": [], "events_candidate_errors": 0,
-            "burp_mirror": _mirror_status(),
+            "burp_mirror": _mirror_status(), "sso": self.sso.data,
         }
         # Burp mirror: off unless setup_mirror() found a reachable loopback proxy.
         self.proxy: str | None = None
@@ -397,6 +409,45 @@ class _Walker:
     def current_control(self, sig: str | None) -> None:
         self._current_control = sig
         self.recorder.set_control(sig)
+
+    # -- spec 2: SSO tracking ---------------------------------------------------
+    def _on_chain(self, urls: list[str], ctl: str | None, rtype: str) -> None:
+        """A redirect chain (full URLs, memory only): SSO hops into the tracker,
+        and every out-of-scope hop the browser followed is recorded honestly."""
+        page = (self.cur_page or {}).get("url")
+        self.sso.observe_chain(urls, page=page, control_signature=ctl)
+        if rtype != "document" or not any(isinstance(u, str) and S.classify_url(u) is not None
+                                           for u in urls[:ui_walk_sso.MAX_CHAIN_HOPS]):
+            return   # only SSO chains: a plain off-site redirect is not an IdP redirect
+        for u in urls[:ui_walk_sso.MAX_CHAIN_HOPS]:
+            if isinstance(u, str) and u.startswith(("http://", "https://")) and not self.scope(u):
+                self.sso.note_out_of_scope_redirect(u, page=page, control_signature=ctl)
+                if not self.inv.get("sso_oos_limit_noted"):
+                    self.inv["sso_oos_limit_noted"] = True
+                    self.inv["honest_limits"].append(
+                        "Following an HTTP redirect to an out-of-scope identity provider sends one GET per "
+                        "hop there, as any browser does; nothing else is done on that host.")
+
+    def _is_sso_page(self, page_url: str, chain: list[str]) -> bool:
+        """An in-scope IdP page: the navigation reached it through an
+        authorize / SAML-request hop with no callback after it, or it is on a
+        recorded IdP host other than the app's own (start URL) host."""
+        if not self.scope(page_url):
+            return False
+        roles = [S.classify_url(u) for u in chain if isinstance(u, str)]
+        last = max((i for i, r in enumerate(roles) if r in ("authorize", "saml-request")), default=None)
+        if last is not None and "callback" not in roles[last + 1:] and "saml-response" not in roles[last + 1:]:
+            return True
+        return self.sso.is_idp_url(page_url) and urlsplit(page_url).netloc.lower() != \
+            urlsplit(self.start_url).netloc.lower()
+
+    @staticmethod
+    def _chain_urls(resp) -> list[str]:
+        out, r = [], getattr(resp, "request", None)
+        while r is not None and len(out) < ui_walk_sso.MAX_CHAIN_HOPS:
+            out.insert(0, r.url)
+            r = r.redirected_from
+        return out
 
     def _register_dom_hit(self, token: str, source: str, page_url: str) -> None:
         """A DOM canary that reached a sink / executed goes into the canary
@@ -595,6 +646,15 @@ class _Walker:
                                           scope_ok=scope_ok, send_allowed=send_ok)
         if action == "abort" and reason == "mutating-get" and self.permit_mutating_get(url):
             action, reason = "continue", None
+        if is_main_nav or req.resource_type in ("document", "xhr", "fetch"):
+            try:
+                shape = _body_shape(post) or {}
+                self.sso.observe_url(url, method=method, seen_via="aborted" if action == "abort" else "request",
+                                     page=(self.cur_page or {}).get("url"),
+                                     control_signature=self.current_control,
+                                     body_fields=shape.get("form_keys") or shape.get("json_keys"))
+            except Exception:  # noqa: BLE001 -- SSO tracking never affects the walk
+                pass
         if action == "abort":
             self._edge(method, url, False, self.refine_block_reason(method, url, reason), post)
             self.on_aborted(method, url, post, reason)
@@ -695,8 +755,17 @@ class _Walker:
     def _enqueue_ok(self, url: str) -> bool:
         if not url.startswith(("http://", "https://")):
             return False
+        if S.is_callback_url(url):
+            return False   # spec 2: replaying a one-time code / token response changes state
         if self.same_origin_only and _origin(url) != _origin(self.start_url):
-            return False
+            # spec 2: a recorded in-scope IdP host is walkable too (<= 10 pages per host)
+            if not (self.sso.is_idp_url(url) and self.scope(url)):
+                return False
+            seen = self._idp_enqueued.setdefault(urlsplit(url).netloc.lower(), set())
+            if url not in seen and len(seen) >= MAX_PAGES_PER_IDP_HOST:
+                return False
+            seen.add(url)
+            return True
         return self.scope(url)
 
     # -- one page ------------------------------------------------------------
@@ -797,6 +866,11 @@ class _Walker:
                 raise _Stop("auth_lost" if self.had_session else "error",
                             f"start page did not load in scope: {rec['nav_error']}") from e
             return rec
+        chain = self._chain_urls(resp)
+        try:
+            self._on_chain(chain, None, "document")
+        except Exception:  # noqa: BLE001
+            pass
         if is_start and self.mirror_active:
             kind = await self._block_kind(resp)
             if kind:
@@ -828,7 +902,14 @@ class _Walker:
         await self._settle(page, first=True)
         snap = await self._snapshot(page)
         main_controls = [c for f, d in snap if f is page.main_frame for c in d["controls"]]
-        if L.looks_logged_out(page.url, main_controls, self.had_session):
+        sso_page = not is_start and self._is_sso_page(page.url, chain)
+        looked_logged_out = False
+        if sso_page:
+            # spec 2: an in-scope IdP login / consent / MFA page is surface, even
+            # though it looks logged out; nothing on it is filled or submitted.
+            rec["auth_state"] = "sso"
+            looked_logged_out = L.looks_logged_out(page.url, main_controls, self.had_session)
+        elif L.looks_logged_out(page.url, main_controls, self.had_session):
             login_redirect = bool(L._LOGIN_PATH_RE.search(urlsplit(page.url).path))
             if is_start:
                 raise _Stop("auth_lost", f"logged-out view at {page.url}")
@@ -863,6 +944,8 @@ class _Walker:
                     rec["inputs"].append(item)
 
         absorb_inputs(snap, None)
+        if sso_page:
+            rec["sso_role"] = S.sso_page_role(rec["inputs"], main_controls)
         seen: set[str] = set()
         clicks = 0
         while True:
@@ -884,6 +967,11 @@ class _Walker:
                     "classification": cls, "href": c["href"], "clicked": False, "skipped_reason": None}
             rec["controls"].append(crec)
             href = _defrag(c["href"]) if c["tag"] == "a" and c["href"] else ""
+            if c["tag"] == "a" and c["href"]:
+                try:
+                    self.sso.observe_url(c["href"], seen_via="href", page=rec["url"], control_signature=sig)
+                except Exception:  # noqa: BLE001
+                    pass
             # A payment-labelled LINK ("Checkout") is still a page worth mapping:
             # visiting it is a GET, and every non-GET / payment-host request it
             # makes is aborted by the interceptor. Logout / account-delete links
@@ -920,6 +1008,10 @@ class _Walker:
                 landed = _defrag(page.url)
                 if self._enqueue_ok(landed) and landed not in queue:
                     queue.append(landed)
+                if S.is_callback_url(page_url):
+                    # spec 2: never re-request a callback (its code is one-time)
+                    rec["nav_error"] = "callback page: not re-requested"
+                    break
                 await self._budget()
                 try:
                     back = await page.goto(page_url, wait_until="domcontentloaded")
@@ -954,6 +1046,8 @@ class _Walker:
                 await self._scrub_canaries()
         await self._end_events(rec)
         await self._shoot(page, rec)
+        if looked_logged_out and self.had_session and not await self._session_still_valid():
+            raise _Stop("auth_lost", f"logged-out view at {page.url} and the start page is logged out too")
         return rec
 
     async def _session_still_valid(self) -> bool:
@@ -1004,6 +1098,7 @@ class _Walker:
         visited: set[str] = set()
         per_template: dict[str, int] = {}
         async with async_playwright() as p:
+            self._pw = p
             self.browser = await p.chromium.launch(**self._launch_options())
             try:
                 await self._open(**auth)
@@ -1046,6 +1141,13 @@ class _Walker:
                     if rec is not None:
                         self.inv["pages"].append(rec)
                         self._derive_page(rec)
+                if self.mode == "map":
+                    await self._run_sso_repeats()
+                    await self._run_sso_discovery()
+                try:
+                    self._add_candidates(S.derive_sso_candidates(self.sso.data))
+                except Exception:  # noqa: BLE001 -- a rule bug is counted, never fatal
+                    self.inv["events_candidate_errors"] += 1
                 await self.after_map()
             except _Stop as stop:
                 self.inv["status"] = stop.status
@@ -1054,6 +1156,7 @@ class _Walker:
                 self.inv["status"] = "error"
                 self.inv["error"] = f"{type(e).__name__}: {e}"
             finally:
+                self.sso.drop_secrets()
                 if self.context is not None:
                     try:
                         await self._scrub_canaries()
@@ -1075,6 +1178,128 @@ class _Walker:
     async def after_map(self) -> None:
         """Pass 2 hook: runs after the map with the browser still open."""
 
+    # -- spec 2: the repeat and discovery (map mode only) ------------------------
+    async def _request_context(self, with_cookies: bool):
+        """A separate request context: its Set-Cookie never reaches the walk's
+        cookie jar (decision 5); through the Burp mirror when it is active."""
+        kw = {"ignore_https_errors": self.mirror_active}
+        if self.mirror_active and self.proxy:
+            kw["proxy"] = {"server": self.proxy}
+        if with_cookies:
+            kw["storage_state"] = await self.context.storage_state()
+        return await self._pw.request.new_context(**kw)
+
+    def _repeat_url_ok(self, url: str) -> bool:
+        return (isinstance(url, str) and self.scope(url) and not L.is_mutating_get_url(url)
+                and not S.is_callback_url(url))
+
+    async def _run_sso_repeats(self) -> None:
+        if self.mode != "map":
+            return
+        saved, self.cur_page = self.cur_page, None   # repeat edges/events belong to no page
+        try:
+            for key, src in self.sso.pending_repeats():
+                if self.sso.data["repeats"] >= MAX_SSO_REPEATS:
+                    break
+                flow = self.sso.flow(key) or {}
+                kind = src.get("kind")
+                if kind != "a" and not flow.get("idp_in_scope"):
+                    # an out-of-scope IdP: only the no-follow GET may run (no extra GET there)
+                    self.sso.finish_repeat(key, None, kind, result="skipped-out-of-scope-idp")
+                    continue
+                second = None
+                try:
+                    if kind == "a":
+                        second = await self._repeat_no_follow(src.get("url"))
+                    elif kind in ("b", "c"):
+                        second = await self._repeat_on_page(key, src, click=kind == "c")
+                except _Stop:
+                    raise
+                except Exception:  # noqa: BLE001 -- never a value in the record
+                    second = None
+                if second is not None and S.flow_key(second) != key:
+                    second = None
+                self.sso.finish_repeat(key, second, kind)
+        finally:
+            self.cur_page = saved
+
+    async def _repeat_no_follow(self, url: str) -> str | None:
+        if not self._repeat_url_ok(url):
+            return None
+        await self._budget()
+        self.sso.data["repeats"] += 1
+        ctx = await self._request_context(with_cookies=True)
+        try:
+            resp = await ctx.get(url, max_redirects=0, timeout=_SSO_REQUEST_TIMEOUT_MS, fail_on_status_code=False)
+            loc = resp.headers.get("location")
+        finally:
+            await ctx.dispose()
+        return urljoin(url, loc) if loc else None
+
+    async def _repeat_on_page(self, key: str, src: dict, *, click: bool) -> str | None:
+        page_url, sig = src.get("page"), src.get("control_signature")
+        if not page_url or not sig or not self._repeat_url_ok(page_url):
+            return None
+        await self._budget()
+        self.sso.data["repeats"] += 1
+        page = self.page
+        await page.goto(page_url, wait_until="domcontentloaded")
+        if not self.scope(page.url):
+            return None
+        await self._settle(page)
+        tmpl = endpoint_template(page_url)
+        for frame, d in await self._snapshot(page):
+            for c in d["controls"]:
+                if L.control_signature(c, tmpl) != sig:
+                    continue
+                if not click:
+                    return c.get("href") or None
+                self.sso.expect_authorize(key)
+                try:
+                    await frame.locator(f'[data-hm-idx="{c["idx"]}"]').first.click(timeout=_CLICK_TIMEOUT_MS)
+                    await self._settle(page)
+                finally:
+                    self.sso.expect_authorize(None)
+                return self.sso.take_second(key)
+        return None
+
+    async def _run_sso_discovery(self) -> None:
+        if self.mode != "map":
+            return
+        for netloc in list(self.sso.data["idp_hosts"])[:MAX_DISCOVERY_HOSTS]:
+            authz = self.sso.authorize_url_for(netloc)
+            if not authz:
+                continue
+            origin = f"{urlsplit(authz).scheme}://{netloc}"
+            urls = S.discovery_urls(authz) + [origin + "/.well-known/oauth-authorization-server"]
+            page = self.sso.page_for_host(netloc)
+            for u in urls[:MAX_DISCOVERY_GETS_PER_HOST]:
+                if not self.scope(u):
+                    continue
+                status, parsed = await self._discovery_get(u)
+                self.sso.record_discovery(netloc, u, status, parsed, page=page)
+                if parsed is not None:
+                    break
+
+    async def _discovery_get(self, url: str) -> tuple[int | None, dict | None]:
+        await self._budget()
+        self.sso.data["discovery_gets"] += 1
+        ctx = await self._request_context(with_cookies=False)
+        try:
+            resp = await ctx.get(url, max_redirects=0, timeout=_SSO_REQUEST_TIMEOUT_MS, fail_on_status_code=False)
+            if resp.status != 200:
+                return resp.status, None
+            try:
+                if int(resp.headers.get("content-length") or 0) > S._DISCOVERY_MAX_BYTES:
+                    return resp.status, None
+            except ValueError:
+                pass
+            return resp.status, S.parse_discovery(await resp.body(), scope=self.scope)
+        except Exception:  # noqa: BLE001 -- network failure: recorded as no status
+            return None, None
+        finally:
+            await ctx.dispose()
+
 
 def _default_delay() -> float:
     try:
@@ -1085,7 +1310,15 @@ def _default_delay() -> float:
         return 0.0
 
 
-async def walk(start_url: str, mode: str = "map", *, session_file: str | None = None,
+async def walk(start_url: str, mode: str = "map", **kw) -> dict:
+    """Walk the app from start_url (see _walk for the parameters). The returned
+    inventory never holds an OAuth/OIDC/SAML secret value: every URL in it is
+    passed through ui_walk_sso_logic.redact_sso_params (spec 2, decision 1).
+    Raw URLs exist only in memory while the walk runs."""
+    return S.redact_urls_deep(await _walk(start_url, mode, **kw))
+
+
+async def _walk(start_url: str, mode: str = "map", *, session_file: str | None = None,
                cookie_header: str | None = None, bearer_token: str | None = None,
                local_storage: dict | None = None, session_storage: dict | None = None,
                max_pages: int = 50, max_clicks_per_page: int = 40, same_origin_only: bool = True,
@@ -1129,7 +1362,7 @@ async def walk(start_url: str, mode: str = "map", *, session_file: str | None = 
         w.configure(grant)
     await w.setup_mirror(proxy)
     inv = await w.run(**auth)
-    browser_confirm._log_call("browser-mcp:ui-walk", [start_url, mode, walk_id],
+    browser_confirm._log_call("browser-mcp:ui-walk", [S.redact_sso_params(start_url), mode, walk_id],
                               returncode=0 if inv["status"] == "complete" else 1,
                               duration_ms=(time.monotonic() - start) * 1000, block=None)
     return inv
@@ -1139,4 +1372,5 @@ def _refused(start_url: str, mode: str, walk_id: str, why: str) -> dict:
     return {"schema_version": SCHEMA_VERSION, "walk_id": walk_id, "start_url": start_url, "mode": mode,
             "status": "refused", "error": why, "honest_limits": list(HONEST_LIMITS), "pages": [],
             "real_submits": [], "canaries": [], "sinks": [], "candidates": [],
-            "pass2_events": [], "burp_mirror": _mirror_status()}
+            "pass2_events": [], "burp_mirror": _mirror_status(),
+            "sso": ui_walk_sso.SsoTracker(lambda _u: False).data}

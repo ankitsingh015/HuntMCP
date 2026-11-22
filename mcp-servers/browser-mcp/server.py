@@ -582,7 +582,51 @@ def _target_detail(inv: dict) -> str:
         out.append(f"... {len(inv['pages']) - _MAX_LISTED_PAGES} more page(s) in the inventory file")
     for c in flat:
         out.append("CANDIDATE " + json.dumps(c, default=str)[:400])
+    out += _sso_detail(inv)
     return "\n".join(out)
+
+
+def _sso_lines(inv: dict) -> list[str]:
+    """Spec 2: SSO counts only -- no target text (hosts, client ids and URLs
+    go in the quarantined block)."""
+    sso = inv.get("sso") or {}
+    flows = sso.get("flows") or []
+    if not flows and not sso.get("endpoints") and not sso.get("out_of_scope_idp_redirects"):
+        return ["SSO: none"]
+    roles = Counter(e.get("role") for e in sso.get("endpoints") or [])
+    return [
+        (f"SSO: flows={len(flows)} (IdP in scope: {sum(1 for f in flows if f.get('idp_in_scope'))}) "
+         f"idp_hosts_in_scope={len(sso.get('idp_hosts') or [])} repeats={sso.get('repeats', 0)} "
+         f"discovery_gets={sso.get('discovery_gets', 0)} "
+         f"out_of_scope_idp_redirects={len(sso.get('out_of_scope_idp_redirects') or [])}"),
+        "SSO endpoints: " + (", ".join(f"{k}={v}" for k, v in sorted(roles.items(), key=lambda kv: str(kv[0])))
+                             or "none"),
+    ]
+
+
+def _sso_detail(inv: dict) -> list[str]:
+    sso = inv.get("sso") or {}
+    out = []
+    for f in sso.get("flows") or []:
+        a = f.get("authorize") or {}
+        flags = []
+        for name in ("state", "nonce"):
+            ch = f.get(f"{name}_changes_per_request")
+            st = (a.get(name) or {}).get("strength")
+            flags.append(f"{name} {'static' if ch is False else 'changes' if ch is True else 'unknown'}/{st}")
+        out.append(f"SSO FLOW idp={f.get('idp_host')} in_scope={f.get('idp_in_scope')} "
+                   f"client_id={a.get('client_id')!r} response_type={a.get('response_type')!r} "
+                   f"pkce={a.get('pkce')} {' '.join(flags)} echoed={f.get('state_echoed_on_callback')} "
+                   f"page={f.get('page')}")
+    for e in sso.get("endpoints") or []:
+        extra = f" redirect_params={e['redirect_params']}" if e.get("redirect_params") else ""
+        out.append(f"SSO ENDPOINT {e.get('role')} {e.get('method')} {e.get('url')} "
+                   f"in_scope={e.get('in_scope')}{extra}")
+    for d in sso.get("discovery") or []:
+        out.append(f"SSO DISCOVERY {d.get('url')} status={d.get('status')} issuer={d.get('issuer')}")
+    for r in sso.get("out_of_scope_idp_redirects") or []:
+        out.append(f"SSO OUT-OF-SCOPE REDIRECT followed to {r.get('host')} ({r.get('url')}) from {r.get('page')}")
+    return out
 
 
 _PROXY_ARTIFACT_NOTE = (
@@ -644,6 +688,7 @@ def _format_walk(value: dict) -> str:
         f"Surface-map nodes: {value.get('nodes') or {}}",
     ]
     lines += _event_lines(inv)
+    lines += _sso_lines(inv)
     if inv.get("status") == "auth_lost":
         lines.append("AUTH LOST: the session no longer renders the logged-in view -- refresh the session "
                      "(session_file / session_storage) and re-walk; do NOT treat the logged-out shell as the surface.")
