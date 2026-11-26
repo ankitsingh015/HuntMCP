@@ -275,6 +275,10 @@ never being the only place data lives:
    (you never create or edit it -- the scope-gate hook blocks it), have
    exploit-agent run `start_ui_walk(url, mode="canary")` for that app (canary
    submits, stored-XSS sinks, create->destroy->verify on walker-owned objects).
+   Then have exploit-agent run request mutation on each walk:
+   `plan_mutations(walk_id)` -> `run_mutations(plan_id, session_file=...)`
+   (GET variants always; non-GET ones only under that same grant, on
+   walker-owned objects, with restore) and work its candidates.
    Teardown (`run_teardown`: cleanup, logout and account-deletion tests) is
    NEVER run by you or on an agent's initiative -- only when the human says
    the engagement is done.

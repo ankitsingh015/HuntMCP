@@ -76,7 +76,7 @@ def _idp_pages(inv, idp):
 def test_schema_v3_and_sso_section(in_scope):
     _app, _a, _b, inv = in_scope
     assert inv["status"] == "complete", inv["error"]
-    assert inv["schema_version"] == 3
+    assert inv["schema_version"] == 4
     assert set(inv["sso"]) >= {"flows", "endpoints", "discovery", "idp_hosts", "repeats",
                                "discovery_gets", "out_of_scope_idp_redirects"}
     assert inv["sso"]["flows"]

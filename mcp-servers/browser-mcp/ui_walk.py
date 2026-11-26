@@ -16,11 +16,11 @@ Pure decisions live in ui_walk_logic.py; this module only drives Playwright.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import os
 import re
 import socket
-import http.client
 import sys
 import time
 import uuid
@@ -36,6 +36,7 @@ import tool_resolver
 import ui_walk_events
 import ui_walk_events_logic
 import ui_walk_logic as L
+import ui_walk_replay
 import ui_walk_sso
 import ui_walk_sso_logic as S
 import ui_walk_store
@@ -57,7 +58,7 @@ async def _refresh_identity_session(session_file: str) -> None:
         pass
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4   # spec 3a: api_edges[].replay_id, inv.replay
 MAX_PAGES_PER_IDP_HOST = 10   # spec 2
 MAX_SSO_REPEATS = 5           # spec 2: the repeat (user decision B), per walk
 MAX_DISCOVERY_HOSTS = 3
@@ -91,8 +92,9 @@ HONEST_LIMITS = [
      "setters. Only eval (wrapping it would change direct-eval semantics) and location (unforgeable) "
      "are not wrapped: a canary that reaches a navigation or request is caught as an aborted "
      "'navigation'/'request' sink, and one that executes through an unhooked sink is recorded as sink "
-     "'unknown'. Only #hash, window.name (pages that read it) and an in-page postMessage are planted; "
-     "?query is not (it would reach the server)."),
+     "'unknown'. Zero-traffic sources: #hash, window.name (pages that read it) and an in-page "
+     "postMessage; spec 3a also plants ?query params (a mutated GET that reaches the server, never on "
+     "SSO / state-changing URLs)."),
     ("A planted canary is only caught leaving the browser when it appears raw in a request URL, body or "
      "header value: a page that sends it transformed (base64, hashed, encrypted) can still send it out."),
     ("Control classification is English-vocabulary based; unrecognised (non-English, "
@@ -370,6 +372,8 @@ class _Walker:
         self.recorder.on_redirect_chain = self._on_chain
         self._idp_enqueued: dict[str, set[str]] = {}
         self._pw = None   # the Playwright handle while run() is active (repeat / discovery request contexts)
+        # spec 3a: real request values for mutation (0600 file, never in the inventory)
+        self.replay = ui_walk_replay.ReplayBuffer(self.scope)
         self.max_pages = max_pages
         self.max_clicks = max_clicks_per_page
         self.same_origin_only = same_origin_only
@@ -600,14 +604,58 @@ class _Walker:
         if self.delay:
             await asyncio.sleep(self.delay)
 
-    def _edge(self, method: str, url: str, sent: bool, reason: str | None, post_data=None) -> None:
+    def _edge(self, method: str, url: str, sent: bool, reason: str | None, post_data=None,
+              replay_id: str | None = None) -> None:
         target = self.cur_page
         if target is None:
             return
         target["api_edges"].append({
             "control_signature": self.current_control, "method": method, "url": url,
             "sent": sent, "blocked_reason": reason, "body_shape": _body_shape(post_data),
+            "replay_id": replay_id,
         })
+
+    def _record_replay(self, req, method: str, url: str, post, action: str, is_main_nav: bool) -> str | None:
+        """Spec 3a: keep the real request (credentials / secret-named values
+        withheld) for later mutation. API calls always; a document only when it
+        is a non-GET (form submit) or a GET carrying a query string."""
+        rtype = req.resource_type
+        if rtype not in ("document", "xhr", "fetch"):
+            return None
+        if rtype == "document" and method in L.SAFE_METHODS and not urlsplit(url).query:
+            return None
+        if self.recorder.dom_token_in(url, post):
+            return None   # a planted DOM canary request is never a replay base
+        try:
+            headers = dict(req.headers)
+        except Exception:  # noqa: BLE001
+            headers = {}
+        if action == "abort":
+            source = "aborted"
+        elif method not in L.SAFE_METHODS:
+            source = "pass2-sent"
+        else:
+            source = "get-sent"
+        return self.replay.add(method, url, headers, post, source,
+                               (self.cur_page or {}).get("url"), self.current_control)
+
+    async def _on_response(self, resp) -> None:
+        """Spec 3a: response key NAMES (and the identity's own id on an
+        own-account route) for in-scope xhr/fetch GETs. Values stay in memory."""
+        try:
+            req = resp.request
+            if req.method.upper() != "GET" or req.resource_type not in ("xhr", "fetch"):
+                return
+            if not self.scope(resp.url) or resp.status >= 300:
+                return
+            ct = (resp.headers.get("content-type") or "").lower()
+            if "json" not in ct:
+                return
+            body = await resp.text()
+            self.replay.note_response("GET", resp.url, body[:ui_walk_replay.MAX_BODY])
+            del body
+        except Exception:  # noqa: BLE001 -- recording never affects the walk
+            pass
 
     async def _on_route(self, route) -> None:
         req = route.request
@@ -622,12 +670,19 @@ class _Walker:
         except Exception:  # noqa: BLE001 -- binary body
             post = None
         try:
-            hdr_values = list(req.headers.values())
+            hdr_items = list(req.headers.items())
         except Exception:  # noqa: BLE001
-            hdr_values = []
+            hdr_items = []
+        # spec 3a: after a ?query plant the page's own same-origin requests carry
+        # the planted URL in Referer -- that copy is the planted GET itself, not a sink.
+        hdr_values = [v for k, v in hdr_items
+                      if not (k.lower() == "referer" and self.scope(url) and self.recorder.referer_is_planted(v))]
         # A planted DOM canary must never reach the server (any mode, any host):
         # the request it flowed into is aborted in the browser and recorded as a sink.
         tok = self.recorder.dom_token_in(_defrag(url), post, *hdr_values)
+        if tok is not None and post is None and self.recorder.server_token_allowed(tok, url, is_main_nav) \
+                and not self.recorder.dom_token_in(*hdr_values):
+            tok = None   # spec 3a: the planted ?query navigation itself (a mutated GET) goes on
         if tok is not None:
             try:
                 fo = _origin(req.frame.url)
@@ -655,8 +710,9 @@ class _Walker:
                                      body_fields=shape.get("form_keys") or shape.get("json_keys"))
             except Exception:  # noqa: BLE001 -- SSO tracking never affects the walk
                 pass
+        rid = self._record_replay(req, method, url, post, action, is_main_nav) if scope_ok else None
         if action == "abort":
-            self._edge(method, url, False, self.refine_block_reason(method, url, reason), post)
+            self._edge(method, url, False, self.refine_block_reason(method, url, reason), post, rid)
             self.on_aborted(method, url, post, reason)
             await route.abort("blockedbyclient")
             return
@@ -664,11 +720,11 @@ class _Walker:
         if host and not scope_ok and self.cur_page is not None and host not in self.cur_page["third_party_hosts"]:
             self.cur_page["third_party_hosts"].append(host)
         if method not in L.SAFE_METHODS:
-            self._edge(method, url, True, None, post)
+            self._edge(method, url, True, None, post, rid)
             await self.forward_sent(route, method, url, post)
             return
         if req.resource_type in ("xhr", "fetch"):
-            self._edge(method, url, True, None)
+            self._edge(method, url, True, None, replay_id=rid)
             self.get_log.append({"url": url, "page": self.cur_page["url"] if self.cur_page else None})
         await route.continue_()
 
@@ -746,6 +802,7 @@ class _Walker:
             session_storage=session_storage, context_options=opts)
         await self.context.route("**/*", self._on_route)
         await self.context.route_web_socket("**/*", self._on_ws)
+        self.context.on("response", self._on_response)
         if self.mirror_active:
             self.page.on("response", self._note_doc_response)
         self._attach_dialogs(self.page)
@@ -1157,6 +1214,7 @@ class _Walker:
                 self.inv["error"] = f"{type(e).__name__}: {e}"
             finally:
                 self.sso.drop_secrets()
+                self._save_replay()
                 if self.context is not None:
                     try:
                         await self._scrub_canaries()
@@ -1177,6 +1235,21 @@ class _Walker:
 
     async def after_map(self) -> None:
         """Pass 2 hook: runs after the map with the browser still open."""
+
+    def _save_replay(self) -> None:
+        """Spec 3a: the replay store (0600) + its summary in the inventory, and
+        (Pass 2) this walk's real submits into the cumulative send counter."""
+        try:
+            self.inv["replay"] = self.replay.summary()
+            ui_walk_replay.save_replay(self.replay.to_dict(self.inv["walk_id"], self.session_file))
+        except Exception as e:  # noqa: BLE001 -- never a value in the error
+            self.inv["replay_error"] = type(e).__name__
+        sent = getattr(self, "sent", 0)
+        if isinstance(sent, int) and sent > 0:
+            try:
+                ui_walk_replay.SendCounter(self.inv["walk_id"]).record(sent)
+            except Exception as e:  # noqa: BLE001
+                self.inv["replay_counter_error"] = type(e).__name__
 
     # -- spec 2: the repeat and discovery (map mode only) ------------------------
     async def _request_context(self, with_cookies: bool):

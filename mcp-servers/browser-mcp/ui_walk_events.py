@@ -22,7 +22,7 @@ import secrets
 import sys
 import time
 from collections.abc import Callable
-from urllib.parse import parse_qsl, urldefrag, urlsplit
+from urllib.parse import parse_qsl, urldefrag, urlencode, urlsplit, urlunsplit
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(_HERE))
 
 import ui_walk_events_logic as EL
 import ui_walk_logic as L
+import ui_walk_sso_logic as _SSO
 from redact import redact_text
 
 MAX_EVENTS_PER_PAGE = 300
@@ -54,6 +55,8 @@ PROBE_WATCH_S = 1.5                # reaction window after it
 PLANT_WAIT_S = 0.4                 # after a plant: let sinks run and a dialog arrive
 _CTL_TIMEOUT_S = 5.0
 _MAX_DOM_TOKENS = 2000             # per walk (3 per page at most)
+_MAX_QUERY_PLANTS = 30             # spec 3a: ?query canary navigations per walk
+QUERY_PARAMS_PER_PAGE = 3          # spec 3a: first N query params of a page get a canary
 
 
 # In-page recorder, installed with context.add_init_script in every frame.
@@ -549,6 +552,8 @@ class Recorder:
         self._ctl_name = "__hm" + secrets.token_hex(6)
         self._ctl_key = secrets.token_hex(16)
         self._dom_tokens: dict[str, dict] = {}   # token -> {"source", "rec"} (this walk only)
+        self._query_navs: dict[str, str] = {}    # spec 3a: query token -> the exact URL it was planted in
+        self._query_plants = 0
         self._executed: set[str] = set()         # tokens whose payload raised a dialog (this page)
         self._sink_seen: set = set()
         self._hit_done: set[str] = set()
@@ -1106,6 +1111,81 @@ class Recorder:
                     return m
         return None
 
+    def dom_tokens_in(self, text) -> set[str]:
+        """EVERY walker DOM token inside one text (dom_token_in stops at the first)."""
+        if not isinstance(text, str) or "hm" not in text:
+            return set()
+        return {m for m in DOM_TOKEN_RE.findall(text) if m in self._dom_tokens}
+
+    def referer_is_planted(self, value) -> bool:
+        """Review fix: a Referer is exempt from the DOM-token abort only when it
+        IS a planted ?query URL (fragment aside) and carries no other token."""
+        toks = self.dom_tokens_in(value)
+        if not toks or not all(t in self._query_navs for t in toks):
+            return False
+        clean = urldefrag(value)[0]
+        return all(self._query_navs[t] == clean for t in toks)
+
+    def is_query_token(self, tok) -> bool:
+        return isinstance(tok, str) and tok in self._query_navs
+
+    def server_token_allowed(self, tok: str, url: str, is_main_nav: bool) -> bool:
+        """Spec 3a: a ?query canary is a mutated GET that SHOULD reach the
+        server -- but only on the main-frame navigation it was planted in."""
+        want = self._query_navs.get(tok) if isinstance(tok, str) else None
+        return bool(want) and is_main_nav and urldefrag(url)[0] == want
+
+    async def plant_query(self, page, url: str, rec: dict, src: dict, *, budget=None) -> None:
+        """Spec 3a: for each of the page's first QUERY_PARAMS_PER_PAGE query
+        params, ONE budget-charged navigation with that param's value replaced
+        by a DOM canary payload (source "query:<param>"). Sinks are seen by the
+        same hooks as every other source."""
+        src["query_planted"] = 0
+        if _SSO.classify_url(url) is not None or _SSO.is_callback_url(url) or L.is_mutating_get_url(url):
+            src["query"] = "sso-skipped"   # SSO / state-changing endpoints are never mutated (spec 3a)
+            return
+        try:
+            parts = urlsplit(urldefrag(url)[0])
+            pairs = parse_qsl(parts.query, keep_blank_values=True)
+        except Exception:  # noqa: BLE001
+            src["query"] = "failed"
+            return
+        if not pairs:
+            src["query"] = "no-params"
+            return
+        names: list[str] = []
+        for k, _v in pairs:
+            if k not in names:
+                names.append(k)
+        status = "skipped"
+        for name in names[:QUERY_PARAMS_PER_PAGE]:
+            if self._query_plants >= _MAX_QUERY_PLANTS:
+                break
+            tok = self.new_dom_token(f"query:{name}", rec)
+            if tok is None:
+                break
+            payload = self.dom_payload(tok)
+            new_q = urlencode([(k, payload if k == name else v) for k, v in pairs])
+            target = urlunsplit((parts.scheme, parts.netloc, parts.path, new_q, ""))
+            if not self._scope(target):
+                break
+            self._query_navs[tok] = target
+            self._query_plants += 1
+            if budget is not None:
+                await budget()
+            try:
+                await page.goto(target, wait_until="domcontentloaded")
+                if not self._scope(page.url):
+                    await page.goto("about:blank")
+                    src["query"] = "left-scope"
+                    return
+                await self._after_plant(page)
+                status = "planted"
+                src["query_planted"] += 1
+            except Exception:  # noqa: BLE001
+                status = "failed" if status != "planted" else status
+        src["query"] = status
+
     def record_request_sink(self, tok: str, url: str, is_nav: bool, frame_origin: str) -> None:
         """The canary flowed into a navigation / request (location, fetch, img
         src...). The walker aborts that request; this records where it went."""
@@ -1174,8 +1254,15 @@ class Recorder:
         (then ONE budget-charged GET reload of the same URL, only when the page
         read window.name) and the URL #hash (in-page, fragment only: no request).
         `budget` is the walker's per-page-load guard; its exception propagates."""
-        src = {"hash": "skipped", "window.name": "skipped"}
+        src = {"hash": "skipped", "window.name": "skipped", "query": "skipped"}
         rec["dom_sources"] = src
+        await self._plant_zero_traffic(page, url, rec, src, budget)
+        # spec 3a: the ?query source LAST, so the zero-traffic sources ran on the original URL
+        if src.get("hash") not in ("not-on-page", "left-scope", "unavailable") and self._scope(page.url):
+            await self.plant_query(page, url, rec, src, budget=budget)
+        return src
+
+    async def _plant_zero_traffic(self, page, url: str, rec: dict, src: dict, budget) -> dict:
         try:
             if not self._scope(page.url) or urldefrag(page.url)[0] != urldefrag(url)[0]:
                 src.update({"hash": "not-on-page", "window.name": "not-on-page"})

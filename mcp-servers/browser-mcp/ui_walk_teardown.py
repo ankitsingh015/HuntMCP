@@ -128,6 +128,11 @@ class TeardownWalker(ui_walk_pass2.CanaryWalker):
         pages = [p for p in self.inv["pages"] if p.get("auth_state", "ok") == "ok"]
         if "cleanup" in self.steps:
             await ui_walk_destroy.run(self, pages)
+            try:
+                n = cleanup_mutation_state()["replay_stores_deleted"]
+                self.notes.append(f"Deleted {n} replay store(s) (recorded request values for mutation).")
+            except Exception as e:  # noqa: BLE001
+                self.notes.append(f"Replay stores not deleted: {type(e).__name__}")
             self.steps_run.append("cleanup")
         if "logout" in self.steps:
             await self._logout(pages)
@@ -265,6 +270,14 @@ def gate(base_url: str, identity_label: str, steps: list[str] | None = None, sco
                       "command": (f"scripts/confirm-state-change.sh {plan['host']} "
                                   f"{','.join(TEARDOWN_METHODS)} {plan['fingerprint']}")}
     return plan, None
+
+
+def cleanup_mutation_state() -> dict:
+    """Spec 3a: the teardown cleanup step also deletes every replay store
+    (the real recorded request values) of the active engagement."""
+    import ui_walk_replay
+
+    return {"replay_stores_deleted": ui_walk_replay.delete_replays()}
 
 
 async def execute(plan: dict, session_file: str | None = None, *, cookie_header: str | None = None,
