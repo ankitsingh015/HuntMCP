@@ -96,7 +96,7 @@ def test_route_decision_blocks_mutating_get_fetch():
 def test_pass1_completes(walked):
     _, inv = walked
     assert inv["status"] == "complete", inv.get("error")
-    assert inv["schema_version"] == 3
+    assert inv["schema_version"] == 4
     assert any("cannot be detected" in h for h in inv["honest_limits"])
 
 

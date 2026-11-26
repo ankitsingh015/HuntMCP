@@ -93,6 +93,26 @@ class FixtureApp:
         self.items: dict[str, dict] = {}
         self.valid_sids: set[str] = set()
         self.account_deleted = False
+        # Spec 3a (request mutation): the test identity's own account record
+        # (GET /api/v3/me), its email-change OTP and a promo code. The patched
+        # app ignores unknown profile keys, requires the OTP, rejects duplicate
+        # `to` params and array-form `code`.
+        self.v3_me = {"id": "u-1001", "display_name": "Tester", "role": "user",
+                      "email": "tester@example.invalid", "plan": "free"}
+        self.v3_otp = "%06d" % secrets.randbelow(10 ** 6)
+        while self.v3_otp == "000000":
+            self.v3_otp = "%06d" % secrets.randbelow(10 ** 6)
+        self.v3_promo = "PROMO" + secrets.token_hex(3).upper()
+        # Runner tests: a second identity (its sids see u-2002's record), a
+        # "sticky" mode where a changed role can no longer be put back (restore
+        # failure), session expiry after N v3 requests and a 429 after N.
+        self.v3_other = {"id": "u-2002", "display_name": "Other", "role": "user",
+                         "email": "other@example.invalid", "plan": "free"}
+        self.other_sids: set[str] = set()
+        self.v3_sticky_role = False
+        self.v3_expire_after: int | None = None
+        self.v3_rate_limit_after: int | None = None
+        self.v3_requests = 0
         self._next_id = 1
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer((LOOPBACK, 0), _make_handler(self))
@@ -115,9 +135,12 @@ class FixtureApp:
             self.items[iid] = {"id": iid, "name": name, "description": description, "deleted": False}
         return iid
 
-    def write_session_file(self, path: str) -> None:
-        """A Playwright storage_state file holding a valid RP `sid` cookie."""
+    def write_session_file(self, path: str, other: bool = False) -> None:
+        """A Playwright storage_state file holding a valid RP `sid` cookie
+        (other=True: the second identity, u-2002)."""
         sid = self.login_cookie().split("=", 1)[1]
+        if other:
+            self.other_sids.add(sid)
         state = {"cookies": [{"name": "sid", "value": sid, "domain": LOOPBACK, "path": "/",
                               "expires": -1, "httpOnly": False, "secure": False, "sameSite": "Lax"}],
                  "origins": []}
@@ -743,8 +766,104 @@ window.addEventListener('hashchange', route); route();"""
                 return self._send(200, b"self.addEventListener('fetch',()=>{});", "application/javascript")
             return self._send(404, _render("Not found", "<p>not found</p>"))
 
+        def _get_acct(self, path, q):
+            if not self._authed():
+                return self._redirect("/login")
+            body = """
+<h1>Account</h1><p id="who"></p>
+<form id="pf"><label>Display name <input name="display_name" id="dn" value="Tester"></label>
+<button type="button" id="save">Save</button></form>
+<form id="ef"><label>New email <input name="new_email" id="ne" type="email" value="new@example.invalid"></label>
+<label>Code <input name="otp" id="otp" value=""></label>
+<button type="button" id="chg">Change email</button></form>
+<a href="/api/v3/transfer-preview?to=u-1001">Transfer preview</a>
+<a href="/api/v3/promo-check?promo=WELCOME0">Check promo</a>"""
+            script = """
+fetch('/api/v3/me').then(r=>r.json()).then(m=>{document.getElementById('who').textContent=m.display_name;});
+document.getElementById('save').onclick=()=>fetch('/api/v3/profile',{method:'PUT',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify({display_name:document.getElementById('dn').value})});
+document.getElementById('chg').onclick=()=>fetch('/api/v3/account/change-email',{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({email:document.getElementById('ne').value,otp:document.getElementById('otp').value})});"""
+            self._send(200, _render("Account", body, script))
+
+        def _get_qsink(self, path, q):
+            sink = "innerHTML" if app.vulnerable else "textContent"
+            script = ("const m=new URLSearchParams(location.search).get('msg')||'';"
+                      f"document.getElementById('out').{sink}=m;")
+            self._send(200, _render("Message", '<div id="out"></div>', script))
+
+        def _v3_gate(self):
+            """None to go on, else the response already sent (401 / 429)."""
+            with app._lock:
+                app.v3_requests += 1
+                n = app.v3_requests
+            if app.v3_rate_limit_after is not None and n > app.v3_rate_limit_after:
+                return self._json(429, {"error": "Too Many Requests"}) or True
+            if app.v3_expire_after is not None and n > app.v3_expire_after:
+                app.valid_sids.clear()
+            if not self._authed():
+                return self._json(401, {"error": "unauthenticated"}) or True
+            return None
+
+        def _me(self):
+            return app.v3_other if self._sid() in app.other_sids else app.v3_me
+
+        def _get_api_v3(self, parts, q):
+            if self._v3_gate():
+                return
+            if parts == ["api", "v3", "me"]:
+                return self._json(200, dict(self._me()))
+            if parts == ["api", "v3", "transfer-preview"]:
+                to = q.get("to") or []
+                if not to:
+                    return self._json(400, {"error": "to required"})
+                if len(to) > 1 and not app.vulnerable:
+                    return self._json(400, {"error": "duplicate to"})
+                if to[0] != self._me()["id"]:
+                    return self._json(403, {"error": "not your account"})
+                return self._json(200, {"preview_for": to[-1], "amount": 0})
+            if parts == ["api", "v3", "promo-check"]:
+                if "promo[]" in q:
+                    if app.vulnerable:   # emulates a loose (array) comparison
+                        return self._json(200, {"valid": True})
+                    return self._json(400, {"error": "bad code"})
+                if (q.get("promo") or [""])[0] == app.v3_promo:
+                    return self._json(200, {"valid": True})
+                return self._json(403, {"valid": False})
+            return self._json(404, {"error": "not found"})
+
+        def _mutate_v3(self, method, parts, raw):
+            if self._v3_gate():
+                return
+            me = self._me()
+            try:
+                data = json.loads(raw or b"{}")
+            except ValueError:
+                return self._json(400, {"error": "bad json"})
+            if not isinstance(data, dict):
+                return self._json(400, {"error": "bad json"})
+            if parts == ["api", "v3", "profile"] and method in ("PUT", "PATCH"):
+                keys = list(data) if app.vulnerable else [k for k in data if k == "display_name"]
+                for k in keys:
+                    if k == "id" or (k == "role" and app.v3_sticky_role and me.get("role") != "user"):
+                        continue
+                    me[k] = data[k]
+                return self._json(200, {"ok": True})
+            if parts == ["api", "v3", "account", "change-email"] and method == "POST":
+                if "otp" in data or not app.vulnerable:
+                    if data.get("otp") != app.v3_otp:
+                        return self._json(403, {"error": "bad code"})
+                if not isinstance(data.get("email"), str) or "@" not in data["email"]:
+                    return self._json(400, {"error": "bad email"})
+                me["email"] = data["email"]
+                return self._json(200, {"ok": True})
+            return self._json(404, {"error": "not found"})
+
         def _get_api(self, path, q):
             parts = [p for p in path.split("/") if p]
+            if parts[:2] == ["api", "v3"]:
+                return self._get_api_v3(parts, q)
             if parts[:2] == ["api", "items"]:
                 if len(parts) == 2:
                     live = [dict(it) for it in app.items.values() if not it["deleted"]]
@@ -774,6 +893,8 @@ window.addEventListener('hashchange', route); route();"""
                 return self._send(200, _render("Thanks", "<p>thanks</p>"), headers=hdr)
             if not self._authed():
                 return self._json(401, {"error": "unauthenticated"})
+            if parts[:2] == ["api", "v3"]:
+                return self._mutate_v3(method, parts, raw)
             if parts[:2] == ["api", "items"]:
                 if method == "POST" and len(parts) == 2:
                     try:

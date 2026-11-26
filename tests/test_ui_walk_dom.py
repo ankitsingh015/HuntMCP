@@ -188,7 +188,9 @@ def test_planting_is_not_a_sink(vuln, patched):
 
 def test_canary_never_reaches_server(vuln, patched):
     for app, inv, _uw in (vuln, patched):
-        assert not [r for r in app.requests if DOM_TOKEN.search(r[1])]
+        # spec 3a: only the deliberate ?query plant (a mutated GET navigation,
+        # the token as a param value) may carry a DOM token to the server
+        assert not [r for r in app.requests if DOM_TOKEN.search(r[1]) and not _query_plant_request(r[1])]
         assert not [r for r in app.requests if r[1].startswith("/ev/leak")]   # aborted in the browser
     _app, inv, _uw = vuln
     page = _page(inv, "/ev/dom-leak")
@@ -619,3 +621,90 @@ def test_scrub_saved_session_removes_token_keys_and_values(tmp_path, capsys):
     bad = tmp_path / "bad.json"
     bad.write_text("{not json")
     assert ui_walk._scrub_saved_session(str(bad), [tok]) == 0 and bad.read_text() == "{not json"
+
+
+# ------------------------------------------------------------------ spec 3a: ?query source
+def _query_run(vulnerable, tmp_path_factory, start="/qsink?msg=hello", max_pages=2, budget=None):
+    mp = pytest.MonkeyPatch()
+    mp.setattr(browser_confirm, "_enforce_budget", budget or (lambda *_a, **_k: {}))
+    mp.setenv("HUNTMCP_UI_WALK_DIR", str(tmp_path_factory.mktemp("uwq")))
+    app = serve(vulnerable=vulnerable)
+    try:
+        inv = asyncio.run(ui_walk.walk(app.base_url + start, "map", scope_check=_scope,
+                                       screenshot_dir=str(tmp_path_factory.mktemp("shots")),
+                                       max_pages=max_pages))
+    finally:
+        mp.undo()
+        app.close()
+    return app, inv
+
+
+def _query_plant_request(path_q: str) -> bool:
+    """A request whose query carries a DOM token as a planted PARAM VALUE on a
+    document navigation (the only way a query canary may reach the server)."""
+    from urllib.parse import parse_qsl
+    q = urlsplit(path_q).query
+    return any(DOM_TOKEN.search(v) and v.startswith(DOM_TOKEN.search(v).group(0))
+               for _k, v in parse_qsl(q, keep_blank_values=True))
+
+
+def test_query_source_vulnerable_qsink_dom_xss(tmp_path_factory):
+    _app, inv = _query_run(True, tmp_path_factory)
+    page = _page(inv, "/qsink")
+    assert page["dom_sources"]["query"] == "planted"
+    hits = [e for e in _sinks(page) if e["source"] == "query:msg" and e["sink"] == "innerHTML"]
+    assert hits and hits[0]["executed"] is True
+    assert [c for c in _cands(page, "dom-xss-candidate") if c["detail"]["source"] == "query:msg"] or \
+        [c for c in inv["candidates"] if c["type"] == "dom-xss-candidate" and
+         (c.get("detail") or {}).get("source") == "query:msg"]
+
+
+def test_query_source_patched_no_candidate(tmp_path_factory):
+    _app, inv = _query_run(False, tmp_path_factory)
+    page = _page(inv, "/qsink")
+    assert page["dom_sources"]["query"] == "planted"
+    assert not [e for e in _sinks(page) if e["source"].startswith("query:")]
+    assert not [c for c in inv["candidates"] if c["type"] in ("dom-xss-candidate", "dom-sink-candidate")]
+
+
+def test_query_token_only_reaches_server_on_planted_nav(tmp_path_factory):
+    app, _inv = _query_run(True, tmp_path_factory)
+    carrying = [r for r in app.requests if DOM_TOKEN.search(r[1])]
+    assert carrying, "the query plant must reach the server"
+    assert all(m == "GET" and urlsplit(pq).path == "/qsink" and _query_plant_request(pq) for m, pq in carrying)
+
+
+def test_page_without_query_is_no_params(tmp_path_factory):
+    _app, inv = _query_run(True, tmp_path_factory, start="/qsink", max_pages=1)
+    assert _page(inv, "/qsink")["dom_sources"]["query"] == "no-params"
+
+
+def test_query_plants_budget_charged_and_capped(tmp_path_factory, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ui_walk_events, "_MAX_QUERY_PLANTS", 2)
+    _app, inv = _query_run(True, tmp_path_factory, start="/qsink?msg=a&b=2&c=3&d=4",
+                           budget=lambda *_a, **_k: calls.append(1) or {})
+    page = _page(inv, "/qsink")
+    planted = {e["source"] for e in _sinks(page) if e["source"].startswith("query:")}
+    assert planted <= {"query:msg", "query:b"}
+    assert page["dom_sources"]["query_planted"] == 2
+    assert len(calls) >= 1 + 2   # the page load + one charged navigation per query plant
+
+
+def test_query_plant_never_on_sso_urls():
+    """Spec 3a: SSO endpoints (authorize / callback / logout ...) are never
+    mutated -- a ?query canary is never planted into their params."""
+    rec = ui_walk_events.Recorder()
+    rec._scope = lambda _u: True
+    src = {}
+
+    class _NoPage:
+        url = "http://127.0.0.1/x"
+
+        async def goto(self, *_a, **_k):
+            raise AssertionError("must not navigate")
+
+    for u in ("http://127.0.0.1/oauth2/authorize?response_type=code&client_id=a&state=s",
+              "http://127.0.0.1/sso/callback?code=c&state=s"):
+        asyncio.run(rec.plant_query(_NoPage(), u, {"events": []}, src))
+        assert src["query"] == "sso-skipped"

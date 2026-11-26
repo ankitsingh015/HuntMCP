@@ -64,6 +64,8 @@ why all four, not just one):
 """
 
 import json
+import os
+import re
 import sys
 
 sys.path.insert(0, __file__.rsplit("/", 2)[0])
@@ -74,6 +76,7 @@ from urllib.parse import urlsplit
 
 import browser_confirm
 import job_runtime
+import mutation_runner
 import session_capture
 import session_keepalive
 import session_refresh
@@ -786,6 +789,167 @@ def list_ui_walks() -> str:
     items = job_runtime.list_thread_jobs(_UI_JOBS)
     if not items:
         return "No UI-walk jobs in this session."
+    return "\n".join(json.dumps(i, default=str) for i in items)
+
+
+# -- spec 3a: Burp-style parameter mutation over the walk's recorded requests --
+_SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9_.:/\-]{1,200}$")
+
+
+def _safe_label(text) -> str:
+    """Route / field names printed OUTSIDE the quarantine (the RESTORE FAILED
+    line) must be plain identifiers, never free target text."""
+    t = str(text or "")
+    return t if _SAFE_LABEL_RE.match(t) else "<non-printable name>"
+
+
+def _run_mutations_job(plan_id: str, **kw) -> dict:
+    res = asyncio.run(mutation_runner.run(plan_id, **kw))
+    path = None
+    if res.get("run_id") and res.get("walk_id"):
+        path = os.path.join(ui_walk_store.walk_dir(), f"{res['walk_id']}.mutations-{res['run_id']}.json")
+    return {"kind": "mutations", "result": res, "path": path}
+
+
+def _format_plan(p: dict) -> str:
+    reqs = p.get("requests") or []
+    variants = [v for r in reqs for v in r.get("variants") or []]
+    why = Counter(v.get("why_not") for v in variants if not v.get("would_send"))
+    lines = [f"Mutation plan plan_id={p.get('plan_id')} for walk {p.get('walk_id')}",
+             (f"Requests: {len(reqs)} (skipped by max_requests: {p.get('skipped', 0)}) | Variants: {len(variants)} "
+              f"(would send now: {sum(1 for v in variants if v.get('would_send'))})"),
+             "Not sendable now: " + (", ".join(f"{k}={n}" for k, n in sorted(why.items())) or "none"),
+             ("Next: read the reasons, add extra_variants where a request suggests more, then "
+              "run_mutations(plan_id, session_file=<the walk's session_file>).")]
+    detail = []
+    for r in reqs:
+        detail.append(f"[{r.get('replay_id')}] {r.get('method')} {r.get('route')} ownership={r.get('ownership')}"
+                      + (" NEVER-MUTATED" if r.get("never_mutated") else "")
+                      + (f" withheld={r.get('withheld_fields')}" if r.get("withheld_fields") else ""))
+        for v in (r.get("variants") or [])[:40]:
+            detail.append(f"  {v['variant_id']} {v['family']:<12} score={v['score']:<3} "
+                          f"{'SEND' if v.get('would_send') else 'hold:' + str(v.get('why_not'))} | {v['change']} "
+                          f"| {v['reason']}")
+    lines.append(_quarantine("\n".join(detail) or "(no recorded requests)", source_label="mutation plan"))
+    first = reqs[0]["route"] if reqs else ""
+    return "\n".join(lines) + "\n" + _provenance_line(first)
+
+
+def _format_mutations(value: dict) -> str:
+    r = value["result"]
+    lines = []
+    for f in r.get("restore_failures") or []:
+        lines.append(f"RESTORE FAILED: {_safe_label(f.get('route'))} field {_safe_label(f.get('field'))} -- the "
+                     "test account may still carry the changed value; check and fix it by hand before more runs.")
+    left = r.get("left_null_keys") or []
+    if left:
+        names = sorted({_safe_label(x.get("field")) for x in left})[:20]
+        lines.append(f"LEFT AS NULL: {len(left)} field(s) the account did not have before ({', '.join(names)}) "
+                     "now exist with a null value -- a write cannot remove a key; check them by hand.")
+    results = r.get("results") or []
+    why = Counter(x.get("why_not") for x in results if not x.get("sent"))
+    cand = Counter(c.get("type") for c in r.get("candidates") or [])
+    lines += [f"Mutation run {r.get('run_id')} (plan {r.get('plan_id')}, walk {r.get('walk_id')}) "
+              f"status={r.get('status')}" + (f" error={r.get('error')}" if r.get("error") else ""),
+              f"Requests sent: {r.get('sent', 0)} | Variants sent: {sum(1 for x in results if x.get('sent'))} | "
+              "Not sent: " + (", ".join(f"{k}={n}" for k, n in sorted(why.items(), key=str)) or "none"),
+              "Candidates (leads for exploit-agent, NOT confirmed): "
+              + (", ".join(f"{k}={n}" for k, n in sorted(cand.items())) or "none"),
+              f"Objects created by this run (cleaned up by run_teardown): {len(r.get('created_ids') or [])}",
+              f"Burp mirror: {'ON' if (r.get('burp_mirror') or {}).get('active') else 'off'}"]
+    if r.get("blocked_hosts"):
+        lines.append(f"BLOCKED: stopped on a block signal from {len(r['blocked_hosts'])} host(s); nothing "
+                     "tries to get around it.")
+    if r.get("status") == "auth_lost":
+        lines.append("AUTH LOST: the session stopped being authorized -- refresh it and run again.")
+    if r.get("agent_variant_errors"):
+        lines.append(f"Rejected extra_variants: {len(r['agent_variant_errors'])}")
+    if value.get("path"):
+        lines.append(f"Results file: {value['path']}")
+    lines += [f"Honest limit: {h}" for h in r.get("honest_limits") or []]
+    detail = [json.dumps(c, default=str)[:1500] for c in r.get("candidates") or []]
+    detail += [f"rejected extra_variant: {e}" for e in r.get("agent_variant_errors") or []]
+    lines.append(_quarantine("\n".join(detail) or "(no candidates)", source_label="mutation results"))
+    route = next((x.get("route") for x in results if x.get("route")), "")
+    return "\n".join(lines) + "\n" + _provenance_line(route or "")
+
+
+@app.tool()
+def plan_mutations(walk_id: str, request_filter: str = "", max_requests: int = 50) -> str:
+    """Spec 3a (Burp-style mutation, NO traffic): profile every request a
+    finished UI-walk recorded and return a ranked, request-specific variant
+    plan -- add a field the UI never sends (mass assignment), remove a check
+    field (otp/csrf/old password), duplicate a param (HPP), change its type
+    (type juggling), numeric edge values -- each with the reason it fits THIS
+    request, whether it needs the human Pass-2 grant, and whether it would be
+    sent. Read the reasons; then call run_mutations(plan_id, ...), adding your
+    own extra_variants where the request suggests more. Target text is
+    quarantined."""
+    try:
+        p = mutation_runner.make_plan(walk_id, request_filter=request_filter,
+                                      max_requests=max(1, min(int(max_requests), 200)))
+    except ValueError as e:
+        return f"Error: {e}"
+    return _format_plan(p)
+
+
+@app.tool()
+def run_mutations(plan_id: str, session_file: str = "", variants: str = "auto",
+                  extra_variants: list[dict] | None = None, drop_variants: list[str] | None = None,
+                  upstream_proxy: str = "", bearer_token: str = "") -> str:
+    """Spec 3a: send a plan_mutations plan as the SAME identity that walked
+    (pass the walk's session_file; a different identity is refused). Every
+    variant passes code gates: in scope, never a payment host, no
+    state-changing-looking GET; GET variants need no grant; non-GET variants
+    are sent ONLY with the human-written Pass-2 grant file, only on
+    walker-owned objects (walker-created, or the identity's own account), only
+    when a read-back GET exists -- each change is read back and RESTORED
+    (a failed restore is reported first). The grant's real_submit_cap_per_walk
+    is cumulative over all runs. Stops on 429/WAF signals, auth loss, budget.
+    variants: "auto" (the plan) or comma-separated variant ids.
+    extra_variants: your own additions, one op each:
+    {"replay_id", "op": add_param|remove_param|duplicate_param|retype_param|set_param,
+     "location": query|form|json|multipart, "path": [...], "value": ..., "reason": "..."}.
+    bearer_token: only for an API that needs one (never stored).
+    upstream_proxy: Burp mirror, same rules as start_ui_walk. Results are
+    LEADS (mass-assignment / param-removal-bypass / hpp / type-juggling /
+    numeric-edge candidates), never confirmed. Poll with check_mutations."""
+    if mutation_runner.load_plan(plan_id) is None and not ui_walk.proxy_refusal(upstream_proxy):
+        return f"Error: unknown plan_id {plan_id!r} -- run plan_mutations(walk_id) first."
+    refusal = ui_walk.proxy_refusal(upstream_proxy)
+    if refusal:
+        return f"Error: {refusal} -- no run started."
+    job = job_runtime.start_thread_job(
+        "ui-walk-mutations", _run_mutations_job, _UI_JOBS, plan_id, session_file=session_file,
+        variants=variants or "auto", extra_variants=extra_variants or None,
+        drop_variants=drop_variants or None, upstream_proxy=upstream_proxy, bearer_token=bearer_token)
+    return f"Mutation run started for {plan_id}: job_id={job['job_id']}. Poll with check_mutations(job_id)."
+
+
+@app.tool()
+def check_mutations(job_id: str) -> str:
+    """Poll a run_mutations job: status (RESTORE FAILED first), sent / not-sent
+    counts with reasons, candidates for exploit-agent (leads, quarantined),
+    the results file path."""
+    r = job_runtime.poll_thread_job(job_id, _UI_JOBS)
+    if r.get("error") and r.get("status") != "error":
+        return f"Error: {r['error']}"
+    if r["status"] == "running":
+        return f"Mutation job {job_id} still running ({r.get('elapsed_s')}s). Poll again later."
+    if r["status"] == "error":
+        return f"Mutation job {job_id} failed: {r.get('error')}"
+    value = r["value"]
+    if value.get("kind") != "mutations":
+        return f"Job {job_id} is not a mutation run -- use check_ui_walk."
+    return _format_mutations(value)
+
+
+@app.tool()
+def list_mutation_runs() -> str:
+    """List run_mutations jobs started in this server session."""
+    items = [i for i in job_runtime.list_thread_jobs(_UI_JOBS) if i.get("tool") == "ui-walk-mutations"]
+    if not items:
+        return "No mutation runs in this session."
     return "\n".join(json.dumps(i, default=str) for i in items)
 
 

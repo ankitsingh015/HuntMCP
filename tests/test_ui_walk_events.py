@@ -57,7 +57,7 @@ def _sig(page, text):
 def test_inventory_schema_v2(walked):
     _app, inv = walked
     assert inv["status"] == "complete", inv["error"]
-    assert inv["schema_version"] == 3
+    assert inv["schema_version"] == 4
     assert inv["pages"]
     for p in inv["pages"]:
         assert isinstance(p["events"], list)
