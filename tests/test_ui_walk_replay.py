@@ -171,3 +171,53 @@ def test_map_walk_writes_replay_with_profile_put_and_self_id(tmp_path, monkeypat
         assert app.non_get_requests() == []
     finally:
         app.close()
+
+
+# -- spec 3b, Task 3: response_meta (status + header NAMES only) -----------------
+def test_note_response_meta_stores_names_not_values():
+    b = buf()
+    b.add("GET", H + "/v4/page?lang=en", {}, None, "get-sent", None, None)
+    b.note_response_meta("GET", H + "/v4/page?lang=en", 200,
+                         {"Age": "12", "X-Cache": "HIT", "Set-Cookie": "sid=SECRETVALUE",
+                          "Cache-Control": "public, max-age=60", "Content-Type": "text/html; charset=utf-8",
+                          "Via": "1.1 varnish", "X-Akamai-Request-Id": "abc"})
+    meta = b.to_dict("w", None)["entries"][0]["response_meta"]
+    assert meta["status"] == 200 and meta["content_type"] == "text/html"
+    assert set(meta["cache_signals"]) >= {"age", "x-cache", "cache-control:public", "via"}
+    assert "x-akamai-request-id" in meta["proxy_signals"] and "via" in meta["proxy_signals"]
+    blob = json.dumps(b.to_dict("w", None))
+    assert "SECRETVALUE" not in blob and "varnish" not in blob and "set-cookie" not in blob.lower()
+
+
+def test_meta_records_403_status_and_old_entries_have_no_meta():
+    b = buf()
+    b.add("GET", H + "/api/v4/reports", {}, None, "get-sent", None, None)
+    b.add("GET", H + "/api/other", {}, None, "get-sent", None, None)
+    b.note_response_meta("GET", H + "/api/v4/reports", 403, {"Content-Type": "application/json"})
+    es = {e["url"]: e for e in b.to_dict("w", None)["entries"]}
+    assert es[H + "/api/v4/reports"]["response_meta"]["status"] == 403
+    assert es[H + "/api/other"].get("response_meta", {}) == {}
+
+
+@requires_browser
+def test_walk_records_response_meta_for_fixture_page(tmp_path, monkeypatch, walk_dir):
+    import browser_confirm
+    import ui_walk
+
+    monkeypatch.setattr(browser_confirm, "_enforce_budget", lambda *_a, **_k: {})
+    app = serve(vulnerable=True)
+    try:
+        sf = str(tmp_path / "s.json")
+        app.write_session_file(sf)
+        asyncio.run(ui_walk.walk(app.base_url + "/v4", "map", session_file=sf, max_pages=4,
+                                 scope_check=lambda u: urlsplit(u).hostname == "127.0.0.1",
+                                 screenshot_dir=str(tmp_path), walk_id="wrp2", action_delay_s=0))
+        rep = R.load_replay("wrp2")
+        by = {urlsplit(e["url"]).path: e for e in rep["entries"] if e["method"] == "GET"}
+        assert by["/api/v4/reports"]["response_meta"]["status"] == 403
+        assert by["/api/v4/admin"]["response_meta"]["status"] == 403
+        assert by["/api/v4/export"]["response_meta"]["status"] == 200
+        page = [e for e in rep["entries"] if urlsplit(e["url"]).path == "/v4/page"]
+        assert page and "age" in page[0]["response_meta"]["cache_signals"]
+    finally:
+        app.close()

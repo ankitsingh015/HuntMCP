@@ -278,7 +278,10 @@ never being the only place data lives:
    Then have exploit-agent run request mutation on each walk:
    `plan_mutations(walk_id)` -> `run_mutations(plan_id, session_file=...)`
    (GET variants always; non-GET ones only under that same grant, on
-   walker-owned objects, with restore) and work its candidates.
+   walker-owned objects, with restore) and work its candidates -- parameter
+   level and request-level (routing headers, method override, content type,
+   path/cache tricks on `hmcb=` URLs, GraphQL batching, races on walker-created
+   objects under the grant).
    Teardown (`run_teardown`: cleanup, logout and account-deletion tests) is
    NEVER run by you or on an agent's initiative -- only when the human says
    the engagement is done.

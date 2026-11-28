@@ -46,6 +46,9 @@ _WITHHELD_WORDS = {"password", "passwd", "pwd", "otp", "totp", "mfa", "cvv", "cv
 _CSRF_RE = re.compile(r"(?i)(csrf|xsrf)|^_token$")
 _WITHHELD_SUBSTR = ("password", "passwd", "secret", "apikey", "api_key", "api-key", "privatekey",
                     "private_key", "cardnumber", "card_number", "otp")
+_CACHE_HEADERS = ("age", "x-cache", "x-cache-hits", "cf-cache-status", "x-served-by", "via")
+_PROXY_HEADERS = ("via", "x-forwarded-for", "x-forwarded-host", "cf-ray", "x-amz-cf-id", "x-varnish",
+                  "x-served-by")
 _SELF_ID_KEYS = ("id", "user_id", "userId", "uuid")
 _WALK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -162,6 +165,7 @@ class ReplayBuffer:
                 "replay_id": rid, "method": key[0], "url": clean_url, "headers": hdrs, "body": body,
                 "body_truncated": truncated, "withheld_fields": sorted(set(withheld)), "source": source,
                 "page": page, "control_signature": control_signature, "response_keys": [],
+                "response_meta": {},
             })
             self._by_key[key] = rid
             self._by_key[(key[0], clean_url)] = self._by_key.get((key[0], clean_url), rid)
@@ -192,6 +196,31 @@ class ReplayBuffer:
                 if isinstance(v, (str, int)) and not isinstance(v, bool) and str(v) and str(v) not in self._self_ids:
                     self._self_ids.append(str(v))
                     break
+
+    def note_response_meta(self, method: str, url: str, status: int, headers: dict) -> None:
+        """Spec 3b: the response status + header NAMES (never values) that decide
+        which request-level families fit: cache signals, proxy/CDN signals."""
+        try:
+            parts = urlsplit(url)
+            clean = urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
+            rid = self._by_key.get(((method or "GET").upper(), clean))
+            if not rid:
+                return
+            low = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+            cache = sorted(n for n in _CACHE_HEADERS if n in low)
+            cc = low.get("cache-control", "").lower()
+            if "public" in cc or "s-maxage" in cc:
+                cache.append("cache-control:public")
+            proxy = sorted(n for n in low if n in _PROXY_HEADERS or n.startswith("x-akamai"))
+            meta = {"status": int(status or 0),
+                    "content_type": low.get("content-type", "").split(";")[0].strip().lower()[:60],
+                    "cache_signals": cache, "proxy_signals": proxy}
+            for e in self._entries:
+                if e["replay_id"] == rid:
+                    e["response_meta"] = meta
+                    break
+        except Exception:  # noqa: BLE001 -- recording never affects the walk
+            return
 
     def to_dict(self, walk_id: str, session_file: str | None) -> dict:
         return {"schema": 1, "walk_id": walk_id,

@@ -25,6 +25,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -113,6 +114,13 @@ class FixtureApp:
         self.v3_expire_after: int | None = None
         self.v3_rate_limit_after: int | None = None
         self.v3_requests = 0
+        # Spec 3b (request level): v4 state -- a cache, coupons (race target) and prefs.
+        self.v4_cache: dict[str, tuple[bytes, str]] = {}
+        self.v4_coupons: dict[str, int] = {"c-1": 0}
+        self.v4_prefs = {"theme": "dark"}
+        self.v4_block_after: int | None = None   # a WAF-style 403 for every v4 request after N of them
+        self.v4_count = 0
+        self.v4_idempotent_redeem = False   # redeem always 200 and changes nothing (an idempotent endpoint)
         self._next_id = 1
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer((LOOPBACK, 0), _make_handler(self))
@@ -175,6 +183,9 @@ class FixtureApp:
 
     def non_get_requests(self) -> list[tuple[str, str]]:
         return [(m, p) for m, p in self.requests if m not in ("GET", "HEAD", "OPTIONS")]
+
+    def non_get_v4(self) -> list[tuple[str, str]]:
+        return [(m, p) for m, p in self.non_get_requests() if p.startswith("/api/v4")]
 
     def close(self) -> None:
         self._server.shutdown()
@@ -251,6 +262,9 @@ def _make_handler(app: FixtureApp):
         # -- verbs ----------------------------------------------------------
         def do_HEAD(self):
             self._log()
+            u = urlsplit(self.path)
+            if u.path.startswith("/api/v4/"):
+                return self._get_api_v4(u.path, parse_qs(u.query))
             self._send(200, b"")
 
         def do_OPTIONS(self):
@@ -268,6 +282,8 @@ def _make_handler(app: FixtureApp):
                 if path.startswith("/api/"):
                     return self._json(401, {"error": "unauthenticated"})
                 return self._redirect("/login")
+            if app.vulnerable and path.lower().startswith("/api/v4/"):
+                return self._get_api_v4(path, q)   # vulnerable: routing is case-insensitive
             route = getattr(self, "_get_" + (path.strip("/").split("/")[0] or "index").replace("-", "_"), None)
             if route is None:
                 return self._send(404, _render("Not found", "<p>not found</p>"))
@@ -793,6 +809,175 @@ document.getElementById('chg').onclick=()=>fetch('/api/v3/account/change-email',
                       f"document.getElementById('out').{sink}=m;")
             self._send(200, _render("Message", '<div id="out"></div>', script))
 
+        # -- spec 3b: request-level weaknesses (v4) ---------------------------
+        def _v4_blocked(self) -> bool:
+            with app._lock:
+                app.v4_count += 1
+                n = app.v4_count
+            if app.v4_block_after is not None and n > app.v4_block_after:
+                self._send(403, _WAF_BODY)
+                return True
+            return False
+
+        def _get_v4(self, path, q):
+            if path != "/v4" and self._v4_blocked():
+                return
+            if path == "/v4":
+                if not self._authed():
+                    return self._redirect("/login")
+                body = """
+<h1>V4</h1><p id="who"></p>
+<a href="/v4/page?lang=en">Public page</a> <a href="/v4/account-page?tab=1">Account page</a>
+<form id="pf"><label>Display name <input name="display_name" id="dn" value="Tester"></label>
+<button type="button" id="save">Save</button></form>
+<form id="xf"><label>Theme <input name="theme" id="th" value="dark"></label>
+<button type="button" id="prefs">Save prefs</button></form>
+<button type="button" id="gq">Who am I</button>
+<button type="button" id="redeem">Redeem coupon</button>
+<button type="button" id="newc">New coupon</button>
+<button type="button" id="gm">Rename via GraphQL</button>"""
+                script = """
+const J={'Content-Type':'application/json'};
+fetch('/api/v3/me').then(r=>r.json()).then(m=>{document.getElementById('who').textContent=m.display_name;});
+fetch('/api/v4/reports');fetch('/api/v4/admin');fetch('/api/v4/export');fetch('/api/v4/export-acl');
+fetch('/api/v4/preferences');fetch('/api/v4/coupons/c-1');
+document.getElementById('save').onclick=()=>fetch('/api/v3/profile',{method:'PUT',headers:J,
+  body:JSON.stringify({display_name:document.getElementById('dn').value})});
+document.getElementById('prefs').onclick=()=>fetch('/api/v4/preferences',{method:'PUT',headers:J,
+  body:JSON.stringify({theme:document.getElementById('th').value})});
+document.getElementById('gq').onclick=()=>fetch('/api/v4/graphql',{method:'POST',headers:J,
+  body:JSON.stringify({query:'query Me { me { id display_name } }'})});
+document.getElementById('redeem').onclick=()=>fetch('/api/v4/coupons/c-1/redeem',{method:'POST',headers:J,body:'{}'});
+document.getElementById('gm').onclick=()=>fetch('/api/v4/graphql',{method:'POST',headers:J,
+  body:JSON.stringify({query:'mutation { setName(name:"Tester") { id } }'})});
+document.getElementById('newc').onclick=()=>fetch('/api/v4/coupons',{method:'POST',headers:J,body:'{}'});"""
+                return self._send(200, _render("V4", body, script))
+            if path == "/v4/page":
+                host = self.headers.get("X-Forwarded-Host") if app.vulnerable else None
+                return self._v4_cached(path + "?" + urlsplit(self.path).query, 200,
+                                       f"<h1>Public page</h1><p>host: {host or 'none'}</p>".encode(),
+                                       need_auth=False)
+            if path.startswith("/v4/account-page"):
+                if path == "/v4/account-page":
+                    if not self._authed():
+                        return self._json(403, {"error": "login required"})
+                    return self._send(200, _render("Account", f"<p>account {self._me()['id']}</p>"),
+                                      headers={"Cache-Control": "private"})
+                if not app.vulnerable:
+                    return self._send(404, _render("Not found", "<p>not found</p>"))
+                return self._v4_cached(path + "?" + urlsplit(self.path).query, 200,
+                                       _render("Account", f"<p>account {app.v3_me['id']}</p>")
+                                       if self._authed() else b"", need_auth=True)
+            return self._send(404, _render("Not found", "<p>not found</p>"))
+
+        def _v4_cached(self, key, status, body, need_auth):
+            """A tiny shared cache keyed by path+query only (vulnerable); never in patched mode."""
+            hit = app.v4_cache.get(key) if app.vulnerable else None
+            if hit is not None:
+                return self._send(200, hit[0], "text/html", {"Cache-Control": "public, max-age=60",
+                                                             "Age": "5", "X-Cache": "HIT"})
+            if need_auth and not self._authed():
+                return self._json(403, {"error": "login required"})
+            if app.vulnerable:
+                app.v4_cache[key] = (body, "text/html")
+            self._send(status, body, "text/html", {"Cache-Control": "public, max-age=60", "Age": "0",
+                                                   "X-Cache": "MISS"})
+
+        def _get_api_v4(self, path, q):
+            if self._v4_blocked():
+                return
+            if not self._authed():
+                return self._json(401, {"error": "unauthenticated"})
+            hv = self.headers
+            override = (hv.get("X-HTTP-Method-Override") or (q.get("_method") or [""])[0]).upper()
+            eff = override if (app.vulnerable and override) else self.command
+            norm = path.split(";")[0].lower().rstrip("/")
+            if norm == "/api/v4/reports":
+                if path == "/api/v4/reports" or not app.vulnerable:
+                    return self._json(403, {"error": "forbidden"})
+                return self._json(200, {"reports": [1, 2, 3]})
+            if path == "/api/v4/admin" or (app.vulnerable and path == "/api/v4/export"
+                                             and hv.get("X-Original-URL") == "/api/v4/admin"):
+                if app.vulnerable and (hv.get("X-Forwarded-For") == "127.0.0.1" or path == "/api/v4/export"):
+                    return self._json(200, {"admin": True})
+                return self._json(403, {"error": "forbidden"})
+            if path == "/api/v4/export":
+                return self._json(200, {"rows": 3})
+            if path == "/api/v4/export-acl":
+                if eff == "HEAD" and app.vulnerable:
+                    return self._send(200, b"", "application/json")
+                return self._json(403, {"error": "forbidden"})
+            if path == "/api/v4/preferences":
+                return self._json(200, {"id": self._me()["id"], **app.v4_prefs})
+            parts = [p for p in path.split("/") if p]
+            if len(parts) == 4 and parts[2] == "coupons" and parts[3] in app.v4_coupons:
+                return self._json(200, {"id": parts[3], "redeemed": app.v4_coupons[parts[3]]})
+            return self._json(404, {"error": "not found"})
+
+        def _mutate_v4(self, method, parts, raw):
+            if self._v4_blocked():
+                return
+            if parts == ["api", "v4", "preferences"] and method == "PUT":
+                m = re.search(rb'"theme"\s*:\s*"([^"]*)"', raw or b"")
+                try:
+                    pairs: list = []
+                    obj = json.loads(raw or b"{}", object_pairs_hook=lambda p: (pairs.append(p), dict(p))[1])
+                except ValueError:
+                    return self._json(400, {"error": "bad json"})
+                dup = any(len({k for k, _ in p}) != len(p) for p in pairs)
+                if (not app.vulnerable and dup) or not m or m.group(1).decode() not in ("dark", "light"):
+                    return self._json(400, {"error": "bad theme"})
+                if isinstance(obj, dict) and "theme" in obj:
+                    app.v4_prefs["theme"] = obj["theme"]   # vulnerable: json.loads keeps the LAST duplicate
+                return self._json(200, {"ok": True})
+            if parts == ["api", "v4", "graphql"] and method == "POST":
+                try:
+                    doc = json.loads(raw or b"{}")
+                except ValueError:
+                    return self._json(400, {"error": "bad json"})
+                if isinstance(doc, list):
+                    if not app.vulnerable:
+                        return self._json(400, {"error": "batching disabled"})
+                    return self._json(200, [self._gql(d) for d in doc])
+                return self._json(200, self._gql(doc))
+            if parts == ["api", "v4", "coupons"] and method == "POST":
+                with app._lock:
+                    cid = f"c-{len(app.v4_coupons) + 1}"
+                    app.v4_coupons[cid] = 0
+                return self._json(201, {"id": cid})
+            if len(parts) == 5 and parts[2] == "coupons" and parts[4] == "redeem" and method == "POST":
+                cid = parts[3]
+                if cid not in app.v4_coupons:
+                    return self._json(404, {"error": "not found"})
+                if app.v4_idempotent_redeem:
+                    return self._json(200, {"redeemed": app.v4_coupons[cid]})
+                if app.vulnerable:   # check-then-act with a window
+                    cur = app.v4_coupons[cid]
+                    if cur != 0:
+                        return self._json(409, {"error": "already redeemed"})
+                    time.sleep(0.05)
+                    app.v4_coupons[cid] = cur + 1
+                    return self._json(200, {"redeemed": app.v4_coupons[cid]})
+                with app._lock:
+                    if app.v4_coupons[cid] != 0:
+                        return self._json(409, {"error": "already redeemed"})
+                    app.v4_coupons[cid] = 1
+                return self._json(200, {"redeemed": 1})
+            return self._json(404, {"error": "not found"})
+
+        def _gql(self, doc):
+            q = str((doc or {}).get("query") or "") if isinstance(doc, dict) else ""
+            me = self._me()
+            if "mutation" in q:
+                m = re.search(r'name:\s*"([^"]*)"', q)
+                if m:
+                    me["display_name"] = m.group(1)
+                return {"data": {"setName": {"id": me["id"]}}}
+            fields = re.findall(r"(?:(\w+)\s*:\s*)?\bme\s*\{", q)
+            if len(fields) > 1 and not app.vulnerable:
+                return {"errors": [{"message": "alias limit"}]}
+            return {"data": {(a or "me"): {"id": me["id"], "display_name": me["display_name"]} for a in fields}}
+
         def _v3_gate(self):
             """None to go on, else the response already sent (401 / 429)."""
             with app._lock:
@@ -837,6 +1022,12 @@ document.getElementById('chg').onclick=()=>fetch('/api/v3/account/change-email',
             if self._v3_gate():
                 return
             me = self._me()
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if parts == ["api", "v3", "profile"] and ctype != "application/json":
+                if not app.vulnerable:
+                    return self._json(415, {"error": "unsupported media type"})
+                if ctype == "application/x-www-form-urlencoded":
+                    raw = json.dumps({k: v[0] for k, v in parse_qs(raw.decode("utf-8", "replace")).items()}).encode()
             try:
                 data = json.loads(raw or b"{}")
             except ValueError:
@@ -864,6 +1055,8 @@ document.getElementById('chg').onclick=()=>fetch('/api/v3/account/change-email',
             parts = [p for p in path.split("/") if p]
             if parts[:2] == ["api", "v3"]:
                 return self._get_api_v3(parts, q)
+            if parts[:2] == ["api", "v4"]:
+                return self._get_api_v4(path, q)
             if parts[:2] == ["api", "items"]:
                 if len(parts) == 2:
                     live = [dict(it) for it in app.items.values() if not it["deleted"]]
@@ -895,6 +1088,8 @@ document.getElementById('chg').onclick=()=>fetch('/api/v3/account/change-email',
                 return self._json(401, {"error": "unauthenticated"})
             if parts[:2] == ["api", "v3"]:
                 return self._mutate_v3(method, parts, raw)
+            if parts[:2] == ["api", "v4"]:
+                return self._mutate_v4(method, parts, raw)
             if parts[:2] == ["api", "items"]:
                 if method == "POST" and len(parts) == 2:
                     try:

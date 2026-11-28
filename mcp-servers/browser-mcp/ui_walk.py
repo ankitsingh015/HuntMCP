@@ -644,6 +644,8 @@ class _Walker:
         own-account route) for in-scope xhr/fetch GETs. Values stay in memory."""
         try:
             req = resp.request
+            if req.resource_type in ("document", "xhr", "fetch") and self.scope(resp.url):
+                self.replay.note_response_meta(req.method.upper(), resp.url, resp.status, dict(resp.headers))
             if req.method.upper() != "GET" or req.resource_type not in ("xhr", "fetch"):
                 return
             if not self.scope(resp.url) or resp.status >= 300:

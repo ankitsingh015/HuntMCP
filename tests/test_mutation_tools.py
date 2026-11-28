@@ -2,7 +2,6 @@
 list_mutation_runs, teardown cleanup of mutation state, agent wiring."""
 
 import asyncio
-import json
 import os
 import sys
 
@@ -153,3 +152,51 @@ def test_check_mutations_reports_left_null_keys(monkeypatch):
     out = server.check_mutations("job1")
     line = next(ln for ln in out.splitlines() if ln.startswith("LEFT AS NULL:"))
     assert "admin" in line and out.index("LEFT AS NULL") < out.index("UNTRUSTED-DATA-BEGIN")
+
+
+# -- spec 3b, Task 10 ----------------------------------------------------------
+def test_plan_output_lists_xform_variants_and_quarantines():
+    rep = {"schema": 1, "walk_id": "w3b", "session_file_realpath": None, "self_ids": [],
+           "entries": [{"replay_id": "r1", "method": "GET", "url": "http://127.0.0.1:9/api/v4/admin",
+                        "headers": {}, "body": None, "body_truncated": False, "withheld_fields": [],
+                        "source": "get-sent", "page": None, "control_signature": None, "response_keys": [],
+                        "response_meta": {"status": 403, "content_type": "application/json",
+                                          "cache_signals": [], "proxy_signals": []}}]}
+    R.save_replay(rep)
+    out = server.plan_mutations("w3b")
+    assert "header X-Forwarded-For: 127.0.0.1" in out and "path /api/v4/admin/" in out
+    assert "method HEAD" in out and "UNTRUSTED-DATA-BEGIN" in out
+    assert out.splitlines()[-1].startswith("Provenance (for case-mcp add_evidence):")
+
+
+def test_run_mutations_docstring_names_3b_ops():
+    doc = _tools()["run_mutations"].description
+    for s in ("set_header", "remove_header", "content_type", "graphql_batch", "hmcb", "race"):
+        assert s in doc, s
+    pdoc = _tools()["plan_mutations"].description
+    for s in ("routing", "cache", "GraphQL", "race"):
+        assert s in pdoc, s
+
+
+def test_check_mutations_shows_3b_candidate_types(monkeypatch):
+    res = {"run_id": "m9", "plan_id": "p9", "walk_id": "w9", "status": "complete", "sent": 3, "results": [],
+           "candidates": [{"type": t} for t in ("header-authz-bypass-candidate", "cache-poisoning-candidate",
+                                                 "race-candidate")], "created_ids": [], "restore_failures": [],
+           "honest_limits": [], "burp_mirror": {"active": False}}
+    monkeypatch.setattr(server.job_runtime, "poll_thread_job",
+                        lambda jid, jobs: {"status": "done", "value": {"kind": "mutations", "result": res,
+                                                                       "path": None}})
+    out = server.check_mutations("job1")
+    for t in ("header-authz-bypass-candidate", "cache-poisoning-candidate", "race-candidate"):
+        assert t in out
+
+
+def test_agent_prompts_mention_3b_candidates_and_ops():
+    ex = open(os.path.join(AGENTS, "exploit-agent.md")).read()
+    for s in ("header-authz-bypass-candidate", "method-override-candidate", "content-type-confusion-candidate",
+              "json-parser-differential-candidate", "path-normalization-candidate", "cache-poisoning-candidate",
+              "cache-deception-candidate", "graphql-batching-candidate", "race-candidate", "set_header",
+              "graphql_batch", "hmcb"):
+        assert s in ex, s
+    hb = open(os.path.join(AGENTS, "huntbrain.md")).read()
+    assert "request-level" in hb
