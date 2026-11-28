@@ -876,13 +876,17 @@ def _format_mutations(value: dict) -> str:
 
 @app.tool()
 def plan_mutations(walk_id: str, request_filter: str = "", max_requests: int = 50) -> str:
-    """Spec 3a (Burp-style mutation, NO traffic): profile every request a
+    """Spec 3a/3b (Burp-style mutation, NO traffic): profile every request a
     finished UI-walk recorded and return a ranked, request-specific variant
-    plan -- add a field the UI never sends (mass assignment), remove a check
-    field (otp/csrf/old password), duplicate a param (HPP), change its type
-    (type juggling), numeric edge values -- each with the reason it fits THIS
-    request, whether it needs the human Pass-2 grant, and whether it would be
-    sent. Read the reasons; then call run_mutations(plan_id, ...), adding your
+    plan. Parameter level (3a): add a field the UI never sends (mass
+    assignment), remove a check field (otp/csrf/old password), duplicate a
+    param (HPP), change its type (type juggling), numeric edge values.
+    Request level (3b): routing/authz headers (X-Forwarded-For, X-Original-URL,
+    ...), method swap/override, content-type switch, JSON parser differentials,
+    path/encoding tricks, cache poisoning/deception (always on a unique hmcb=
+    URL), GraphQL alias/batch, and races on walker-created objects. Each
+    variant has the reason it fits THIS request, whether it needs the human
+    Pass-2 grant, and whether it would be sent. Read the reasons; then call run_mutations(plan_id, ...), adding your
     own extra_variants where the request suggests more. Target text is
     quarantined."""
     try:
@@ -909,11 +913,23 @@ def run_mutations(plan_id: str, session_file: str = "", variants: str = "auto",
     variants: "auto" (the plan) or comma-separated variant ids.
     extra_variants: your own additions, one op each:
     {"replay_id", "op": add_param|remove_param|duplicate_param|retype_param|set_param,
-     "location": query|form|json|multipart, "path": [...], "value": ..., "reason": "..."}.
+     "location": query|form|json|multipart, "path": [...], "value": ..., "reason": "..."}
+    or a request-level op: {"replay_id", "op": "set_header", "name", "value"} |
+    {"op": "remove_header", "name"} | {"op": "method", "method"|"override",
+    "via": swap|header|param} | {"op": "content_type", "to": json|form|text|xml} |
+    {"op": "path", "transform": <name>} or {"op": "path", "literal": "/same/host/path"} |
+    {"op": "graphql_batch", "n": 2..5, "mode": alias|array}. Never settable:
+    Host, Cookie, Authorization, Proxy-*, Content-Length, Transfer-Encoding;
+    no CR/LF/NUL; the host never changes; values <= 2 KB. Races are rule-built
+    only (grant + a walker-created object; N<=10, create endpoints <=3).
+    Cache variants (and path tricks) always go to a unique `hmcb=` URL.
     bearer_token: only for an API that needs one (never stored).
     upstream_proxy: Burp mirror, same rules as start_ui_walk. Results are
     LEADS (mass-assignment / param-removal-bypass / hpp / type-juggling /
-    numeric-edge candidates), never confirmed. Poll with check_mutations."""
+    numeric-edge candidates, plus header-authz-bypass / method-override /
+    content-type-confusion / json-parser-differential / path-normalization /
+    cache-poisoning / cache-deception / graphql-batching / race candidates),
+    never confirmed. Poll with check_mutations."""
     if mutation_runner.load_plan(plan_id) is None and not ui_walk.proxy_refusal(upstream_proxy):
         return f"Error: unknown plan_id {plan_id!r} -- run plan_mutations(walk_id) first."
     refusal = ui_walk.proxy_refusal(upstream_proxy)

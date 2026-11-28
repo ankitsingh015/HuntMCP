@@ -16,7 +16,7 @@ import copy
 import json
 import re
 from dataclasses import dataclass, field, replace
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 WITHHELD = "<hm-withheld>"
 
@@ -295,28 +295,62 @@ def apply_ops(req: Req, ops: list[Op]) -> Req:
     return replace(req, url=url, body=body, headers=dict(req.headers))
 
 
-def effective_method(req: Req) -> str:
-    """The method the server may act on: an override header, or a `_method`
-    in the query / form / top-level JSON body, wins over the request line."""
-    for h in OVERRIDE_HEADERS:
-        v = header(req.headers, h)
-        if v and str(v).strip():
-            return str(v).strip().upper()
+def override_values(req: Req) -> list[str]:
+    """Every method named by an override source: the known override headers,
+    ANY header whose name contains `method` (3b hardening: an app may honour
+    an unlisted one), and `_method` in the query / form / top-level JSON."""
+    vals: list[str] = []
+    for k, v in (req.headers or {}).items():
+        lk = str(k).lower()
+        if (lk in OVERRIDE_HEADERS or "method" in lk) and v and str(v).strip():
+            vals.append(str(v).strip().upper())
     for k, v in _qs_pairs(urlsplit(req.url).query):
         if k == "_method" and v.strip():
-            return v.strip().upper()
+            vals.append(v.strip().upper())
     if req.body_kind == "form":
         for k, v in _qs_pairs(req.body or ""):
             if k == "_method" and v.strip():
-                return v.strip().upper()
+                vals.append(v.strip().upper())
     elif req.body_kind == "json":
         try:
             obj = json.loads(req.body or "")
         except (ValueError, RecursionError):
             obj = None
         if isinstance(obj, dict) and isinstance(obj.get("_method"), str) and obj["_method"].strip():
-            return obj["_method"].strip().upper()
+            vals.append(obj["_method"].strip().upper())
+    return vals
+
+
+def effective_method(req: Req) -> str:
+    """The method the server may act on. Any override source naming a
+    non-GET/HEAD verb (or anything that is not a plain GET/HEAD) wins, so a
+    GET can never be classed safe while one layer may read it as a write."""
+    vals = override_values(req)
+    for v in vals:
+        if v not in ("GET", "HEAD"):
+            return v
+    if vals:
+        return vals[0]
     return (req.method or "GET").upper()
+
+
+ROUTING_HEADERS = ("x-original-url", "x-rewrite-url")
+
+
+def routing_alt_urls(req: Req) -> list[str]:
+    """Absolute URLs a routing header asks a front end to serve instead."""
+    p = urlsplit(req.url)
+    out = []
+    for name in ROUTING_HEADERS:
+        v = header(req.headers, name)
+        if not v or not str(v).strip():
+            continue
+        v = str(v).strip()
+        if v.startswith(("http://", "https://")):
+            out.append(v)
+        else:
+            out.append(urlunsplit((p.scheme, p.netloc, v if v.startswith("/") else "/" + v, "", "")))
+    return out
 
 
 # =============================================================================
@@ -343,6 +377,15 @@ MAX_FOREIGN_IDS = 3
 
 
 @dataclass
+class Xform:
+    """Spec 3b: a request-level transform (header, method, content type, path, ...)."""
+    kind: str    # set_header|remove_header|method|override|content_type|path|graphql|race|cache_poison|cache_deception
+    name: str = ""
+    value: object = None
+    n: int = 0
+
+
+@dataclass
 class Variant:
     variant_id: str
     replay_id: str
@@ -351,6 +394,7 @@ class Variant:
     reason: str
     score: int
     origin: str = "rule"   # "rule" | "agent"
+    xforms: list = field(default_factory=list)
 
 
 @dataclass
@@ -358,11 +402,15 @@ class Context:
     response_keys: dict = field(default_factory=dict)   # route template -> JSON keys seen in GET responses
     sibling_fields: dict = field(default_factory=dict)  # route template -> field names other requests send
     foreign_ids: set = field(default_factory=set)       # object ids seen in the walk, not ours
+    denied_paths: set = field(default_factory=set)      # 3b: paths of GETs recorded as 401/403/404
+    meta: dict = field(default_factory=dict)            # 3b: replay_id -> response_meta (names only)
 
 
-def _vid(replay_id: str, ops: list) -> str:
-    raw = json.dumps([replay_id, [[o.kind, o.location, list(o.path), o.value, o.order, o.style] for o in ops]],
-                     sort_keys=True, default=str)
+def _vid(replay_id: str, ops: list, xforms=()) -> str:
+    payload = [replay_id, [[o.kind, o.location, list(o.path), o.value, o.order, o.style] for o in ops]]
+    if xforms:   # 3a variants (no xforms) keep their exact 3a ids
+        payload.append([[x.kind, x.name, x.value, x.n] for x in xforms])
+    raw = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
@@ -647,8 +695,12 @@ def never_mutated(url: str, classification: str | None = None) -> bool:
     return _S.classify_url(url) is not None
 
 
+def never_mutated_url(url: str) -> bool:
+    return never_mutated(url, None)
+
+
 def gate(variant_req: Req, *, scope, grant, owned: Ownership, has_restore_path: bool,
-         never_mutated: bool) -> Gate:
+         never_mutated: bool, graphql_readonly: bool = False) -> Gate:
     """May this variant be SENT? Order: payment > scope > never-mutated >
     effective method (GET: mutating-URL block; non-GET: grant, host, owned,
     restore path)."""
@@ -658,12 +710,20 @@ def gate(variant_req: Req, *, scope, grant, owned: Ownership, has_restore_path: 
         return Gate(False, False, "payment-host")
     if not scope(url):
         return Gate(False, False, "out-of-scope")
-    if never_mutated:
+    if never_mutated or never_mutated_url(url):   # the entry's class, AND the final URL (path tricks / agent paths)
         return Gate(False, False, "never-mutated")
     method = effective_method(variant_req)
-    if method in ("GET", "HEAD") and (variant_req.method or "GET").upper() in ("GET", "HEAD"):
-        if _L.is_mutating_get_url(url):
+    req_method = (variant_req.method or "GET").upper()
+    readonly_gql = (graphql_readonly and method == "POST" and req_method == "POST"
+                    and not override_values(variant_req))
+    if (method in ("GET", "HEAD") and req_method in ("GET", "HEAD")) or readonly_gql:
+        if _L.is_mutating_get_url(url) or _L.is_mutating_get_url(unquote(unquote(url))):
             return Gate(False, False, "mutating-get")
+        for alt in routing_alt_urls(variant_req):
+            if not scope(alt) or _L.is_payment_host(urlsplit(alt).hostname or "") \
+                    or _L.is_mutating_get_url(alt) or _L.is_mutating_get_url(unquote(unquote(alt))) \
+                    or never_mutated_url(alt):
+                return Gate(False, False, "routing-header-mutating")
         return Gate(True, False, "ok")
     if grant is None or getattr(grant, "canary_submit", False) is not True:
         return Gate(False, True, "needs grant")
